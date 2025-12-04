@@ -70,3 +70,4 @@ logs/
 *.log
 *.out
 *.err
+requirements.-local.txt
