@@ -1,0 +1,72 @@
+# ========================
+# Python
+# ========================
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+*.log
+*.bak
+*.swp
+
+# ========================
+# Virtual environments
+# ========================
+.venv/
+venv/
+env/
+ENV/
+
+# ========================
+# Streamlit cache & config
+# ========================
+.streamlit/
+
+# ========================
+# Environment variables & secrets
+# ========================
+.env
+.env.local
+*.key
+*.pem
+
+# ========================
+# Database & data files
+# ========================
+*.db
+*.sqlite
+*.sqlite3
+*.csv
+*.json
+*.parquet
+*.xlsx
+
+# ========================
+# Audio / temporary files
+# ========================
+*.wav
+*.mp3
+*.m4a
+*.ogg
+*.webm
+tmp/
+temp/
+tempfiles/
+*.tmp
+
+# ========================
+# OS & IDE files
+# ========================
+.DS_Store
+Thumbs.db
+.idea/
+.vscode/
+*.code-workspace
+
+# ========================
+# Logs & reports
+# ========================
+logs/
+*.log
+*.out
+*.err
