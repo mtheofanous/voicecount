@@ -17,8 +17,13 @@ import io
 import csv
 from datetime import datetime, date
 from typing import List, Optional, Tuple
-from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
-import av, time
+import time
+try:
+    from streamlit_webrtc import webrtc_streamer, WebRtcMode, RTCConfiguration
+    import av  # noqa: F401
+    HAS_WEBRTC = True
+except Exception:
+    HAS_WEBRTC = False
 
 import os
 import re
@@ -125,66 +130,6 @@ NUM_WORDS_ES = {
     "seis": 6, "siete": 7, "ocho": 8, "nueve": 9,
     "diez": 10, "once": 11, "doce": 12
 }
-def record_webrtc_wav(seconds: int = 6, sample_rate: int = 48000, key: str = "voice_mic") -> str | None:
-    """
-    Records ~N seconds of audio from the user's browser mic via WebRTC,
-    saves a temporary mono WAV, and returns the path (or None if aborted).
-    """
-    # Public Google STUN so it also works on Cloud
-    rtc_cfg = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
-
-    ctx = webrtc_streamer(
-        key=key,
-        mode=WebRtcMode.SENDONLY,             # user -> server (audio only)
-        rtc_configuration=rtc_cfg,
-        media_stream_constraints={"audio": True, "video": False},
-        async_processing=True,
-    )
-
-    if not ctx.state.playing:
-        st.info("Pulsa **Start** arriba para activar el micrófono y luego vuelve a pulsar **Grabar**.")
-        return None
-
-    st.write(f"🎙️ Grabando {seconds} s…")
-    t_end = time.time() + seconds
-    chunks: list[np.ndarray] = []
-
-    # Collect frames until time is up (non-blocking, gets small batches)
-    while time.time() < t_end:
-        if ctx.audio_receiver:
-            frames = ctx.audio_receiver.get_frames(timeout=0.2)
-            for f in frames:
-                # f: av.AudioFrame → ndarray shape (channels, samples)
-                pcm = f.to_ndarray()  # int16 or float32 depending on browser/codec
-                # ensure (samples, channels)
-                if pcm.ndim == 2 and pcm.shape[0] < pcm.shape[1]:
-                    pcm = pcm.T
-                # downmix to mono
-                if pcm.ndim == 2 and pcm.shape[1] > 1:
-                    pcm = pcm.mean(axis=1)
-                else:
-                    pcm = pcm.reshape(-1)
-
-                # convert to int16 safely
-                if pcm.dtype != np.int16:
-                    # assume float32 in [-1,1]
-                    pcm = np.clip(pcm, -1, 1)
-                    pcm = (pcm * 32767.0).astype(np.int16)
-                chunks.append(pcm)
-        else:
-            time.sleep(0.1)
-
-    if not chunks:
-        st.warning("No se recibieron frames de audio. ¿Concediste permiso al micrófono?")
-        return None
-
-    audio_i16 = np.concatenate(chunks)
-    # save temp WAV (48 kHz; Whisper will resample internally)
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
-        _save_wav(tf.name, audio_i16, sample_rate)
-        wav_path = tf.name
-    st.success("✅ Grabación lista")
-    return wav_path
 
 def normalize_text(text: str) -> str:
     """Return lowercase, stripped, and singular version of a word or phrase."""
@@ -404,13 +349,6 @@ def load_whisper(model_size: str = "small"):
     # CPU-friendly by default; change compute_type if you have GPU
     return WhisperModel(model_size, compute_type="int8")
 
-# def _save_wav(path: str, audio: np.ndarray, samplerate: int):
-#     """Write mono int16 PCM to WAV."""
-#     with wave.open(path, "wb") as wf:
-#         wf.setnchannels(1)
-#         wf.setsampwidth(2)  # int16
-#         wf.setframerate(samplerate)
-#         wf.writeframes(audio.tobytes())
 
 def _save_wav(path: str, audio_i16: np.ndarray, samplerate: int):
     import wave
@@ -421,8 +359,21 @@ def _save_wav(path: str, audio_i16: np.ndarray, samplerate: int):
         wf.writeframes(audio_i16.tobytes())
         
 # WebRTC recorder → returns temp .wav path (48kHz mono int16)
+
 def record_webrtc_wav(seconds: int = 6, sample_rate: int = 48000, key: str = "voice_mic") -> str | None:
+    """
+    Graba ~N segundos desde el micro del navegador vía WebRTC, guarda un WAV mono
+    temporal a `sample_rate` y devuelve la ruta. Devuelve None si el usuario no inició el mic.
+    Requiere: streamlit-webrtc, av, numpy y la helper `_save_wav`.
+    """
+    import numpy as np
+    import time
+    import tempfile
+
+    # STUN público de Google (funciona en Cloud)
     rtc_cfg = RTCConfiguration({"iceServers": [{"urls": ["stun:stun.l.google.com:19302"]}]})
+
+    # Enviar solo audio: navegador -> servidor
     ctx = webrtc_streamer(
         key=key,
         mode=WebRtcMode.SENDONLY,
@@ -430,6 +381,7 @@ def record_webrtc_wav(seconds: int = 6, sample_rate: int = 48000, key: str = "vo
         media_stream_constraints={"audio": True, "video": False},
         async_processing=True,
     )
+
     if not ctx.state.playing:
         st.info("Pulsa **Start** arriba para activar el micrófono y luego vuelve a pulsar **Grabar**.")
         return None
@@ -438,22 +390,24 @@ def record_webrtc_wav(seconds: int = 6, sample_rate: int = 48000, key: str = "vo
     t_end = time.time() + seconds
     chunks: list[np.ndarray] = []
 
+    # Ir recogiendo frames mientras dure la grabación
     while time.time() < t_end:
         if ctx.audio_receiver:
             frames = ctx.audio_receiver.get_frames(timeout=0.2)
-            for f in frames:  # f: av.AudioFrame
-                pcm = f.to_ndarray()  # shape (channels, samples) or (samples,) depending on codec
+            for f in frames:  # f es av.AudioFrame
+                pcm = f.to_ndarray()  # suele venir (channels, samples) o (samples,)
+                # Asegurar forma (samples, channels)
                 if pcm.ndim == 2 and pcm.shape[0] < pcm.shape[1]:
                     pcm = pcm.T
+                # Pasar a mono
                 if pcm.ndim == 2 and pcm.shape[1] > 1:
-                    pcm = pcm.mean(axis=1)  # downmix to mono
+                    pcm = pcm.mean(axis=1)
                 else:
                     pcm = pcm.reshape(-1)
-
+                # Convertir a int16 de forma segura
                 if pcm.dtype != np.int16:
                     pcm = np.clip(pcm, -1, 1)
                     pcm = (pcm * 32767.0).astype(np.int16)
-
                 chunks.append(pcm)
         else:
             time.sleep(0.1)
@@ -463,11 +417,18 @@ def record_webrtc_wav(seconds: int = 6, sample_rate: int = 48000, key: str = "vo
         return None
 
     audio_i16 = np.concatenate(chunks)
-    import tempfile
-    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
-        _save_wav(tf.name, audio_i16, sample_rate)
-        return tf.name
 
+    # Guardar WAV temporal (Whisper re-muestrea internamente si hace falta)
+    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+        _save_wav(tf.name, audio_i16, sample_rate)  # asegúrate de tener esta helper definida
+        wav_path = tf.name
+
+    st.success("✅ Grabación lista")
+    return wav_path
+
+#
+
+#
 
 def _record_audio(seconds: int = 6, samplerate: int = 16000) -> tuple[np.ndarray, int]:
     """Record from local/server microphone using sounddevice (blocking)."""
@@ -505,6 +466,19 @@ def _transcribe_with_whisper(wav_path: str, model_size: str, lang_code: str | No
     # Light cleanup of occasional trailing "sí/yes."
     text = re.sub(r"\b(yes|sí)\.?$", "", text, flags=re.IGNORECASE).strip()
     return text
+
+def transcribe_file(
+    wav_path: str,
+    model_size: str = "small",
+    lang_code: str = "auto",
+    vocab_hint: list[str] | None = None,
+) -> str:
+    return _transcribe_with_whisper(
+        wav_path=wav_path,
+        model_size=model_size,
+        lang_code=lang_code,
+        vocab_hint=vocab_hint,
+    )
 
 # -------------------------
 # UI: Sidebar Navigation
@@ -597,12 +571,16 @@ if mode == "Voice Order":
     st.subheader("🎙️ Micrófono")
 
     # Choose mic mode
+    choices = ["Local (servidor)"]
+    if HAS_WEBRTC:
+        choices.insert(0, "Browser (WebRTC)")
     mic_mode = st.radio(
         "Origen del audio",
-        ["Browser (WebRTC)", "Local (servidor)"],
+        choices,
         horizontal=True,
         help="WebRTC funciona en Streamlit Cloud. 'Local' requiere acceso a un micrófono en el host."
     )
+
 
     # Common params
     colA, colB = st.columns([1, 1])
