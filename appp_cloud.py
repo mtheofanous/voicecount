@@ -148,6 +148,8 @@ def get_engine():
     # Cachea el engine para toda la vida de la app
     return build_engine()
 
+ENGINE = get_engine()
+
 from sqlalchemy import text
 with st.expander("🔧 DB Debug", expanded=False):
     try:
