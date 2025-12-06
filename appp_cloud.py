@@ -82,93 +82,45 @@ st.set_page_config(page_title="Voice Inventory MVP", page_icon="🎤", layout="w
 
 import os
 import streamlit as st
-from sqlmodel import SQLModel, Session, create_engine
+from sqlalchemy import create_engine
+from sqlmodel import SQLModel, Session
 
 def _sqlite_path() -> str:
-    # Carpeta escribible en Streamlit Cloud (persiste solo mientras el contenedor vive)
     data_dir = os.environ.get("STREAMLIT_DATA_DIR", "/mount/data")
     os.makedirs(data_dir, exist_ok=True)
     return os.path.join(data_dir, "voicecount.db")
 
-from sqlalchemy.engine import URL
-from sqlalchemy import create_engine
-import socket
-import psycopg
-
-def _first_ipv4(host: str) -> str | None:
-    try:
-        for fam, _, _, _, sockaddr in socket.getaddrinfo(host, None):
-            if fam == socket.AF_INET:  # IPv4 only
-                return sockaddr[0]
-    except Exception:
-        pass
-    return None
-
-def _pg_connect_from_secrets():
-    host     = st.secrets.get("DB_HOST")
-    port     = int(st.secrets.get("DB_PORT", "5432"))
-    dbname   = st.secrets.get("DB_NAME", "postgres")
-    user     = st.secrets.get("DB_USER", "postgres")
-    password = st.secrets.get("DB_PASSWORD", "")
-
-    if not host:
-        raise RuntimeError("DB_HOST secret missing")
-
-    # Explicit IPv4 to avoid IPv6 attempts
-    hostaddr = st.secrets.get("DB_HOSTADDR") or _first_ipv4(host)
-
-    # psycopg v3 direct connect: we control every parameter
-    return psycopg.connect(
-        host=host,             # keep hostname for TLS/SNI
-        hostaddr=hostaddr,     # force IPv4 connect (critical)
-        port=port,
-        dbname=dbname,
-        user=user,
-        password=password,
-        sslmode="require",
-        connect_timeout=8,
-        keepalives=1,
-        keepalives_idle=30,
-        keepalives_interval=10,
-        keepalives_count=5,
-        target_session_attrs="read-write",
-    )
+def _normalize_db_url(url: str) -> str:
+    # accept postgres:// and switch to +psycopg driver
+    if url.startswith("postgres://"):
+        url = "postgresql://" + url[len("postgres://"):]
+    if url.startswith("postgresql://") and "+psycopg" not in url.split("://", 1)[0]:
+        url = url.replace("postgresql://", "postgresql+psycopg://", 1)
+    # enforce SSL unless already present
+    if "sslmode=" not in url:
+        url += ("&" if "?" in url else "?") + "sslmode=require"
+    return url
 
 def build_engine():
-    # Use direct creator so hostaddr is honored and IPv6 is skipped
-    return create_engine(
-        "postgresql+psycopg://",
-        creator=_pg_connect_from_secrets,
-        pool_pre_ping=True,
-    )
-
+    url = st.secrets.get("DATABASE_URL") or os.getenv("DATABASE_URL")
+    if not url:
+        url = f"sqlite:///{_sqlite_path()}"
+        return create_engine(url, connect_args={"check_same_thread": False}, pool_pre_ping=True)
+    url = _normalize_db_url(url)
+    return create_engine(url, pool_pre_ping=True)
 
 @st.cache_resource
 def get_engine():
-    # Cachea el engine para toda la vida de la app
     return build_engine()
 
 ENGINE = get_engine()
 
-from sqlalchemy import text
-with st.expander("🔧 DB Debug", expanded=False):
-    try:
-        st.write("Driver:", ENGINE.url.get_backend_name())
-        st.write("Host:", st.secrets.get("DB_HOST"))
-        st.write("Hostaddr (IPv4):", st.secrets.get("DB_HOSTADDR") or _first_ipv4(st.secrets.get("DB_HOST")))
-        with ENGINE.connect() as c:
-            st.write("SELECT 1 ->", c.execute(text("SELECT 1")).fetchone())
-    except Exception as e:
-        st.error(f"DB connection error: {e}")
-
+def get_session() -> Session:
+    return Session(ENGINE)
 
 def init_db() -> None:
-    # Crea tablas una vez (tras declarar los modelos)
     SQLModel.metadata.create_all(ENGINE)
 
-def get_session() -> Session:
-    # Úsalo como:  with get_session() as s: ...
-    return Session(ENGINE)
 
 # Llamar una vez tras definir modelos
 init_db()
