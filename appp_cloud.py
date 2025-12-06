@@ -75,20 +75,67 @@ class OrderLine(SQLModel, table=True):
     unit: Optional[str] = None
 
 # -------------------------
-# App Setup / DB Engine
+# App Setup / DB Engine  ✅ LIMPIO
 # -------------------------
 
 st.set_page_config(page_title="Voice Inventory MVP", page_icon="🎤", layout="wide")
 
-if "engine" not in st.session_state:
-    engine = create_engine("sqlite:///voice_inventory.db")
-    SQLModel.metadata.create_all(engine)
-    st.session_state.engine = engine
+import os
+import streamlit as st
+from sqlmodel import SQLModel, Session, create_engine
+
+def _sqlite_path() -> str:
+    # Carpeta escribible en Streamlit Cloud (persiste solo mientras el contenedor vive)
+    data_dir = os.environ.get("STREAMLIT_DATA_DIR", "/mount/data")
+    os.makedirs(data_dir, exist_ok=True)
+    return os.path.join(data_dir, "voicecount.db")
+
+def build_engine():
+    # Usa Postgres si hay DATABASE_URL en Secrets/ENV; si no, SQLite local escribible
+    url = st.secrets.get("DATABASE_URL") or os.getenv("DATABASE_URL")
+    if not url:
+        url = f"sqlite:///{_sqlite_path()}"
+    connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
+    return create_engine(url, connect_args=connect_args, pool_pre_ping=True)
+
+@st.cache_resource
+def get_engine():
+    # Cachea el engine para toda la vida de la app
+    return build_engine()
+
+ENGINE = get_engine()
+
+from sqlalchemy import text
+def _mask_url(u: str) -> str:
+    import re
+    return re.sub(r"://([^:]+):([^@]+)@", r"://\1:***@", u)
+
+with st.expander("🔧 DB Debug", expanded=False):
+    try:
+        st.write("Driver:", ENGINE.url.get_backend_name())  # debe ser 'postgresql+psycopg'
+        st.write("DB URL:", _mask_url(str(ENGINE.url)))
+        with ENGINE.connect() as conn:
+            st.write("SELECT 1 ->", conn.execute(text("SELECT 1")).fetchone())
+            rows = conn.execute(text("""
+                SELECT table_name
+                FROM information_schema.tables
+                WHERE table_schema='public'
+                ORDER BY 1
+            """)).fetchall()
+            st.write("Tablas public:", rows)
+    except Exception as e:
+        st.error(f"DB connection error: {e}")
+
+def init_db() -> None:
+    # Crea tablas una vez (tras declarar los modelos)
+    SQLModel.metadata.create_all(ENGINE)
 
 def get_session() -> Session:
-    return Session(st.session_state.engine)
+    # Úsalo como:  with get_session() as s: ...
+    return Session(ENGINE)
 
-
+# Llamar una vez tras definir modelos
+init_db()
 # -------------------------
 # Fuzzy Matching & Parsing (kept from your app)
 # -------------------------
@@ -514,25 +561,24 @@ if mode == "Products DB":
             if not name:
                 st.error("El nombre es obligatorio.")
             else:
-                with get_session() as s:
-                    p = Product(
-                        name=name,
-                        category=category,
-                        unit=unit,
-                        quantity=quantity,
-                        provider_name=provider_name,
-                        provider_email=provider_email,
-                        provider_phone=provider_phone,
-                        provider_address=provider_address,
-                        created_at=created_at,
-                    )
-                    
-                    normalize_model(p)
+                p = Product(
+                    name=name,
+                    category=category,
+                    unit=unit,
+                    quantity=quantity,
+                    provider_name=provider_name,
+                    provider_email=provider_email,
+                    provider_phone=provider_phone,
+                    provider_address=provider_address,
+                    created_at=created_at,
+                )
+                normalize_model(p)
 
-                    with get_session() as s:
-                        s.add(p)
-                        s.commit()
-                        st.success(f"Producto '{p.name}' guardado (normalizado).")
+                with get_session() as s:
+                    s.add(p)
+                    s.commit()
+                    st.success(f"Producto '{p.name}' guardado (normalizado).")
+
 
     with col_table:
         st.subheader("Catálogo actual")
@@ -552,8 +598,8 @@ if mode == "Products DB":
 if mode == "Voice Order":
     st.title("🗣️ Voice Order (Mic + Whisper)")
     st.caption(
-        "Dicta productos y cantidades. Puedes decir el número antes o después del nombre, y usa 'next' para pasar al siguiente. "
-        "Ejemplo: '3 limones next gin 2 next olivas 1 next 1 aperol'"
+        "Dicta productos y cantidades. Puedes decir el número antes o después del nombre "
+        "Ejemplo: '3 limones, gin 2, olivas 1, 1 aperol'"
     )
 
     # Load catalog for bias & mapping
