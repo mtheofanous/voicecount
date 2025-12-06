@@ -90,13 +90,60 @@ def _sqlite_path() -> str:
     os.makedirs(data_dir, exist_ok=True)
     return os.path.join(data_dir, "voicecount.db")
 
+from sqlalchemy.engine import URL
+import socket
+
+def _first_ipv4(host: str) -> str | None:
+    try:
+        for fam, _, _, _, sockaddr in socket.getaddrinfo(host, None):
+            if fam == socket.AF_INET:  # IPv4 only
+                return sockaddr[0]
+    except Exception:
+        pass
+    return None
+
 def build_engine():
-    # Usa Postgres si hay DATABASE_URL en Secrets/ENV; si no, SQLite local escribible
-    url = st.secrets.get("DATABASE_URL") or os.getenv("DATABASE_URL")
-    if not url:
-        url = f"sqlite:///{_sqlite_path()}"
-    connect_args = {"check_same_thread": False} if url.startswith("sqlite") else {}
-    return create_engine(url, connect_args=connect_args, pool_pre_ping=True)
+    # Prefer structured secrets (no URL-encoding headaches)
+    host = st.secrets.get("DB_HOST")
+    if host:
+        user = st.secrets.get("DB_USER", "postgres")
+        pwd  = st.secrets.get("DB_PASSWORD", "")
+        port = int(st.secrets.get("DB_PORT", "5432"))
+        name = st.secrets.get("DB_NAME", "postgres")
+
+        # If user supplied an explicit IPv4, use it; else resolve one.
+        hostaddr = st.secrets.get("DB_HOSTADDR") or _first_ipv4(host)
+
+        query = {"sslmode": "require"}
+        if hostaddr:
+            query["hostaddr"] = hostaddr  # psycopg3: connect via IPv4, but keep hostname for TLS/SNI
+
+        url = URL.create(
+            "postgresql+psycopg",
+            username=user,
+            password=pwd,
+            host=host,   # hostname stays for TLS
+            port=port,
+            database=name,
+            query=query,
+        )
+        return create_engine(url, pool_pre_ping=True)
+
+    # Fallback: single DATABASE_URL (we'll still enforce sslmode=require)
+    raw = st.secrets.get("DATABASE_URL") or os.getenv("DATABASE_URL")
+    if not raw:
+        raw = f"sqlite:///{_sqlite_path()}"
+        return create_engine(raw, connect_args={"check_same_thread": False}, pool_pre_ping=True)
+
+    # normalize + force SSL
+    if raw.startswith("postgres://"):
+        raw = "postgresql://" + raw[len("postgres://"):]
+    if raw.startswith("postgresql://") and "+psycopg" not in raw.split("://", 1)[0]:
+        raw = raw.replace("postgresql://", "postgresql+psycopg://", 1)
+    if "sslmode=" not in raw:
+        raw += ("&" if "?" in raw else "?") + "sslmode=require"
+    return create_engine(raw, pool_pre_ping=True)
+
 
 @st.cache_resource
 def get_engine():
