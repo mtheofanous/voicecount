@@ -91,7 +91,9 @@ def _sqlite_path() -> str:
     return os.path.join(data_dir, "voicecount.db")
 
 from sqlalchemy.engine import URL
+from sqlalchemy import create_engine
 import socket
+import psycopg
 
 def _first_ipv4(host: str) -> str | None:
     try:
@@ -102,46 +104,43 @@ def _first_ipv4(host: str) -> str | None:
         pass
     return None
 
+def _pg_connect_from_secrets():
+    host     = st.secrets.get("DB_HOST")
+    port     = int(st.secrets.get("DB_PORT", "5432"))
+    dbname   = st.secrets.get("DB_NAME", "postgres")
+    user     = st.secrets.get("DB_USER", "postgres")
+    password = st.secrets.get("DB_PASSWORD", "")
+
+    if not host:
+        raise RuntimeError("DB_HOST secret missing")
+
+    # Explicit IPv4 to avoid IPv6 attempts
+    hostaddr = st.secrets.get("DB_HOSTADDR") or _first_ipv4(host)
+
+    # psycopg v3 direct connect: we control every parameter
+    return psycopg.connect(
+        host=host,             # keep hostname for TLS/SNI
+        hostaddr=hostaddr,     # force IPv4 connect (critical)
+        port=port,
+        dbname=dbname,
+        user=user,
+        password=password,
+        sslmode="require",
+        connect_timeout=8,
+        keepalives=1,
+        keepalives_idle=30,
+        keepalives_interval=10,
+        keepalives_count=5,
+        target_session_attrs="read-write",
+    )
+
 def build_engine():
-    # Prefer structured secrets to avoid URL-encoding & IPv6 pitfalls
-    host = st.secrets.get("DB_HOST")
-    if host:
-        user = st.secrets.get("DB_USER", "postgres")
-        pwd  = st.secrets.get("DB_PASSWORD", "")
-        port = int(st.secrets.get("DB_PORT", "5432"))
-        name = st.secrets.get("DB_NAME", "postgres")
-
-        hostaddr = st.secrets.get("DB_HOSTADDR") or _first_ipv4(host)
-
-        # psycopg v3 connection options
-        query = {
-            "sslmode": "require",
-            "connect_timeout": "8",       # fail fast instead of hanging
-            "target_session_attrs": "read-write",
-            "keepalives": "1",
-            "keepalives_idle": "30",
-            "keepalives_interval": "10",
-            "keepalives_count": "5",
-        }
-        if hostaddr:
-            # Connect via IPv4 but keep hostname for TLS/SNI verification
-            query["hostaddr"] = hostaddr
-
-        url = URL.create(
-            "postgresql+psycopg",
-            username=user,
-            password=pwd,
-            host=host,
-            port=port,
-            database=name,
-            query=query,
-        )
-        return create_engine(url, pool_pre_ping=True)
-
-    # Fallback to SQLite if no secrets set (local/dev)
-    sqlite_url = f"sqlite:///{_sqlite_path()}"
-    return create_engine(sqlite_url, connect_args={"check_same_thread": False}, pool_pre_ping=True)
-
+    # Use direct creator so hostaddr is honored and IPv6 is skipped
+    return create_engine(
+        "postgresql+psycopg://",
+        creator=_pg_connect_from_secrets,
+        pool_pre_ping=True,
+    )
 
 
 @st.cache_resource
@@ -149,28 +148,17 @@ def get_engine():
     # Cachea el engine para toda la vida de la app
     return build_engine()
 
-ENGINE = get_engine()
-
 from sqlalchemy import text
-def _mask_url(u: str) -> str:
-    import re
-    return re.sub(r"://([^:]+):([^@]+)@", r"://\1:***@", u)
-
 with st.expander("🔧 DB Debug", expanded=False):
     try:
-        st.write("Driver:", ENGINE.url.get_backend_name())  # debe ser 'postgresql+psycopg'
-        st.write("DB URL:", _mask_url(str(ENGINE.url)))
-        with ENGINE.connect() as conn:
-            st.write("SELECT 1 ->", conn.execute(text("SELECT 1")).fetchone())
-            rows = conn.execute(text("""
-                SELECT table_name
-                FROM information_schema.tables
-                WHERE table_schema='public'
-                ORDER BY 1
-            """)).fetchall()
-            st.write("Tablas public:", rows)
+        st.write("Driver:", ENGINE.url.get_backend_name())
+        st.write("Host:", st.secrets.get("DB_HOST"))
+        st.write("Hostaddr (IPv4):", st.secrets.get("DB_HOSTADDR") or _first_ipv4(st.secrets.get("DB_HOST")))
+        with ENGINE.connect() as c:
+            st.write("SELECT 1 ->", c.execute(text("SELECT 1")).fetchone())
     except Exception as e:
         st.error(f"DB connection error: {e}")
+
 
 def init_db() -> None:
     # Crea tablas una vez (tras declarar los modelos)
