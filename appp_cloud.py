@@ -152,26 +152,26 @@ def get_engine():
 
 ENGINE = get_engine()
 
-from sqlalchemy import text
-def _mask_url(u: str) -> str:
-    import re
-    return re.sub(r"://([^:]+):([^@]+)@", r"://\1:***@", u)
+# from sqlalchemy import text
+# def _mask_url(u: str) -> str:
+#     import re
+#     return re.sub(r"://([^:]+):([^@]+)@", r"://\1:***@", u)
 
-with st.expander("🔧 DB Debug", expanded=False):
-    try:
-        st.write("Driver:", ENGINE.url.get_backend_name())  # debe ser 'postgresql+psycopg'
-        st.write("DB URL:", _mask_url(str(ENGINE.url)))
-        with ENGINE.connect() as conn:
-            st.write("SELECT 1 ->", conn.execute(text("SELECT 1")).fetchone())
-            rows = conn.execute(text("""
-                SELECT table_name
-                FROM information_schema.tables
-                WHERE table_schema='public'
-                ORDER BY 1
-            """)).fetchall()
-            st.write("Tablas public:", rows)
-    except Exception as e:
-        st.error(f"DB connection error: {e}")
+# with st.expander("🔧 DB Debug", expanded=False):
+#     try:
+#         st.write("Driver:", ENGINE.url.get_backend_name())  # debe ser 'postgresql+psycopg'
+#         st.write("DB URL:", _mask_url(str(ENGINE.url)))
+#         with ENGINE.connect() as conn:
+#             st.write("SELECT 1 ->", conn.execute(text("SELECT 1")).fetchone())
+#             rows = conn.execute(text("""
+#                 SELECT table_name
+#                 FROM information_schema.tables
+#                 WHERE table_schema='public'
+#                 ORDER BY 1
+#             """)).fetchall()
+#             st.write("Tablas public:", rows)
+#     except Exception as e:
+#         st.error(f"DB connection error: {e}")
 
 def init_db() -> None:
     # Crea tablas una vez (tras declarar los modelos)
