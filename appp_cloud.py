@@ -676,90 +676,90 @@ if mode == "Voice Order":
 
     vocab_hint = catalog_names  # bias desde tu catálogo
 
+    # if mic_mode == "Browser (WebRTC)":
+    #     # --- WebRTC path (Cloud-friendly) ---
+    #     colC, colD = st.columns([1, 1])
+    #     with colC:
+    #         seconds = st.slider("Segundos a grabar", 3, 20, 6)
+    #     with colD:
+    #         st.caption("El navegador suele capturar a 48 kHz (se re-muestrea internamente).")
+
     if mic_mode == "Browser (WebRTC)":
         # --- WebRTC path (Cloud-friendly) ---
+        rtc_cfg = RTCConfiguration({
+            "iceServers": [
+                {"urls": ["stun:stun.l.google.com:19302"]},
+            ]
+        })
+
+        # 1) Mount the widget PERSISTENTLY so the browser can prompt for mic access
+        ctx = webrtc_streamer(
+            key="voice_mic",
+            mode=WebRtcMode.SENDONLY,                 # user -> server
+            rtc_configuration=rtc_cfg,
+            media_stream_constraints={"audio": True, "video": False},
+            async_processing=True,
+        )
+
         colC, colD = st.columns([1, 1])
         with colC:
             seconds = st.slider("Segundos a grabar", 3, 20, 6)
         with colD:
-            st.caption("El navegador suele capturar a 48 kHz (se re-muestrea internamente).")
+            st.caption("Pulsa **Start** en el cuadro de arriba para activar el micrófono.")
 
-        if mic_mode == "Browser (WebRTC)":
-            # --- WebRTC path (Cloud-friendly) ---
-            rtc_cfg = RTCConfiguration({
-                "iceServers": [
-                    {"urls": ["stun:stun.l.google.com:19302"]},
-                ]
-            })
+        # 2) Only allow recording if the stream is playing (user pressed Start)
+        rec_btn = st.button("🎧 Grabar (WebRTC)", disabled=not (ctx and ctx.state.playing))
 
-            # 1) Mount the widget PERSISTENTLY so the browser can prompt for mic access
-            ctx = webrtc_streamer(
-                key="voice_mic",
-                mode=WebRtcMode.SENDONLY,                 # user -> server
-                rtc_configuration=rtc_cfg,
-                media_stream_constraints={"audio": True, "video": False},
-                async_processing=True,
-            )
+        if ctx and not ctx.state.playing:
+            st.info("Pulsa **Start** en el widget WebRTC de arriba y concede permisos de micrófono.")
 
-            colC, colD = st.columns([1, 1])
-            with colC:
-                seconds = st.slider("Segundos a grabar", 3, 20, 6)
-            with colD:
-                st.caption("Pulsa **Start** en el cuadro de arriba para activar el micrófono.")
+        if rec_btn and ctx and ctx.state.playing:
+            # 3) Collect frames for N seconds and save to WAV
+            import numpy as np, time, tempfile
 
-            # 2) Only allow recording if the stream is playing (user pressed Start)
-            rec_btn = st.button("🎧 Grabar (WebRTC)", disabled=not (ctx and ctx.state.playing))
+            t_end = time.time() + seconds
+            chunks = []
 
-            if ctx and not ctx.state.playing:
-                st.info("Pulsa **Start** en el widget WebRTC de arriba y concede permisos de micrófono.")
-
-            if rec_btn and ctx and ctx.state.playing:
-                # 3) Collect frames for N seconds and save to WAV
-                import numpy as np, time, tempfile
-
-                t_end = time.time() + seconds
-                chunks = []
-
-                st.write(f"🎙️ Grabando {seconds} s…")
-                while time.time() < t_end:
-                    if ctx.audio_receiver:
-                        frames = ctx.audio_receiver.get_frames(timeout=0.2)
-                        for f in frames:  # f: av.AudioFrame
-                            pcm = f.to_ndarray()  # (channels, samples) or (samples,)
-                            # make shape (samples,)
-                            if pcm.ndim == 2 and pcm.shape[0] < pcm.shape[1]:
-                                pcm = pcm.T
-                            if pcm.ndim == 2 and pcm.shape[1] > 1:
-                                pcm = pcm.mean(axis=1)  # downmix mono
-                            else:
-                                pcm = pcm.reshape(-1)
-                            # convert to int16 safely
-                            if pcm.dtype != np.int16:
-                                pcm = np.clip(pcm, -1, 1)
-                                pcm = (pcm * 32767.0).astype(np.int16)
-                            chunks.append(pcm)
-                    else:
-                        time.sleep(0.1)
-
-                if not chunks:
-                    st.warning("No se recibieron frames de audio. ¿Concediste permiso al micrófono?")
+            st.write(f"🎙️ Grabando {seconds} s…")
+            while time.time() < t_end:
+                if ctx.audio_receiver:
+                    frames = ctx.audio_receiver.get_frames(timeout=0.2)
+                    for f in frames:  # f: av.AudioFrame
+                        pcm = f.to_ndarray()  # (channels, samples) or (samples,)
+                        # make shape (samples,)
+                        if pcm.ndim == 2 and pcm.shape[0] < pcm.shape[1]:
+                            pcm = pcm.T
+                        if pcm.ndim == 2 and pcm.shape[1] > 1:
+                            pcm = pcm.mean(axis=1)  # downmix mono
+                        else:
+                            pcm = pcm.reshape(-1)
+                        # convert to int16 safely
+                        if pcm.dtype != np.int16:
+                            pcm = np.clip(pcm, -1, 1)
+                            pcm = (pcm * 32767.0).astype(np.int16)
+                        chunks.append(pcm)
                 else:
-                    audio_i16 = np.concatenate(chunks)
-                    # save temp WAV (48 kHz; Whisper re-muestrea internamente si hace falta)
-                    with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
-                        _save_wav(tf.name, audio_i16, sample_rate=48000)  # usa tu helper existente
-                        wav_path = tf.name
+                    time.sleep(0.1)
 
-                    st.success("✅ Grabación lista")
-                    with st.spinner("Transcribiendo con Whisper…"):
-                        transcript = transcribe_file(
-                            wav_path,
-                            model_size=model_size,
-                            lang_code=lang,
-                            vocab_hint=vocab_hint
-                        )
-                    st.session_state.transcript = transcript
-                    st.text_area("Transcripción", value=st.session_state.transcript, height=120)
+            if not chunks:
+                st.warning("No se recibieron frames de audio. ¿Concediste permiso al micrófono?")
+            else:
+                audio_i16 = np.concatenate(chunks)
+                # save temp WAV (48 kHz; Whisper re-muestrea internamente si hace falta)
+                with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
+                    _save_wav(tf.name, audio_i16, sample_rate=48000)  # usa tu helper existente
+                    wav_path = tf.name
+
+                st.success("✅ Grabación lista")
+                with st.spinner("Transcribiendo con Whisper…"):
+                    transcript = transcribe_file(
+                        wav_path,
+                        model_size=model_size,
+                        lang_code=lang,
+                        vocab_hint=vocab_hint
+                    )
+                st.session_state.transcript = transcript
+                st.text_area("Transcripción", value=st.session_state.transcript, height=120)
 
 
     # elif mic_mode == "Local (servidor)":
