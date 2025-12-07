@@ -24,7 +24,7 @@ try:
     HAS_WEBRTC = True
 except Exception:
     HAS_WEBRTC = False
-
+import pandas as pd
 import os
 import re
 import tempfile
@@ -45,8 +45,9 @@ class Product(SQLModel, table=True):
     name: str
     category: Optional[str] = None
     unit: Optional[str] = Field(default="unidad")  # e.g., botella, kg, caja, lata, unidad
-    quantity: Optional[float] = Field(default=0)    # current stock (optional)
-
+    quantity: Optional[float] = Field(default=0) # current stock (optional)
+    alert: Optional[float] =Field(default=0)
+    price: Optional[float] = Field(default=0)
     # Provider fields
     provider_name: Optional[str] = None
     provider_email: Optional[str] = None
@@ -539,6 +540,8 @@ if mode == "Products DB":
             category = st.text_input("Categoría")
             unit = st.selectbox("Unidad base", ["unidad", "botella", "kg", "caja", "lata", "pack"], index=0)
             quantity = st.number_input("Cantidad (stock opcional)", min_value=0.0, step=1.0, value=0.0)
+            alert = st.number_input("Alerta (umbral de stock)", min_value=0.0, step=1.0, value=0.0)
+            price = st.number_input("Precio por unidad (€)", min_value=0.0, step=0.01, value=0.0, format="%.2f")
             provider_name = st.text_input("Proveedor - nombre")
             provider_email = st.text_input("Proveedor - email")
             provider_phone = st.text_input("Proveedor - teléfono")
@@ -554,6 +557,8 @@ if mode == "Products DB":
                     category=category,
                     unit=unit,
                     quantity=quantity,
+                    alert=alert,       
+                    price=price,  
                     provider_name=provider_name,
                     provider_email=provider_email,
                     provider_phone=provider_phone,
@@ -572,13 +577,38 @@ if mode == "Products DB":
         st.subheader("Catálogo actual")
         with get_session() as s:
             products = s.exec(select(Product).order_by(Product.id.desc())).all()
+
         if not products:
             st.info("Aún no hay productos. Añade el primero con el formulario.")
         else:
-            import pandas as pd
-            df = pd.DataFrame([p.dict() for p in products])
+
+            rows = []
+            for p in products:
+                qty = p.quantity or 0
+                alert_ = p.alert or 0
+                price_ = p.price or 0
+                rows.append({
+                    "id": p.id,
+                    "name": p.name,
+                    "category": p.category,
+                    "unit": p.unit,
+                    "quantity": qty,
+                    "alert": alert_,
+                    "price (€)": round(price_, 2),
+                    "value (€)": round(qty * price_, 2),
+                    "restock?": "⚠️" if alert_ and qty <= alert_ else "",
+                    "provider": p.provider_name,
+                    "email": p.provider_email,
+                    "phone": p.provider_phone,
+                })
+
+            df = pd.DataFrame(rows)
             st.dataframe(df, use_container_width=True)
 
+
+# -------------------------
+# Page 2: Voice Order (NEW mic section; Parse & Review unchanged)
+# -------------------------
 # -------------------------
 # Page 2: Voice Order (NEW mic section; Parse & Review unchanged)
 # -------------------------
@@ -593,11 +623,33 @@ if mode == "Voice Order":
     # Load catalog for bias & mapping
     with get_session() as s:
         products = s.exec(select(Product).order_by(Product.name.asc())).all()
-    catalog_names = [normalize_text(p.name) for p in products]
 
     if not products:
         st.warning("Primero crea tu catálogo en 'Products DB'.")
         st.stop()
+
+    # 🔔 Mostrar productos por debajo del umbral (alert)
+    low_stock = [p for p in products if (p.alert or 0) > 0 and (p.quantity or 0) <= (p.alert or 0)]
+    if low_stock:
+        st.info("⚠️ Productos por debajo del umbral (alerta de stock):")
+        st.dataframe(
+            pd.DataFrame(
+                [
+                    {
+                        "name": p.name,
+                        "cantidad": p.quantity,
+                        "alerta": p.alert,
+                        "unidad": p.unit,
+                        "precio (€)": p.price,
+                    }
+                    for p in low_stock
+                ]
+            ),
+            use_container_width=True,
+        )
+
+    # Normalized names to help fuzzy match / vocab hints for Whisper
+    catalog_names = [normalize_text(p.name) for p in products]
 
     # -------------------------
     # Microphone section (REWRITTEN: local sounddevice + offline Whisper)
@@ -614,7 +666,6 @@ if mode == "Voice Order":
         horizontal=True,
         help="WebRTC funciona en Streamlit Cloud. 'Local' requiere acceso a un micrófono en el host."
     )
-
 
     # Common params
     colA, colB = st.columns([1, 1])
@@ -639,7 +690,7 @@ if mode == "Voice Order":
                 with st.spinner("Transcribiendo con Whisper…"):
                     transcript = transcribe_file(
                         wav_path,
-                        model_size=model_size,  # "small" para mejor precisión; "tiny/base" si quieres más rapidez
+                        model_size=model_size,  # "small" = mejor precisión; "tiny/base" = más rápido
                         lang_code=lang,
                         vocab_hint=vocab_hint
                     )
@@ -647,6 +698,26 @@ if mode == "Voice Order":
                 st.success("Transcripción lista")
                 st.text_area("Transcripción", value=st.session_state.transcript, height=120)
 
+    # elif mic_mode == "Local (servidor)":
+    #     # (Si tienes implementado record_local_wav, muéstralo. Si no, puedes ocultar este bloque.)
+    #     colC, colD = st.columns([1, 1])
+    #     with colC:
+    #         seconds = st.slider("Segundos a grabar (local)", 3, 20, 6, key="loc_secs")
+    #     with colD:
+    #         st.caption("Requiere acceso a micrófono en el host (no disponible en Cloud).")
+    #     if st.button("🎙️ Grabar (Local)"):
+    #         wav_path = record_local_wav(seconds=seconds, sample_rate=16000)  # asegúrate de tener esta función
+    #         if wav_path:
+    #             with st.spinner("Transcribiendo con Whisper…"):
+    #                 transcript = transcribe_file(
+    #                     wav_path,
+    #                     model_size=model_size,
+    #                     lang_code=lang,
+    #                     vocab_hint=vocab_hint
+    #                 )
+    #             st.session_state.transcript = transcript
+    #             st.success("Transcripción lista")
+    #             st.text_area("Transcripción", value=st.session_state.transcript, height=120)
 
     # -------------------------
     # Parse & review (unchanged)
@@ -715,7 +786,6 @@ if mode == "Voice Order":
 
             st.subheader("Resultado del parseo")
 
-            import pandas as pd
             df = pd.DataFrame(aggregated_rows)
             edited = st.data_editor(
                 df,
@@ -836,7 +906,6 @@ if mode == "Voice Order":
                         qty = ln["quantity"] if ln["quantity"] is not None else ""
                         unit = ln["unit"]
                         body_lines.append(f"- {ln['product']}: {qty} {unit}".strip())
-                    # ✅ keep line breaks
                     body_text = "\n".join(body_lines)
 
                     subject = f"Pedido — {datetime.now().strftime('%Y-%m-%d')}"
@@ -868,6 +937,292 @@ if mode == "Voice Order":
                     )
 
                     st.divider()
+
+# if mode == "Voice Order":
+#     st.title("🗣️ Voice Order (Mic + Whisper)")
+#     st.caption(
+#         "Dicta productos y cantidades. Puedes decir el número antes o después del nombre "
+#         "Ejemplo: '3 limones, gin 2, olivas 1, 1 aperol'"
+#     )
+
+#     # Load catalog for bias & mapping
+#     with get_session() as s:
+#         products = s.exec(select(Product).order_by(Product.name.asc())).all()
+#     catalog_names = [normalize_text(p.name) for p in products]
+
+#     if not products:
+#         st.warning("Primero crea tu catálogo en 'Products DB'.")
+#         st.stop()
+
+#     # -------------------------
+#     # Microphone section (REWRITTEN: local sounddevice + offline Whisper)
+#     # -------------------------
+#     st.subheader("🎙️ Micrófono")
+
+#     # Choose mic mode
+#     choices = ["Local (servidor)"]
+#     if HAS_WEBRTC:
+#         choices.insert(0, "Browser (WebRTC)")
+#     mic_mode = st.radio(
+#         "Origen del audio",
+#         choices,
+#         horizontal=True,
+#         help="WebRTC funciona en Streamlit Cloud. 'Local' requiere acceso a un micrófono en el host."
+#     )
+
+
+#     # Common params
+#     colA, colB = st.columns([1, 1])
+#     with colA:
+#         lang = st.selectbox("Idioma", ["auto", "es", "en", "el"], index=1, help="'auto' detecta automáticamente")
+#     with colB:
+#         model_size = st.selectbox("Modelo Whisper", ["tiny", "base", "small"], index=2, help="'small' = mejor precisión")
+
+#     vocab_hint = catalog_names  # bias desde tu catálogo
+
+#     if mic_mode == "Browser (WebRTC)":
+#         # --- WebRTC path (Cloud-friendly) ---
+#         colC, colD = st.columns([1, 1])
+#         with colC:
+#             seconds = st.slider("Segundos a grabar", 3, 20, 6)
+#         with colD:
+#             st.caption("El navegador suele capturar a 48 kHz (se re-muestrea internamente).")
+
+#         if st.button("🎧 Grabar (WebRTC)"):
+#             wav_path = record_webrtc_wav(seconds=seconds, sample_rate=48000, key="voice_mic")
+#             if wav_path:
+#                 with st.spinner("Transcribiendo con Whisper…"):
+#                     transcript = transcribe_file(
+#                         wav_path,
+#                         model_size=model_size,  # "small" para mejor precisión; "tiny/base" si quieres más rapidez
+#                         lang_code=lang,
+#                         vocab_hint=vocab_hint
+#                     )
+#                 st.session_state.transcript = transcript
+#                 st.success("Transcripción lista")
+#                 st.text_area("Transcripción", value=st.session_state.transcript, height=120)
+
+
+#     # -------------------------
+#     # Parse & review (unchanged)
+#     # -------------------------
+#     st.subheader("🧩 Parseo y revisión")
+#     default_text = st.session_state.get("transcript", "")
+#     raw_text = st.text_area(
+#         "Texto de pedido (puedes editar la transcripción)",
+#         height=120,
+#         value=default_text,
+#         placeholder="3 limones next gin 2 next olivas 1 next 1 aperol",
+#     )
+
+#     if st.button("Parsear pedido"):
+#         if not raw_text.strip():
+#             st.error("Introduce o genera una transcripción.")
+#         else:
+#             items = tokenize_items(raw_text)
+#             parsed_rows = []
+#             for frag in items:
+#                 parsed = parse_item(frag)
+#                 if not parsed:
+#                     parsed_rows.append({
+#                         "spoken_name": frag,
+#                         "matched_name": None,
+#                         "confidence": 0.0,
+#                         "quantity": None,
+#                         "unit": None,
+#                         "status": "No interpretado"
+#                     })
+#                     continue
+
+#                 name, qty, unit = parsed
+
+#                 # ⬇️ If you implemented the improved fuzzy with catalog_index, use this:
+#                 # match_name, score = fuzzy_match(name, catalog_index)
+
+#                 # ⬇️ Otherwise keep your old catalog_names version:
+#                 match_name, score = fuzzy_match(name, catalog_names)
+
+#                 matched_product: Optional[Product] = None
+#                 if match_name is not None:
+#                     for p in products:
+#                         # be tolerant with case/accents
+#                         if unidecode(p.name.lower()) == unidecode(str(match_name).lower()):
+#                             matched_product = p
+#                             break
+
+#                 parsed_rows.append({
+#                     "spoken_name": name,
+#                     "matched_name": matched_product.name if matched_product else None,
+#                     "confidence": round(score, 1),
+#                     "quantity": qty,
+#                     "unit": unit,
+#                     "status": "OK" if matched_product else "Revisar"
+#                 })
+
+#             # -------------------------
+#             # ✅ Aggregate BEFORE showing the editor, with unit fallback:
+#             #    1) most frequent spoken unit
+#             #    2) product.unit from DB
+#             #    3) "unidad"
+#             # -------------------------
+#             name_to_product = {p.name: p for p in products}
+#             aggregated_rows = aggregate_parsed_rows(parsed_rows, name_to_product)  # <- pass mapping
+
+#             st.subheader("Resultado del parseo")
+
+#             import pandas as pd
+#             df = pd.DataFrame(aggregated_rows)
+#             edited = st.data_editor(
+#                 df,
+#                 use_container_width=True,
+#                 num_rows="dynamic",
+#                 column_config={
+#                     "confidence": st.column_config.NumberColumn("Confianza", help="0-100"),
+#                     "quantity": st.column_config.NumberColumn("Cantidad"),
+#                     "unit": st.column_config.TextColumn("Unidad"),
+#                     "matched_name": st.column_config.TextColumn("Producto (catálogo)")
+#                 },
+#                 hide_index=True,
+#             )
+
+#             # Save Order
+#             if st.button("💾 Guardar pedido"):
+#                 with get_session() as s:
+#                     order = Order()
+#                     s.add(order)
+#                     s.commit()
+#                     s.refresh(order)
+
+#                     for _, row in edited.iterrows():
+#                         matched_name = (row.get("matched_name") or '').strip()
+
+#                         # ✅ avoid unbound variable
+#                         prod_obj = None
+#                         product_unit = ""
+#                         if matched_name:
+#                             prod_obj = s.exec(select(Product).where(Product.name == matched_name)).first()
+#                             if prod_obj and (prod_obj.unit or "").strip():
+#                                 product_unit = prod_obj.unit.strip().lower()
+
+#                         unit_val = (row.get("unit") or "").strip().lower()
+#                         if not unit_val:
+#                             unit_val = product_unit or "unidad"
+
+#                         line = OrderLine(
+#                             order_id=order.id,
+#                             product_id=prod_obj.id if prod_obj else None,
+#                             spoken_name=str(row.get("spoken_name") or "").lower(),
+#                             matched_name=(matched_name.lower() if matched_name else None),
+#                             confidence=float(row.get("confidence") or 0.0),
+#                             quantity=float(row.get("quantity") or 0.0),
+#                             unit=unit_val,
+#                         )
+#                         s.add(line)
+#                     s.commit()
+#                 st.success("Pedido guardado.")
+
+#             # Export CSV (without saving)
+#             if st.button("⬇️ Exportar CSV (sin guardar)"):
+#                 out = io.StringIO()
+#                 writer = csv.writer(out)
+#                 writer.writerow(["spoken_name", "matched_name", "quantity", "unit", "confidence"])
+#                 for _, row in edited.iterrows():
+#                     writer.writerow([
+#                         row.get("spoken_name"), row.get("matched_name"),
+#                         row.get("quantity"), row.get("unit"), row.get("confidence")
+#                     ])
+#                 st.download_button(
+#                     label="Descargar pedido.csv",
+#                     data=out.getvalue().encode("utf-8"),
+#                     file_name=f"pedido_{datetime.now().strftime('%Y%m%d_%H%M')}.csv",
+#                     mime="text/csv",
+#                 )
+
+#             # -------------------------
+#             # Group by provider & prepare Emails / WhatsApp
+#             # -------------------------
+#             st.subheader("✉️ Emails y 📲 WhatsApp por proveedor")
+
+#             grouped = {}
+#             for _, row in edited.iterrows():
+#                 matched_name = (row.get("matched_name") or '').strip()
+#                 if not matched_name:
+#                     continue
+#                 prod = name_to_product.get(matched_name)
+#                 if not prod:
+#                     continue
+#                 prov = prod.provider_name or "(Sin proveedor)"
+#                 grouped.setdefault(prov, {
+#                     "provider_email": prod.provider_email or "",
+#                     "provider_phone": prod.provider_phone or "",
+#                     "provider_address": prod.provider_address or "",
+#                     "lines": []
+#                 })
+#                 grouped[prov]["lines"].append({
+#                     "product": matched_name,
+#                     "quantity": row.get("quantity"),
+#                     "unit": row.get("unit") or prod.unit or "unidad"  # <- final fallback
+#                 })
+
+#             if not grouped:
+#                 st.info("No hay líneas con producto del catálogo para agrupar por proveedor.")
+#             else:
+#                 cc = st.text_input("Código país para WhatsApp (ej. +34 España, +30 Grecia)", value="+34")
+
+#                 def normalize_phone(raw: str) -> str:
+#                     raw = (raw or "").strip()
+#                     digits = ''.join(ch for ch in raw if ch.isdigit() or ch == '+')
+#                     if not digits:
+#                         return ''
+#                     if digits.startswith('+'):
+#                         return digits
+#                     return f"{cc}{digits if not digits.startswith(('0',)) else digits.lstrip('0')}"
+
+#                 for prov, meta in grouped.items():
+#                     st.markdown(f"#### {prov}")
+
+#                     body_lines = [
+#                         f"Pedido automático — {datetime.now().strftime('%Y-%m-%d %H:%M')}",
+#                         "",
+#                         "Por favor, confirmar disponibilidad y plazos:",
+#                         ""
+#                     ]
+#                     for ln in meta["lines"]:
+#                         qty = ln["quantity"] if ln["quantity"] is not None else ""
+#                         unit = ln["unit"]
+#                         body_lines.append(f"- {ln['product']}: {qty} {unit}".strip())
+#                     # ✅ keep line breaks
+#                     body_text = "\n".join(body_lines)
+
+#                     subject = f"Pedido — {datetime.now().strftime('%Y-%m-%d')}"
+
+#                     # mailto link
+#                     if meta["provider_email"]:
+#                         import urllib.parse as up
+#                         mailto = f"mailto:{up.quote(meta['provider_email'])}?subject={up.quote(subject)}&body={up.quote(body_text)}"
+#                         st.markdown(f"[📧 Abrir email]({mailto})  ")
+#                     else:
+#                         st.caption("(Sin email del proveedor)")
+
+#                     # WhatsApp link
+#                     phone_norm = normalize_phone(meta["provider_phone"])
+#                     if phone_norm:
+#                         import urllib.parse as up
+#                         wa = f"https://wa.me/{phone_norm.replace('+','')}?text={up.quote(body_text)}"
+#                         st.markdown(f"[📲 Abrir WhatsApp]({wa})  ")
+#                     else:
+#                         st.caption("(Sin teléfono del proveedor)")
+
+#                     # Download TXT
+#                     txt_name = f"pedido_{prov}_{datetime.now().strftime('%Y%m%d_%H%M')}.txt"
+#                     st.download_button(
+#                         label="⬇️ Descargar TXT",
+#                         data=body_text.encode("utf-8"),
+#                         file_name=txt_name,
+#                         mime="text/plain",
+#                     )
+
+#                     st.divider()
 
 
     st.markdown("""
