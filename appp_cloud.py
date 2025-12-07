@@ -386,12 +386,12 @@ def load_whisper(model_size: str = "small"):
     return WhisperModel(model_size, compute_type="int8")
 
 
-def _save_wav(path: str, audio_i16: np.ndarray, samplerate: int):
+def _save_wav(path: str, audio_i16: np.ndarray, sample_rate: int):
     import wave
     with wave.open(path, "wb") as wf:
         wf.setnchannels(1)
         wf.setsampwidth(2)  # int16
-        wf.setframerate(samplerate)
+        wf.setframerate(sample_rate)
         wf.writeframes(audio_i16.tobytes())
         
 # WebRTC recorder → returns temp .wav path (48kHz mono int16)
@@ -676,13 +676,6 @@ if mode == "Voice Order":
 
     vocab_hint = catalog_names  # bias desde tu catálogo
 
-    # if mic_mode == "Browser (WebRTC)":
-    #     # --- WebRTC path (Cloud-friendly) ---
-    #     colC, colD = st.columns([1, 1])
-    #     with colC:
-    #         seconds = st.slider("Segundos a grabar", 3, 20, 6)
-    #     with colD:
-    #         st.caption("El navegador suele capturar a 48 kHz (se re-muestrea internamente).")
 
     if mic_mode == "Browser (WebRTC)":
         # --- WebRTC path (Cloud-friendly) ---
