@@ -16,7 +16,7 @@ from __future__ import annotations
 import io
 import csv
 from datetime import datetime, date
-from typing import List, Optional, Tuple
+from typing import List, Optional, Dict,Tuple
 
 import os
 import re
@@ -29,6 +29,9 @@ SQLModel.metadata.clear()
 from rapidfuzz import process, fuzz
 from unidecode import unidecode
 from collections import defaultdict
+from audiorecorder import audiorecorder
+import unicodedata
+
 # -------------------------
 # Database Models
 # -------------------------
@@ -457,63 +460,189 @@ if mode == "Products DB":
 # -------------------------
 
 if mode == "Voice Order":
-    st.title("🗣️ Voice Order (Mic + Whisper)")
-    st.caption(
-        "Dicta productos y cantidades. Puedes decir el número antes o después del nombre, y usa 'next' para pasar al siguiente. "
-        "Ejemplo: '3 limones next gin 2 next olivas 1 next 1 aperol'"
-    )
+    
+        # ----------------------- Page & Controls -----------------------
+    st.set_page_config(page_title="Voice → Order List", page_icon="🛒", layout="centered")
+    st.title("🛒 Voice → Order List (Start / Stop)")
+    st.caption("Click **Start**, speak your order, then click **Stop**. We'll show only product + quantity.")
 
-    # Load catalog for bias & mapping
-    with get_session() as s:
-        products = s.exec(select(Product).order_by(Product.name.asc())).all()
-    catalog_names = [normalize_text(p.name) for p in products]
+    # Language control (forces ASR to this language to avoid mis-detection)
+    language = st.selectbox("Recognition language", ["en", "es", "de", "fr", "it", "pt"], index=0, help="Force Whisper to transcribe in this language.")
 
-    if not products:
-        st.warning("Primero crea tu catálogo en 'Products DB'.")
-        st.stop()
+    # Recorder UI (component provides Start/Stop buttons already)
+    audio = audiorecorder("Start", "Stop")  # returns pydub.AudioSegment after stopping
 
-    # -------------------------
-    # Microphone section (REWRITTEN: local sounddevice + offline Whisper)
-    # -------------------------
-    st.subheader("🎙️ Micrófono (local)")
+    status = st.empty()
+    transcript_area = st.empty()
+    order_table_container = st.empty()
+    download_placeholder = st.empty()
 
-    colA, colB, colC, colD = st.columns([1, 1, 1, 1])
-    with colA:
-        lang = st.selectbox("Idioma", ["auto", "es", "en", "el"], index=1, help="'auto' detecta automáticamente")
-    with colB:
-        model_size = st.selectbox("Modelo Whisper", ["tiny", "base", "small"], index=2, help="'small' = mejor precisión")
-    with colC:
-        seconds = st.slider("Segundos a grabar", 3, 20, 10)
-    with colD:
-        samplerate = st.selectbox("Samplerate", [16000, 22050, 24000], index=0)
+    # ----------------------- Transcription -----------------------
 
-    st.caption("Este modo graba **en el servidor/local** (no WebRTC). Úsalo en tu equipo o en un servidor con acceso a micrófono.")
-    # Vocabulary bias seed from catalog
-    vocab_hint = catalog_names
-
-
-    rec_btn = st.button("🎧 Grabar y transcribir (local)")
-
-
-    if rec_btn:
+    def transcribe_with_openai(wav_bytes: bytes, lang: str) -> str:
+        api_key = os.getenv("OPENAI_API_KEY")
+        if not api_key:
+            raise RuntimeError("OPENAI_API_KEY not set")
         try:
-            audio_i16, sr = _record_audio(seconds=seconds, samplerate=samplerate)
-            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tf:
-                _save_wav(tf.name, audio_i16, sr)
-                wav_path = tf.name
-            with st.spinner("Transcribiendo con Whisper…"):
-                transcript = _transcribe_with_whisper(
-                    wav_path=wav_path,
-                    model_size=model_size,
-                    lang_code=lang,
-                    vocab_hint=vocab_hint
+            from openai import OpenAI
+            client = OpenAI()
+            with io.BytesIO(wav_bytes) as f:
+                f.name = "audio.wav"
+                result = client.audio.transcriptions.create(
+                    model="whisper-1",
+                    file=f,
+                    language=lang,
+                    # temperature=0 helps keep outputs stable
+                    temperature=0,
                 )
-            st.session_state.transcript = transcript
-            st.success("Transcripción lista")
-            st.text_area("Transcripción", value=st.session_state.transcript, height=120)
+            return (result.text or "").strip()
         except Exception as e:
-            st.error(f"No se pudo grabar/transcribir: {type(e).__name__}: {e}")
+            raise RuntimeError(f"OpenAI transcription failed: {e}")
 
+
+    def transcribe_with_faster_whisper(wav_bytes: bytes, lang: str) -> str:
+        try:
+            from faster_whisper import WhisperModel
+            model = WhisperModel("small", device="auto", compute_type="auto")  # "small" for better accuracy than tiny
+            with tempfile.NamedTemporaryFile(suffix=".wav", delete=False) as tmp:
+                tmp.write(wav_bytes)
+                tmp_path = tmp.name
+            segments, info = model.transcribe(tmp_path, beam_size=1, language=lang)
+            text = " ".join(s.text.strip() for s in segments).strip()
+            return text
+        except Exception as e:
+            raise RuntimeError(f"faster-whisper failed: {e}")
+
+
+    def transcribe_audiosegment(audio_segment, lang: str) -> str:
+        wav_io = io.BytesIO()
+        audio_segment.export(wav_io, format="wav")
+        wav_bytes = wav_io.getvalue()
+        try:
+            return transcribe_with_openai(wav_bytes, lang)
+        except Exception:
+            return transcribe_with_faster_whisper(wav_bytes, lang)
+
+    # ----------------------- Order Parsing -----------------------
+
+    NUMBER_WORDS = {
+        "zero": 0, "one": 1, "a": 1, "an": 1, "two": 2, "three": 3, "four": 4, "five": 5,
+        "six": 6, "seven": 7, "eight": 8, "nine": 9, "ten": 10, "eleven": 11, "twelve": 12,
+        "thirteen": 13, "fourteen": 14, "fifteen": 15, "sixteen": 16, "seventeen": 17,
+        "eighteen": 18, "nineteen": 19, "twenty": 20
+    }
+
+    PLURAL_EXCEPTIONS = {
+        "tomatoes": "tomato",
+        "potatoes": "potato",
+    }
+
+    UNIT_WORDS = {"bottle", "bottles", "kilo", "kilos", "kg", "gram", "grams", "g", "pack", "packs"}
+    STOP_WORDS = {"of", "and", "please", "i", "would", "like", "to", "order", "hello", "hi", "hey"}
+
+
+    def singularize(word: str) -> str:
+        if word in PLURAL_EXCEPTIONS:
+            return PLURAL_EXCEPTIONS[word]
+        if word.endswith("ies") and len(word) > 3:
+            return word[:-3] + "y"
+        if word.endswith("oes") and len(word) > 3:
+            return word[:-2]  # e.g., heroes->heroe (rare); handled tomatoes above
+        if word.endswith("es") and len(word) > 2:
+            return word[:-2]
+        if word.endswith("s") and len(word) > 1:
+            return word[:-1]
+        return word
+
+
+    def normalize_item(tokens: List[str]) -> str:
+        # remove unit words & stop words, singularize last token
+        core = [t for t in tokens if t not in UNIT_WORDS and t not in STOP_WORDS]
+        if not core:
+            return ""
+        # If multiple tokens remain, keep last as head noun, prepend modifiers
+        head = singularize(core[-1])
+        mods = core[:-1]
+        item = " ".join(mods + [head]).strip()
+        return item
+
+
+    def parse_quantity(tok: str) -> Tuple[bool, int]:
+        if tok.isdigit():
+            return True, int(tok)
+        return (tok in NUMBER_WORDS), NUMBER_WORDS.get(tok, 0)
+
+
+    def split_phrases(text: str) -> List[str]:
+        # Split on commas and ' and ' while keeping meaningful chunks
+        text = re.sub(r"\s+and\s+", ", ", text)
+        parts = [p.strip() for p in text.split(",") if p.strip()]
+        return parts
+
+
+    def extract_orders(transcript: str) -> List[Dict[str, str]]:
+        t = transcript.lower().strip()
+        # remove politeness prefix
+        t = re.sub(r"^(hello|hi|hey)[^a-z]*", "", t)
+        phrases = split_phrases(t)
+
+        results: List[Dict[str, str]] = []
+        for ph in phrases:
+            tokens = re.findall(r"[a-zA-Z]+|\d+", ph)
+            if not tokens:
+                continue
+            qty = None
+            # find first quantity token
+            for i, tok in enumerate(tokens):
+                is_q, num = parse_quantity(tok)
+                if is_q:
+                    qty = num
+                    # item is everything after the quantity
+                    tail = tokens[i + 1 :]
+                    item = normalize_item(tail)
+                    if item:
+                        results.append({"product": item, "quantity": qty})
+                    break
+            else:
+                # no explicit quantity found; default to 1 and use tokens as item
+                item = normalize_item(tokens)
+                if item:
+                    results.append({"product": item, "quantity": 1})
+        return results
+
+
+    # ----------------------- Main flow -----------------------
+    if len(audio) > 0:  # Only true after Stop is pressed
+        status.info("Transcribing...")
+
+        # Audio preview
+        with st.expander("Preview recording", expanded=False):
+            wav_preview = io.BytesIO()
+            audio.export(wav_preview, format="wav")
+            st.audio(wav_preview.getvalue(), format="audio/wav")
+
+        try:
+            text = transcribe_audiosegment(audio, language)
+            transcript_area.text_area("Transcript", value=text, height=140)
+            status.success("Transcribed")
+
+            orders = extract_orders(text)
+            if orders:
+                order_table_container.table(orders)
+                # CSV download
+                csv_io = io.StringIO()
+                writer = csv.DictWriter(csv_io, fieldnames=["product", "quantity"])
+                writer.writeheader()
+                writer.writerows(orders)
+                download_placeholder.download_button(
+                    "Download order CSV", data=csv_io.getvalue(), file_name="order.csv", mime="text/csv"
+                )
+            else:
+                order_table_container.info("No products recognized. Try speaking clearly, e.g., 'two bottles of gin, two kilos of lemon'.")
+        except Exception as e:
+            status.error(f"Error: {e}")
+    else:
+        status.info("Click **Start**, then **Stop** to capture your order.")
 
 
     # -------------------------

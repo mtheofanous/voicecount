@@ -755,27 +755,6 @@ if mode == "Voice Order":
                 st.text_area("Transcripción", value=st.session_state.transcript, height=120)
 
 
-    # elif mic_mode == "Local (servidor)":
-    #     # (Si tienes implementado record_local_wav, muéstralo. Si no, puedes ocultar este bloque.)
-    #     colC, colD = st.columns([1, 1])
-    #     with colC:
-    #         seconds = st.slider("Segundos a grabar (local)", 3, 20, 6, key="loc_secs")
-    #     with colD:
-    #         st.caption("Requiere acceso a micrófono en el host (no disponible en Cloud).")
-    #     if st.button("🎙️ Grabar (Local)"):
-    #         wav_path = record_local_wav(seconds=seconds, sample_rate=16000)  # asegúrate de tener esta función
-    #         if wav_path:
-    #             with st.spinner("Transcribiendo con Whisper…"):
-    #                 transcript = transcribe_file(
-    #                     wav_path,
-    #                     model_size=model_size,
-    #                     lang_code=lang,
-    #                     vocab_hint=vocab_hint
-    #                 )
-    #             st.session_state.transcript = transcript
-    #             st.success("Transcripción lista")
-    #             st.text_area("Transcripción", value=st.session_state.transcript, height=120)
-
     # -------------------------
     # Parse & review (unchanged)
     # -------------------------
