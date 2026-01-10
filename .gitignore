@@ -71,3 +71,6 @@ logs/
 *.out
 *.err
 requirements.-local.txt
+
+secrets/
+*.json
