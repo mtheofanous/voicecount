@@ -132,7 +132,7 @@ def _step_index(state: str) -> int:
     s = (state or "").upper()
     if s == "CLOSED":
         return 4
-    if s in ("SUPPLIER_CREDIT_NOTE_ISSUED", "SUPPLEMENTARY_DELIVERY_SENT", "SUPPLIER_CREDIT_NOTE_PENDING", "SUPPLIER_REJECTED"):
+    if s in ("SUPPLIER_CREDIT_NOTE_ISSUED", "SUPPLEMENTARY_DELIVERY_SENT"):
         return 3
     if s in ("WAITING_SUPPLIER_ACTION", "INVOICE_DISCREPANCY"):
         return 3
@@ -546,7 +546,6 @@ def save_supplier_resolution_per_ticket(
     comment: str,
     credit_note_invoice_number: Optional[str] = None,
     shared_redelivery_eta: Optional[str] = None,
-    shared_redelivery_invoice_number: Optional[str] = None,
 ) -> None:
     """Persist supplier resolutions per ticket.
 
@@ -564,18 +563,14 @@ def save_supplier_resolution_per_ticket(
     resolutions = [str(v.get("resolution") or "").strip() for v in (per_ticket or {}).values()]
     has_redelivery = any(r == "supplementary_delivery" for r in resolutions)
     has_credit_note = any(r == "credit_note" for r in resolutions)
-    has_reject = any(r == "reject" for r in resolutions)
 
-    # Priority: re-delivery > credit note (issued/pending) > reject
     if has_redelivery:
         to_state = "SUPPLEMENTARY_DELIVERY_SENT"
     elif has_credit_note:
-        to_state = "SUPPLIER_CREDIT_NOTE_ISSUED" if (credit_note_invoice_number or "").strip() else "SUPPLIER_CREDIT_NOTE_PENDING"
-    elif has_reject:
-        to_state = "SUPPLIER_REJECTED"
+        to_state = "SUPPLIER_CREDIT_NOTE_ISSUED"
     else:
-        # No action selected: keep supplier-action state so venue can decide next.
-        to_state = "SUPPLIER_REJECTED" if has_reject else "SUPPLIER_CREDIT_NOTE_PENDING"
+        # Fallback: still mark as supplier action done so venue can close.
+        to_state = "SUPPLIER_CREDIT_NOTE_ISSUED"
 
     with get_session() as s:
         wf2 = s.exec(select(OrderWorkflow).where(OrderWorkflow.id == wf.id)).first()
@@ -586,24 +581,18 @@ def save_supplier_resolution_per_ticket(
         wf2.updated_by_role = ROLE_SUPPLIER
         wf2.updated_by = "supplier"
 
-        # Store an overall note summarizing the action (easy for venue/accounting)
+        # Store an overall note summarizing the action
         overall = []
         if has_credit_note:
-            if (credit_note_invoice_number or '').strip():
-                overall.append('credit_note')
+            overall.append("credit_note")
+            if credit_note_invoice_number:
                 overall.append(f"credit_note_invoice={credit_note_invoice_number}")
-            else:
-                overall.append('credit_note_pending')
         if has_redelivery:
-            overall.append('supplementary_delivery')
+            overall.append("supplementary_delivery")
             if shared_redelivery_eta:
                 overall.append(f"eta={shared_redelivery_eta}")
-            if shared_redelivery_invoice_number:
-                overall.append(f"invoice={shared_redelivery_invoice_number}")
-        if has_reject:
-            overall.append('reject')
         if not overall:
-            overall.append('no_action')
+            overall.append("no_action")
         wf2.note = " | ".join(overall)
         s.add(wf2)
 
@@ -626,15 +615,12 @@ def save_supplier_resolution_per_ticket(
 
             res = str(payload.get("resolution") or "").strip()
             eta = payload.get("eta") or shared_redelivery_eta
-            inv = payload.get("invoice") or shared_redelivery_invoice_number
 
             meta_parts = [res]
             if res == "credit_note" and credit_note_invoice_number:
                 meta_parts.append(f"credit_note_invoice={credit_note_invoice_number}")
             if res == "supplementary_delivery" and eta:
                 meta_parts.append(f"eta={eta}")
-            if res == "supplementary_delivery" and inv:
-                meta_parts.append(f"invoice={inv}")
             meta = " | ".join(meta_parts)
 
             # Only move actionable tickets
@@ -689,18 +675,6 @@ def _header(ctx: Dict[str, Any]) -> None:
         unsafe_allow_html=True,
     )
 
-    # # Show a clear summary of what has an issue (supplier needs to know exactly what/why)
-    # open_like = [t for t in tickets if (t.state or "").lower() != "resolved"]
-    # if open_like:
-    #     with st.container(border=True):
-    #         st.markdown("### ⚠️ Items with issues")
-    #         for t in open_like:
-    #             why = (t.kind or "").replace("_", " ")
-    #             extra = (t.note or "").strip()
-    #             txt = f"- **{t.product_name}** · {why}"
-    #             if extra:
-    #                 txt += f"  \n  <span class='muted'>{extra}</span>"
-    #             st.markdown(txt, unsafe_allow_html=True)
 
     # Full order overview (always useful for supplier to double-check)
     if lines:
@@ -882,6 +856,23 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
             p = products.get(getattr(line, "product_id", None)) if getattr(line, "product_id", None) else None
             return (getattr(p, "unit", None) or getattr(line, "unit", None) or "unit").strip()
 
+
+        def _pdesc(line: Optional[OrderLine]) -> str:
+            """Best-effort short description/subtitle for the product."""
+            if not line:
+                return ""
+            p = products.get(getattr(line, "product_id", None)) if getattr(line, "product_id", None) else None
+            # Common fields we might have depending on the schema
+            cand = (
+                getattr(p, "description", None)
+                or getattr(p, "details", None)
+                or getattr(p, "category", None)
+                or getattr(line, "description", None)
+                or getattr(line, "note", None)
+                or ""
+            )
+            return (str(cand).strip())
+
         def _expected_qty(line: Optional[OrderLine], fu: Optional[ProviderLineFollowUp]) -> float:
             """Expected (invoiced) qty.
             If supplier confirmed partial/missing we use that; otherwise fall back to ordered.
@@ -921,11 +912,9 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
                 st.markdown(
                     f"- **{name}** · {kind} · invoiced **{expected:g}** · received **{received:g}** · missing **{issue_qty:g} {unit}**"
                 )
-            elif (getattr(t, "kind", "") or "").lower() in {"damaged", "wrong_item"}:
-                kind_l = (getattr(t, "kind", "") or "").lower()
-                kind_label = "damaged" if kind_l == "damaged" else "wrong item"
+            elif (getattr(t, "kind", "") or "").lower() == "damaged_wrong":
                 st.markdown(
-                    f"- **{name}** · {kind_label} · invoiced **{expected:g}** · received **{received:g}** · issue **{issue_qty:g} {unit}**"
+                    f"- **{name}** · damaged / wrong · invoiced **{expected:g}** · received **{received:g}** · damaged **{issue_qty:g} {unit}**"
                 )
             else:
                 st.markdown(
@@ -961,12 +950,8 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
             allowed = ["supplementary_delivery"]
             default = "supplementary_delivery"
         else:
-            if kind_raw in {"damaged", "wrong_item"}:
-                allowed = ["credit_note", "supplementary_delivery", "reject", "no_action"]
-                default = "credit_note"
-            else:
-                allowed = ["credit_note", "supplementary_delivery", "no_action"]
-                default = "credit_note"
+            allowed = ["credit_note", "supplementary_delivery", "no_action"]
+            default = "credit_note"
 
         if key not in st.session_state:
             st.session_state[key] = default
@@ -975,10 +960,11 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
 
         # Compact row UI
         lid = int(getattr(t, "order_line_id", 0) or 0)
-        line = (ctx.get("line_by_id") or {}).get(lid) if isinstance(ctx.get("line_by_id"), dict) else None
+        line = line_by_id.get(lid)
+        fu = followups.get(lid)
 
         name = (getattr(t, "product_name", None) or "Product").strip()
-        desc = (getattr(t, "product_desc", None) or "").strip()
+        desc = _pdesc(line)
 
         unit = (getattr(t, "unit", None) or (getattr(line, "unit", None) if line else "") or "unit").strip()
         qty_issue = float(getattr(t, "qty_invoiced", 0) or 0)
@@ -987,23 +973,33 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
             return {
                 "credit_note": "📝 Credit note",
                 "supplementary_delivery": "🚚 Re-delivery",
-                "reject": "❌ Reject",
                 "no_action": "⛔ No action",
             }[x]
 
         with st.container(border=True):
-            c1, c2, c3 = st.columns([2.4, 1.6, 1.4])
+            c1, c2a, c2b, c3 = st.columns([5,2,2,4], vertical_alignment="center")
             with c1:
-                st.markdown(f"**{name}**")
+                st.markdown(f"<div class='pname'>{name}</div>", unsafe_allow_html=True)
                 if desc:
-                    st.caption(desc)
+                    st.markdown(f"<div class='pdesc'>{desc}</div>", unsafe_allow_html=True)
 
-            with c2:
+            with c2a:
                 # Chips
                 kind_label = (getattr(t, "kind", "") or "").replace("_", " ").strip() or "issue"
                 st.markdown(
                     f"<div class='pillrow'>"
                     f"<span class='pill'>Qty: {qty_issue:g} {unit}</span>"
+                 
+                    f"</div>",
+                    unsafe_allow_html=True,
+                )
+                
+                
+            with c2b:
+                kind_label = (getattr(t, "kind", "") or "").replace("_", " ").strip() or "issue"
+                st.markdown(
+                    f"<div class='pillrow'>"
+           
                     f"<span class='pill pill-muted'>{kind_label}</span>"
                     f"</div>",
                     unsafe_allow_html=True,
@@ -1024,13 +1020,6 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
     credit_note_ids = [tid for tid, v in per_ticket.items() if (v.get("resolution") == "credit_note")]
     redelivery_ids = [tid for tid, v in per_ticket.items() if (v.get("resolution") == "supplementary_delivery")]
 
-    # operational_missing items require a NEW invoice number for the re-delivery
-    op_redelivery_ids = []
-    for tid in redelivery_ids:
-        t = next((x for x in open_t if int(getattr(x, 'id', 0) or 0) == int(tid)), None)
-        if t and (getattr(t, 'kind', '') == 'operational_missing'):
-            op_redelivery_ids.append(int(tid))
-
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
 
     # Shared credit note number
@@ -1045,7 +1034,6 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
     # Re-delivery grouping
     same_eta: Optional[str] = None
     shared_selected = False
-    same_invoice: Optional[str] = None
 
     if redelivery_ids:
         same_delivery = st.radio(
@@ -1084,14 +1072,11 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
             return f"{eta_date.isoformat()} {eta_slot}".strip()
 
         shared_selected = (same_delivery == "same")
+
         if shared_selected:
             st.markdown("#### Re-delivery details (shared)")
             same_eta = _eta_picker("shared")
             st.caption("All products marked as *Re-delivery* will share this same date + time window.")
-
-            if op_redelivery_ids:
-                same_invoice = st.text_input("New invoice number (operational missing re-delivery)", placeholder="e.g. INV-2026-104").strip() or None
-                st.caption("Operational missing items are re-delivered with a new invoice number.")
         else:
             st.markdown("#### Re-delivery details (per product)")
             for tid in redelivery_ids:
@@ -1103,36 +1088,23 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
                     eta = _eta_picker(str(tid))
                     per_ticket[tid]["eta"] = eta
 
-                    if tid in op_redelivery_ids:
-                        inv = st.text_input("New invoice number", key=f"op_inv_{tid}", placeholder="e.g. INV-2026-104").strip() or None
-                        per_ticket[tid]["invoice"] = inv
-
     comment = st.text_area("Comment (optional)")
 
     if st.button("Submit resolution", type="primary", use_container_width=True):
         # Validation
-        # In Greece, credit notes are often issued later.
-        # Allow submit without number, but it will be marked as *pending* for the venue/accountant.
-        # (Venue should NOT close until the number is provided.)
         if credit_note_ids and not (credit_note_no or ""):
-            st.warning("Credit note number is missing — we will mark this as *Credit note pending*.")
+            st.error("Please enter the credit note invoice number (it applies to all credit note items).")
+            return
 
         if redelivery_ids:
             if shared_selected:
                 if not same_eta:
                     st.error("Please enter the re-delivery date + time window for the shared delivery.")
                     return
-                if op_redelivery_ids and not (same_invoice or ''):
-                    st.error('Please enter the NEW invoice number for operational-missing re-delivery (shared).')
-                    return
             else:
                 for tid in redelivery_ids:
                     if not (per_ticket.get(tid, {}) or {}).get("eta"):
                         st.error("Please enter a re-delivery date + window for each re-delivery item.")
-                        return
-                    # For operational_missing, invoice number is required
-                    if tid in op_redelivery_ids and not (per_ticket.get(tid, {}) or {}).get('invoice'):
-                        st.error('Please enter the NEW invoice number for each operational-missing re-delivery item.')
                         return
 
         save_supplier_resolution_per_ticket(
@@ -1141,7 +1113,6 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
             comment=comment,
             credit_note_invoice_number=credit_note_no,
             shared_redelivery_eta=(same_eta if (redelivery_ids and shared_selected) else None),
-            shared_redelivery_invoice_number=(same_invoice if (op_redelivery_ids and redelivery_ids and shared_selected) else None),
         )
         st.success("Submitted. Waiting for venue verification.")
         st.rerun()
@@ -1174,13 +1145,7 @@ def seguimiento_app(order_id: int, provider_name: str, role: str, token: str) ->
     _header(ctx)
 
     wf: OrderWorkflow = ctx["workflow"]
-    # st.markdown(
-    #     f"<div class='card'>"
-    #     f"<div class='h1'>Progress</div>"
-    #     f"<div class='muted'>One universal flow: sent → confirmed → received → resolved → closed</div>"
-    #     f"</div>",
-    #     unsafe_allow_html=True,
-    # )
+
     _render_stepper(wf.state)
 
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)

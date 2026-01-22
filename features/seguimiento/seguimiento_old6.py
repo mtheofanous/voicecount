@@ -132,7 +132,7 @@ def _step_index(state: str) -> int:
     s = (state or "").upper()
     if s == "CLOSED":
         return 4
-    if s in ("SUPPLIER_CREDIT_NOTE_ISSUED", "SUPPLEMENTARY_DELIVERY_SENT", "SUPPLIER_CREDIT_NOTE_PENDING", "SUPPLIER_REJECTED"):
+    if s in ("SUPPLIER_CREDIT_NOTE_ISSUED", "SUPPLEMENTARY_DELIVERY_SENT"):
         return 3
     if s in ("WAITING_SUPPLIER_ACTION", "INVOICE_DISCREPANCY"):
         return 3
@@ -564,18 +564,14 @@ def save_supplier_resolution_per_ticket(
     resolutions = [str(v.get("resolution") or "").strip() for v in (per_ticket or {}).values()]
     has_redelivery = any(r == "supplementary_delivery" for r in resolutions)
     has_credit_note = any(r == "credit_note" for r in resolutions)
-    has_reject = any(r == "reject" for r in resolutions)
 
-    # Priority: re-delivery > credit note (issued/pending) > reject
     if has_redelivery:
         to_state = "SUPPLEMENTARY_DELIVERY_SENT"
     elif has_credit_note:
-        to_state = "SUPPLIER_CREDIT_NOTE_ISSUED" if (credit_note_invoice_number or "").strip() else "SUPPLIER_CREDIT_NOTE_PENDING"
-    elif has_reject:
-        to_state = "SUPPLIER_REJECTED"
+        to_state = "SUPPLIER_CREDIT_NOTE_ISSUED"
     else:
-        # No action selected: keep supplier-action state so venue can decide next.
-        to_state = "SUPPLIER_REJECTED" if has_reject else "SUPPLIER_CREDIT_NOTE_PENDING"
+        # Fallback: still mark as supplier action done so venue can close.
+        to_state = "SUPPLIER_CREDIT_NOTE_ISSUED"
 
     with get_session() as s:
         wf2 = s.exec(select(OrderWorkflow).where(OrderWorkflow.id == wf.id)).first()
@@ -586,24 +582,20 @@ def save_supplier_resolution_per_ticket(
         wf2.updated_by_role = ROLE_SUPPLIER
         wf2.updated_by = "supplier"
 
-        # Store an overall note summarizing the action (easy for venue/accounting)
+        # Store an overall note summarizing the action
         overall = []
         if has_credit_note:
-            if (credit_note_invoice_number or '').strip():
-                overall.append('credit_note')
+            overall.append("credit_note")
+            if credit_note_invoice_number:
                 overall.append(f"credit_note_invoice={credit_note_invoice_number}")
-            else:
-                overall.append('credit_note_pending')
         if has_redelivery:
-            overall.append('supplementary_delivery')
+            overall.append("supplementary_delivery")
             if shared_redelivery_eta:
                 overall.append(f"eta={shared_redelivery_eta}")
             if shared_redelivery_invoice_number:
                 overall.append(f"invoice={shared_redelivery_invoice_number}")
-        if has_reject:
-            overall.append('reject')
         if not overall:
-            overall.append('no_action')
+            overall.append("no_action")
         wf2.note = " | ".join(overall)
         s.add(wf2)
 
@@ -921,11 +913,9 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
                 st.markdown(
                     f"- **{name}** · {kind} · invoiced **{expected:g}** · received **{received:g}** · missing **{issue_qty:g} {unit}**"
                 )
-            elif (getattr(t, "kind", "") or "").lower() in {"damaged", "wrong_item"}:
-                kind_l = (getattr(t, "kind", "") or "").lower()
-                kind_label = "damaged" if kind_l == "damaged" else "wrong item"
+            elif (getattr(t, "kind", "") or "").lower() == "damaged_wrong":
                 st.markdown(
-                    f"- **{name}** · {kind_label} · invoiced **{expected:g}** · received **{received:g}** · issue **{issue_qty:g} {unit}**"
+                    f"- **{name}** · damaged / wrong · invoiced **{expected:g}** · received **{received:g}** · damaged **{issue_qty:g} {unit}**"
                 )
             else:
                 st.markdown(
@@ -961,12 +951,8 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
             allowed = ["supplementary_delivery"]
             default = "supplementary_delivery"
         else:
-            if kind_raw in {"damaged", "wrong_item"}:
-                allowed = ["credit_note", "supplementary_delivery", "reject", "no_action"]
-                default = "credit_note"
-            else:
-                allowed = ["credit_note", "supplementary_delivery", "no_action"]
-                default = "credit_note"
+            allowed = ["credit_note", "supplementary_delivery", "no_action"]
+            default = "credit_note"
 
         if key not in st.session_state:
             st.session_state[key] = default
@@ -987,7 +973,6 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
             return {
                 "credit_note": "📝 Credit note",
                 "supplementary_delivery": "🚚 Re-delivery",
-                "reject": "❌ Reject",
                 "no_action": "⛔ No action",
             }[x]
 
@@ -1111,11 +1096,9 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
 
     if st.button("Submit resolution", type="primary", use_container_width=True):
         # Validation
-        # In Greece, credit notes are often issued later.
-        # Allow submit without number, but it will be marked as *pending* for the venue/accountant.
-        # (Venue should NOT close until the number is provided.)
         if credit_note_ids and not (credit_note_no or ""):
-            st.warning("Credit note number is missing — we will mark this as *Credit note pending*.")
+            st.error("Please enter the credit note invoice number (it applies to all credit note items).")
+            return
 
         if redelivery_ids:
             if shared_selected:

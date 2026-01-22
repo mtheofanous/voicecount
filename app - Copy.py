@@ -1,5 +1,5 @@
 """
-app.py — Streamlit entrypoint (clean router + URL deep links MVP)
+app.py — Streamlit entrypoint (clean router)
 """
 
 import streamlit as st
@@ -9,15 +9,21 @@ from core.init import init_db
 from pathlib import Path
 from core.db import engine, get_session
 from domain.models import Product
-
 from features.manage_orders.orders import orders_tab
-from features.manage_orders.receive_orders import *
+from features.manage_orders.receive_orders import tracking_dashboard
 from features.create_order import new_order_tab
 from features.catalog import catalog_tab
-
 import os
 from dotenv import load_dotenv
 import warnings
+from features.auth_and_manage.auth_multi_tenant import current_venues_for_user  
+from core.url_nav import read_page_from_url, write_page_to_url  # ✅ NEW
+
+warnings.filterwarnings("ignore", message=".*use_container_width.*")
+warnings.filterwarnings("ignore", message=".*label.*got an empty value.*")
+
+ENV_PATH = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=ENV_PATH, override=True)
 
 from features.auth_and_manage.auth_multi_tenant import (
     init_auth_db,
@@ -26,28 +32,16 @@ from features.auth_and_manage.auth_multi_tenant import (
     current_user,
     current_active_venue,
     manage_organization_ui,
-    current_venues_for_user,
 )
-
-# ✅ URL helpers (matches your current core/url_nav.py)
-from core.url_nav import qp_int, qp_str, set_query_params
-
-warnings.filterwarnings("ignore", message=".*use_container_width.*")
-warnings.filterwarnings("ignore", message=".*label.*got an empty value.*")
-
-ENV_PATH = Path(__file__).resolve().parent / ".env"
-load_dotenv(dotenv_path=ENV_PATH, override=True)
 
 
 def _go(page_key: str) -> None:
-    """Navigate to a page and sync URL (?page=...)."""
+    """Navigate to a page and sync URL."""
     st.session_state["page"] = page_key
-    set_query_params(page=page_key)
+    write_page_to_url(page_key)
     st.rerun()
 
-
 def venue_selector_home_only() -> None:
-    """Show the active venue selector ONLY on the home (navigation) page."""
     venues = current_venues_for_user()
     if not venues:
         st.warning("You don't have access to any venue yet.")
@@ -72,14 +66,12 @@ def venue_selector_home_only() -> None:
 
 
 def home_page(pages: dict[str, str]) -> None:
-    st.title("Welcome 👋")
-    st.caption("Choose what you want to do.")
 
-    # ✅ Venue selector ONLY here
-    venue_selector_home_only()
 
-    st.divider()
+    venue_selector_home_only() 
 
+    
+    # Simple grid of big buttons
     cols = st.columns(2)
     i = 0
     for key, label in pages.items():
@@ -95,8 +87,9 @@ def main():
     init_db()
     init_auth_db()
 
-    # Login UI (selector hidden globally; shown only on Home)
+    # Login UI
     auth_gate(show_manage_org=True, show_venue_selector=False)
+
     require_login()
 
     u = current_user() or {}
@@ -119,14 +112,6 @@ def main():
     venue, venue_role = active
     venue_id = venue["id"]
 
-    # -----------------------------
-    # MVP deep-link params
-    # -----------------------------
-    deep_page = (qp_str("page", "").strip().lower() or "")
-    deep_order_id = qp_int("order_id")
-    deep_status = (qp_str("status", "").strip().lower() or None)
-    deep_provider = (qp_str("provider", "").strip() or None)
-
     # ---- Pages by role ----
     if venue_role in {"owner", "manager"}:
         PAGES = {
@@ -146,21 +131,21 @@ def main():
 
     allowed = set(PAGES.keys())
 
-    # ---- URL -> Session sync ----
+    # ---- URL -> Session sync (first run / refresh / shared links) ----
     st.session_state.setdefault("page", "home")
+    page_from_url = read_page_from_url(allowed_pages=allowed, default_page="home")
+    if st.session_state["page"] != page_from_url:
+        st.session_state["page"] = page_from_url
 
-    if deep_page in allowed and st.session_state["page"] != deep_page:
-        st.session_state["page"] = deep_page
-
-    # Normalize invalid/missing ?page to home (keeps URL clean)
-    if deep_page not in allowed:
-        set_query_params(page="home")
+    # If URL had an invalid page, normalize it (optional but nice)
+    if page_from_url not in allowed:
+        write_page_to_url("home")
 
     page = st.session_state["page"]
 
     # ---- Back to home button (except on home) ----
     if page != "home":
-        top_left, top_right = st.columns([1, 3], vertical_alignment="center")
+        top_left, top_right = st.columns([3, 3], vertical_alignment="center")
         with top_left:
             if st.button("⬅️ Home"):
                 _go("home")
@@ -180,22 +165,16 @@ def main():
         new_order_tab(venue_id, venue_role)
 
     elif page == "orders":
-        orders_tab(
-            venue_id,
-            venue_role,
-            deep_order_id=deep_order_id,
-            deep_status=deep_status,
-        )
+        orders_tab(venue_id, venue_role)
 
     elif page == "tracking":
-        tracking_dashboard(
-            venue_id,
-            deep_order_id=deep_order_id,
-            deep_provider=deep_provider,
-        )
+        tracking_dashboard(venue_id)
 
     else:
+        # Safety fallback
         _go("home")
 
 
 main()
+
+

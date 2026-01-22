@@ -27,7 +27,6 @@ from domain.models import Product, Provider, ProviderDiscountRule, SeguimientoTi
 from core.db import get_session as get_domain_session
 
 
-
 # =========================================================
 # Performance helpers
 # =========================================================
@@ -724,11 +723,10 @@ def auth_gate(
     *,
     title: str = "Welcome",
     show_manage_org: bool = True,
-    show_venue_selector: bool = True,  # ✅ NEW
 ) -> None:
     """
     If logged out -> show Login/Sign up.
-    If logged in -> show account + (optional) venue selector + optional org management.
+    If logged in -> show account + venue selector + optional org management.
     """
     # Initialize once
     init_auth_db()
@@ -742,7 +740,7 @@ def auth_gate(
 
     if not is_logged_in():
         st.title(title)
-
+        
         # Use tabs for login/signup
         t_login, t_signup = st.tabs(["🔐 Login", "✨ Sign up"])
 
@@ -751,7 +749,7 @@ def auth_gate(
             with st.form(key="login_form", clear_on_submit=False):
                 email = st.text_input("Email", key="login_email").strip().lower()
                 pwd = st.text_input("Password", type="password", key="login_pwd")
-
+                
                 col1, col2 = st.columns([1, 2])
                 with col1:
                     submitted = st.form_submit_button("Login", type="primary")
@@ -803,84 +801,76 @@ def auth_gate(
 
         st.stop()
 
-    # -------------------------
     # Logged-in area
-    # -------------------------
     u = current_user()
     acc = current_account()
 
     # Top bar
     top_left, top_right = st.columns([3, 1])
     with top_left:
-        st.markdown(
-            f"**Logged in:** {u['full_name'] if u else '—'}  •  **Account:** {acc['name'] if acc else '—'}"
-        )
+        st.markdown(f"**Logged in:** {u['full_name'] if u else '—'}  •  **Account:** {acc['name'] if acc else '—'}")
 
     with top_right:
-        if st.button("Logout", key="logout_btn_gat", use_container_width=True):
+        if st.button("Logout", key="logout_btn_gat", width='stretch'):
             clear_auth()
             st.session_state[rerun_key] = True
             st.rerun()
 
-    # -------------------------
-    # Venue selector (OPTIONAL)
-    # -------------------------
-    if show_venue_selector:
-        venues = current_venues_for_user()
-        if venues:
-            labels = []
-            ids = []
-            roles = {}
-            for v, role in venues:
-                labels.append(f"{v['name']} — {role}")
-                ids.append(v["id"])
-                roles[v["id"]] = role
+    # Venue selector with caching
+    venues = current_venues_for_user()
+    if venues:
+        labels = []
+        ids = []
+        roles = {}
+        for v, role in venues:
+            labels.append(f"{v['name']} — {role}")
+            ids.append(v["id"])
+            roles[v["id"]] = role
 
-            active = st.session_state.get("active_venue_id")
-            if active not in ids:
-                st.session_state["active_venue_id"] = ids[0]
-                active = ids[0]
+        active = st.session_state.get("active_venue_id")
+        if active not in ids:
+            st.session_state["active_venue_id"] = ids[0]
+            active = ids[0]
 
-            idx = ids.index(active)
+        idx = ids.index(active)
+        
+        # Use selectbox with on_change to prevent reruns
+        chosen_label = st.selectbox(
+            "Active bar/restaurant", 
+            options=labels, 
+            index=idx, 
+            key="active_venue_select",
+            on_change=lambda: None
+        )
+        
+        chosen_id = ids[labels.index(chosen_label)]
+        if st.session_state.get("active_venue_id") != chosen_id:
+            st.session_state["active_venue_id"] = chosen_id
+            # Small delay before rerun to prevent flickering
+            time.sleep(0.1)
+            st.session_state[rerun_key] = True
+            st.rerun()
 
-            chosen_label = st.selectbox(
-                "Active bar/restaurant",
-                options=labels,
-                index=idx,
-                key="active_venue_select",
-                on_change=lambda: None,
-            )
+    else:
+        st.warning("You don't have access to any venue yet.")
 
-            chosen_id = ids[labels.index(chosen_label)]
-            if st.session_state.get("active_venue_id") != chosen_id:
-                st.session_state["active_venue_id"] = chosen_id
-                time.sleep(0.1)
-                st.session_state[rerun_key] = True
-                st.rerun()
+        u0 = current_user() or {}
+        role0 = (u0.get("account_role") or "member").lower()
 
+        if role0 in {"owner", "manager"}:
+            st.info("Create your first venue below to start using the app.")
+
+            if show_manage_org:
+                # Render org management in place
+                manage_organization_ui(venue_role="owner")
+
+            st.stop()
         else:
-            st.warning("You don't have access to any venue yet.")
+            st.info("Ask an admin to grant you access.")
+            st.stop()
 
-            u0 = current_user() or {}
-            role0 = (u0.get("account_role") or "member").lower()
-
-            if role0 in {"owner", "manager"}:
-                st.info("Create your first venue below to start using the app.")
-
-                if show_manage_org:
-                    manage_organization_ui(venue_role="owner")
-
-                st.stop()
-            else:
-                st.info("Ask an admin to grant you access.")
-                st.stop()
-
-    # -------------------------
-    # Org management (OPTIONAL)
-    # -------------------------
     if not show_manage_org:
         return
-
 
 
 @st.cache_data(ttl=60)

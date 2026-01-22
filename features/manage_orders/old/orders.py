@@ -20,7 +20,7 @@ Source base: previous refactor file. fileciteturn2file0
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, date
+from datetime import datetime
 from typing import Any, Optional
 import hashlib
 import re
@@ -34,8 +34,23 @@ from sqlmodel import select
 from core.db import get_session
 from core.public_links import build_seguimiento_url, ROLE_SUPPLIER, ROLE_VENUE, norm_provider
 from core.mailer import send_smtp_email
-from core.url_nav import set_query_params, qp_int, qp_str
 
+
+# from features.manage_orders.receive_orders import _render_pending_panel, _render_incidences_tab
+# try:
+#     from features.manage_orders.receive_orders import render_receive_panel, render_incidences_tab
+#     _render_pending_panel = render_receive_panel
+#     _render_incidences_tab = render_incidences_tab
+# except ImportError:
+#     # Fallback σε απλούστερη έκδοση αν δεν υπάρχει το αρχείο
+#     def _render_pending_panel(venue_id: int, order):
+#         from features.seguimiento.seguimiento import modern_seguimiento_page
+#         # Εμφάνιση του seguimiento tab για το order
+#         modern_seguimiento_page(venue_id=venue_id, order_id=order.id)
+    
+    # def _render_incidences_tab(venue_id: int):
+    #     st.info("Η ενότητα 'Incidencias' δεν είναι διαθέσιμη αυτήν τη στιγμή.")
+        
 from domain.models import (
     Order,
     OrderLine,
@@ -609,43 +624,43 @@ def _inject_css() -> None:
     st.markdown(
         """
         
-    <style>
-    .voi-pill{
-    display:inline-block;
-    padding:4px 8px;
-    border-radius:999px;
-    border:1px solid rgba(49,51,63,.2);
-    background:rgba(49,51,63,.04);
-    font-size:.85rem;
-    white-space:nowrap;
-    }
-    .voi-pill--save{
-    border-color: rgba(46,125,50,.35);
-    background: rgba(46,125,50,.10);
-    }
-    .voi-pill--vat{
-    border-color: rgba(245,124,0,.35);
-    background: rgba(245,124,0,.10);
-    }
-    .voi-pill--total{
-    border-color: rgba(25,118,210,.35);
-    background: rgba(25,118,210,.10);
-    }
-    .voi-pill--total b{ font-weight: 900; }
-    .voi-chiprow{
-    display:flex;
-    gap:6px;
-    flex-wrap:nowrap;
-    overflow-x:auto;
-    -webkit-overflow-scrolling: touch;
-    margin-top:8px;
-    padding-bottom:4px;
-    }
-    .voi-chiprow::-webkit-scrollbar{ height:6px; }
-    .voi-chiprow::-webkit-scrollbar-thumb{ background: rgba(49,51,63,.25); border-radius:999px; }
-    </style>
+<style>
+.voi-pill{
+  display:inline-block;
+  padding:4px 8px;
+  border-radius:999px;
+  border:1px solid rgba(49,51,63,.2);
+  background:rgba(49,51,63,.04);
+  font-size:.85rem;
+  white-space:nowrap;
+}
+.voi-pill--save{
+  border-color: rgba(46,125,50,.35);
+  background: rgba(46,125,50,.10);
+}
+.voi-pill--vat{
+  border-color: rgba(245,124,0,.35);
+  background: rgba(245,124,0,.10);
+}
+.voi-pill--total{
+  border-color: rgba(25,118,210,.35);
+  background: rgba(25,118,210,.10);
+}
+.voi-pill--total b{ font-weight: 900; }
+.voi-chiprow{
+  display:flex;
+  gap:6px;
+  flex-wrap:nowrap;
+  overflow-x:auto;
+  -webkit-overflow-scrolling: touch;
+  margin-top:8px;
+  padding-bottom:4px;
+}
+.voi-chiprow::-webkit-scrollbar{ height:6px; }
+.voi-chiprow::-webkit-scrollbar-thumb{ background: rgba(49,51,63,.25); border-radius:999px; }
+</style>
 
-    <style>
+<style>
         .voi-card{border:1px solid rgba(49,51,63,.12);border-radius:18px;padding:14px 14px;margin:10px 0;background:rgba(255,255,255,.03);}
         .voi-muted{opacity:.72;font-size:.9rem;}
         .voi-chip{display:inline-block;padding:6px 12px;border-radius:999px;border:1px solid rgba(49,51,63,.18);font-size:.85rem;}
@@ -683,11 +698,7 @@ def _render_workflow_actions(*, venue_id: int, order: Order, role: Optional[str]
     with c1:
         if status == "draft":
             if st.button("✅ Pasar a Listo", type="primary", use_container_width=True):
-                _set_order_status(int(order.id), "ready_to_send", actor)
-                _bump_refresh(venue_id)
-                set_query_params(page="orders", status="ready_to_send", order_id=str(int(order.id)))
-                st.rerun()
-
+                _set_order_status(int(order.id), "ready_to_send", actor); _bump_refresh(venue_id); st.rerun()
         elif status == "ready_to_send":
             if st.button("↩️ Volver a Borrador", use_container_width=True):
                 _set_order_status(int(order.id), "draft", actor); _bump_refresh(venue_id); st.rerun()
@@ -752,12 +763,6 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
             out[int(pid)] = float(out.get(int(pid), 0.0) or 0.0) + float(r.get("quantity") or 0.0)
         return out
 
-    # NOTE: Resetting number_input inside st.form can be tricky because widget state
-    # is sticky across reruns. A reliable approach is to add a nonce to the widget
-    # key and bump it after submitting (forces Streamlit to recreate the widget).
-    qa_nonce_key = f"{editor_key}__qa_nonce"
-    st.session_state.setdefault(qa_nonce_key, 0)
-
     def _add_product_to_df(pid: int, qty_val: float) -> None:
         qty_val = float(qty_val or 0.0)
         if qty_val <= 0:
@@ -774,19 +779,18 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
                 ignore_index=True,
             )
         st.session_state[df_state_key] = _sanitize_editor_df(df)
-        # Force qty inputs to reset to 0.0
-        st.session_state[qa_nonce_key] = int(st.session_state.get(qa_nonce_key, 0) or 0) + 1
+        st.session_state[f"{editor_key}__qa_reset_qty"] = True
         st.rerun()
 
     with st.expander("➕ Añadir productos", expanded=True):
-        # Backwards compatible cleanup (older sessions may still carry legacy keys)
-        legacy_reset_flag = f"{editor_key}__qa_reset_qty"
-        if st.session_state.get(legacy_reset_flag):
+        reset_flag = f"{editor_key}__qa_reset_qty"
+        if st.session_state.get(reset_flag):
             qty_prefix = f"{editor_key}__qa_qty_"
+            # remove all qty widget states BEFORE instantiating the widgets
             for k in list(st.session_state.keys()):
                 if isinstance(k, str) and k.startswith(qty_prefix):
                     st.session_state.pop(k, None)
-            st.session_state.pop(legacy_reset_flag, None)
+            st.session_state.pop(reset_flag, None)
 
         # ---------- ONE-LINE FILTER BAR ----------
         f1, f2, f3, f4 = st.columns([2.6, 1.6, 1.6, 1.2], vertical_alignment="center")
@@ -898,7 +902,12 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
         # ---------- Paging ----------
         p1, p2, p3, p4 = st.columns([1.2, 1.2, 1.6, 2.0], vertical_alignment="center")
 
-        page_size = 60
+        page_size = p3.selectbox(
+            "Por página",
+            options=[30, 60, 90, 120],
+            index=1,
+            key=f"{editor_key}__qa_page_size",
+        )
 
         st.session_state.setdefault(page_key, 1)
         total_pages = max(1, (total + page_size - 1) // page_size)
@@ -922,7 +931,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
         end_i = start_i + page_size
         pids_page = pids[start_i:end_i]
 
-        with st.container(height=500):
+        with st.container(height=400):
             cols = st.columns(3, gap="small")
             for i, pid in enumerate(pids_page):
                 col = cols[i % 3]
@@ -984,12 +993,10 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
                     with st.form(key=form_key, clear_on_submit=False):
                         qty_val = st.number_input(
                             "Qty",
-                            # Use float so it resets to 0.0 after Add/Sumar
-                            # (we bump a nonce in the widget key)
                             min_value=0,
                             step=1,
                             value=0,
-                            key=f"{editor_key}__qa_qty_{pid}__{st.session_state[qa_nonce_key]}",
+                            key=f"{editor_key}__qa_qty_{pid}",
                             label_visibility="collapsed",
                         )
                         submitted = st.form_submit_button(
@@ -1001,81 +1008,38 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
                         _add_product_to_df(pid, qty_val)
 
     st.caption("Tip: marca 🗑️ para eliminar una línea.")
-
-    # Build the dataframe that will be shown in the editor
     df_for_editor = _sanitize_editor_df(st.session_state[df_state_key])
-
+    edited = st.data_editor(
+        df_for_editor,
+        hide_index=True,
+        num_rows="dynamic",
+        use_container_width=True,
+        column_config={
+            "line_id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
+            "product_id": st.column_config.SelectboxColumn("Producto", options=sorted(label_by_id.keys()), format_func=lambda pid: label_by_id.get(_pid_to_int(pid) or -1, str(pid)), required=True, width="large"),
+            "quantity": st.column_config.NumberColumn("Qty", min_value=0.0, step=0.5, width="small"),
+            "unit": st.column_config.TextColumn("Unidad", disabled=True, width="small"),
+            "delete": st.column_config.CheckboxColumn("🗑️", width="small"),
+        },
+        key=editor_key,
+    )
+    edited = _sanitize_editor_df(edited)
     def _unit_for_pid(pid: Any) -> str:
         pid_i = _pid_to_int(pid)
         p = products_by_id.get(pid_i) if pid_i is not None else None
         return (_s(getattr(p, "unit", "")) or "unidad").lower() if p else "unidad"
+    edited["unit"] = edited["product_id"].map(_unit_for_pid)
+    st.session_state[df_state_key] = _sanitize_editor_df(edited)
 
-    form_key = f"{editor_key}__form"
-
-    with st.form(key=form_key, clear_on_submit=False):
-        edited = st.data_editor(
-            df_for_editor,
-            hide_index=True,
-            num_rows="dynamic",
-            use_container_width=True,
-            column_config={
-                "line_id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
-                "product_id": st.column_config.SelectboxColumn(
-                    "Producto",
-                    options=sorted(label_by_id.keys()),
-                    format_func=lambda pid: label_by_id.get(_pid_to_int(pid) or -1, str(pid)),
-                    required=True,
-                    width="medium",
-                ),
-                "quantity": st.column_config.NumberColumn("Qty", min_value=0, step=1, width="small"),
-                "unit": st.column_config.TextColumn("Unidad", disabled=True, width="small"),
-                "delete": st.column_config.CheckboxColumn("🗑️", width="small"),
-            },
-            key=editor_key,  # editor state lives here
-        )
-
-        c1, c2 = st.columns([1.2, 1.0], vertical_alignment="center")
-        with c1:
-            guardar = st.form_submit_button("💾 Guardar", type="primary", use_container_width=True)
-        with c2:
-            descartar = st.form_submit_button("↩️ Descartar cambios", use_container_width=True)
-
-    # --- Handle submits (ONLY runs when one of the form buttons is clicked) ---
-    if guardar or descartar:
-        # Read whatever is currently in the editor, sanitize + recompute unit
-        edited = _sanitize_editor_df(edited)
-        edited["unit"] = edited["product_id"].map(_unit_for_pid)
-        edited = _sanitize_editor_df(edited)
-
-        if guardar:
-            # ✅ Only here we persist + save to DB
-            st.session_state[df_state_key] = edited
-
-            _save_lines_from_editor(
-                venue_id=venue_id,
-                order_id=int(order.id),
-                actor=actor,
-                df=st.session_state[df_state_key],
-                products_by_id=products_by_id,
-            )
-
-            # Clean editor + quick-add widget state so the UI comes back "fresh".
-            st.session_state.pop(df_state_key, None)
-            st.session_state.pop(editor_key, None)
-
-            qa_nonce_key = f"{editor_key}__qa_nonce"
-            st.session_state[qa_nonce_key] = int(st.session_state.get(qa_nonce_key, 0) or 0) + 1
-
-            _bump_refresh(venue_id)
-            st.success("Guardado ✓")
-            st.rerun()
-
-        elif descartar:
-            # ✅ Discard means: reset editor + revert df_state_key to last saved snapshot
-            st.session_state.pop(df_state_key, None)
-            st.session_state.pop(editor_key, None)
-            st.rerun()
-
+    c1, c2 = st.columns([1.2, 1.0], vertical_alignment="center")
+    with c1:
+        if st.button("💾 Guardar", type="primary", use_container_width=True):
+            _save_lines_from_editor(venue_id=venue_id, order_id=int(order.id), actor=actor, df=st.session_state[df_state_key], products_by_id=products_by_id)
+            st.session_state.pop(df_state_key, None); st.session_state.pop(editor_key, None)
+            _bump_refresh(venue_id); st.success("Guardado ✓"); st.rerun()
+    with c2:
+        if st.button("↩️ Descartar cambios", use_container_width=True):
+            st.session_state.pop(df_state_key, None); st.session_state.pop(editor_key, None); st.rerun()
 
 
 def _render_send_section(*, venue_id: int, order: Order, products: list[Product], lines: list[OrderLine], actor: str) -> None:
@@ -1737,160 +1701,98 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
 
                 st.caption(f"Email proveedor: {to_email or '—'} · Tel: {phone or '—'}")
 
+def _render_pending_section(*, venue_id: int, order: Order, products: list[Product], lines: list[OrderLine]) -> None:
+    st.subheader("📦 Pendiente: recepción & seguimiento")
+    products_by_id = {int(p.id): p for p in products if p.id is not None}
+    grouped = _group_lines_by_provider(lines, products_by_id)
+    if not grouped:
+        st.info("No hay líneas.")
+        return
+    receipts = _provider_receipts_cached(get_session, int(order.id), _refresh_token(venue_id))
+    send_map = _get_send_status_map(order_id=int(order.id))
+    wf_state: dict[str, str] = {}
+    if OrderWorkflow is not None:
+        with get_session() as s:
+            rows = s.exec(select(OrderWorkflow).where(OrderWorkflow.order_id == int(order.id), OrderWorkflow.venue_id == int(venue_id))).all()
+        wf_state = {norm_provider(_s(r.provider_name)): _s(getattr(r, "state", "")) for r in rows}
 
-def orders_tab(
-    venue_id: int,
-    venue_role: Optional[str],
-    *,
-    deep_order_id: Optional[int] = None,
-    deep_status: Optional[str] = None,
-) -> None:
+    for prov in grouped.keys():
+        prov_norm = norm_provider(prov)
+        venue_link = build_seguimiento_url(order_id=int(order.id), provider_name=prov_norm, role=ROLE_VENUE, page_path="seguimiento")
+        r = receipts.get(prov_norm)
+        inv_no = _s(getattr(r, "invoice_number", "")) if r else ""
+        decl = _s(getattr(r, "supplier_declaration", "")) if r else ""
+        received = bool(getattr(r, "received", False)) if r else False
+        st_row = send_map.get(prov_norm)
+        sent = bool(getattr(st_row, "sent", False)) if st_row else False
+        send_chip, send_cls = _chip_for_send(sent, _s(getattr(st_row, "last_error", "")) if st_row else "")
+        wf = wf_state.get(prov_norm, "—")
 
+        st.markdown(
+            f"""
+            <div class="voi-card">
+              <div style="display:flex;justify-content:space-between;gap:10px;align-items:center;">
+                <div>
+                  <div style="font-weight:850">{prov_norm}</div>
+                  <div class="voi-muted">Workflow: <b>{wf}</b> · Factura: <b>{inv_no or "—"}</b> · Proveedor: <b>{decl or "—"}</b> · Recibido: <b>{"sí" if received else "no"}</b></div>
+                </div>
+                <div class="{send_cls}">{send_chip}</div>
+              </div>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+        c1, c2 = st.columns([1.2, 1.8], vertical_alignment="center")
+        with c1:
+            st.link_button("👀 Abrir seguimiento (local)", venue_link, use_container_width=True)
+        with c2:
+            st.code(venue_link, language=None)
+
+
+def orders_tab(venue_id: int, venue_role: Optional[str]) -> None:
     _inject_css()
-    actor = _s(
-        st.session_state.get("user_email")
-        or st.session_state.get("actor")
-        or st.session_state.get("email")
-        or current_actor()
-    )
-
+    actor = _s(st.session_state.get("user_email") or st.session_state.get("actor") or st.session_state.get("email") or current_actor())
     st.markdown("## 🧾 Pedidos")
-
-    # -----------------------------
-    # Deep-link PRE-SEED (must happen BEFORE widgets are created)
-    # -----------------------------
-    status_key = f"orders_status_{venue_id}"          # widget key
-    active_key = f"orders_active_order_id_{venue_id}" # non-widget key
-    allowed_status = {"draft", "ready_to_send"}
-
-    # Pre-seed status from URL ONLY if widget not created yet in this run
-    # (Prevents StreamlitAPIException)
-    if deep_status in allowed_status and status_key not in st.session_state:
-        st.session_state[status_key] = deep_status
-
-    # -----------------------------
-    # Status filter + New order button (creates the radio widget)
-    # -----------------------------
     top1, top2 = st.columns([4.6, 1.4], vertical_alignment="center")
     with top1:
         status_filter = st.radio(
             "Estado",
-            ["draft", "ready_to_send"],
+            ["draft", "ready_to_send", "pending_receive", "incidences", "final"],
             horizontal=True,
             label_visibility="collapsed",
-            format_func=lambda x: {"draft": "Borradores", "ready_to_send": "Listo"}.get(x, x),
-            key=status_key,
+            format_func=lambda x: {"draft": "Borradores", "ready_to_send": "Listo", "pending_receive": "Pendiente", "incidences": "Incidencias", "final": "Historial"}.get(x, x),
+            key=f"orders_status_{venue_id}",
         )
-
     with top2:
         if status_filter == "draft":
             if st.button("➕ Nuevo", type="primary", use_container_width=True):
                 oid = _create_empty_draft(venue_id, actor)
                 _bump_refresh(venue_id)
-                st.session_state[active_key] = int(oid)
-                set_query_params(page="orders", status="draft", order_id=str(int(oid)))
+                st.session_state[f"orders_active_order_id_{venue_id}"] = int(oid)
                 st.rerun()
 
-    # -----------------------------
-    # Load orders
-    # -----------------------------
     orders_all = _list_orders_cached(get_session, venue_id, _refresh_token(venue_id))
-    
-    # If the user is already navigating inside the app, don't keep forcing deep-link behavior forever
-    deep_order_id_once_key = f"orders_deep_order_consumed_{venue_id}"
-    if deep_order_id is not None and not st.session_state.get(deep_order_id_once_key):
-        st.session_state[deep_order_id_once_key] = True
-    else:
-        deep_order_id = None
 
+    # if status_filter == "incidences":
+    #     _render_incidences_tab(venue_id=int(venue_id))
+    #     return
 
-    # -----------------------------
-    # Deep-link: order_id may imply a different status (SAFE)
-    # We MUST NOT set st.session_state[status_key] here because the radio exists already.
-    # Instead: update URL + rerun so the radio is built with correct initial state.
-    # -----------------------------
-    if deep_order_id is not None:
-        match = next(
-            (
-                o
-                for o in orders_all
-                if getattr(o, "id", None) is not None and int(o.id) == int(deep_order_id)
-            ),
-            None,
-        )
-        if match:
-            mstatus = _s(getattr(match, "status", "draft")).lower()
-            if mstatus in allowed_status:
-                # Set active order (safe)
-                st.session_state[active_key] = int(deep_order_id)
-
-                # If the status implied by the order differs from the current radio value,
-                # do NOT mutate session_state; instead update URL and rerun.
-                if _s(status_filter).lower() != mstatus:
-                    set_query_params(page="orders", status=mstatus, order_id=str(int(deep_order_id)))
-                    st.rerun()
-
-    # Always normalize local status_filter
-    status_filter = _s(status_filter).lower()
-
-    # -----------------------------
-    # URL sync: status (when user clicks the radio)
-    # If current order_id isn't in this filtered list, drop it.
-    # -----------------------------
-    cur_status = (qp_str("status", "").strip().lower() or "")
-    if cur_status != status_filter:
-        cur_oid = qp_int("order_id")
-        keep_oid = ""
-        if cur_oid is not None:
-            # only keep it if it's visible in the current filter
-            visible_ids = {int(o.id) for o in orders_all if getattr(o, "id", None) is not None and _s(getattr(o, "status", "")).lower() == status_filter}
-            if int(cur_oid) in visible_ids:
-                keep_oid = str(int(cur_oid))
-
-        set_query_params(page="orders", status=status_filter, order_id=keep_oid)
-
-
-    # -----------------------------
-    # Filter orders by status
-    # -----------------------------
     orders = [o for o in orders_all if _s(getattr(o, "status", "draft")).lower() == status_filter]
     if not orders:
         st.info("No hay pedidos para este filtro.")
         return
 
-    # -----------------------------
-    # Order picker
-    # -----------------------------
+    active_key = f"orders_active_order_id_{venue_id}"
     ids = [int(o.id) for o in orders if o.id is not None]
     labels = {int(o.id): _order_label(o) for o in orders if o.id is not None}
-
     default_oid = int(st.session_state.get(active_key) or ids[0])
     if default_oid not in ids:
         default_oid = ids[0]
-
-    picked = st.selectbox(
-        "Pedido",
-        options=ids,
-        index=ids.index(default_oid),
-        format_func=lambda oid: labels.get(int(oid), str(oid)),
-    )
+    picked = st.selectbox("Pedido", options=ids, index=ids.index(default_oid), format_func=lambda oid: labels.get(int(oid), str(oid)))
     st.session_state[active_key] = int(picked)
 
-    # -----------------------------
-    # URL sync: active order (when user selects an order)
-    # -----------------------------
-    cur_oid = qp_int("order_id")
-    if cur_oid != int(picked):
-        set_query_params(page="orders", status=status_filter, order_id=str(int(picked)))
-
-    # -----------------------------
-    # Load selected order + render
-    # -----------------------------
     with get_session() as s:
-        order = s.exec(
-            select(Order).where(Order.id == int(picked), Order.venue_id == int(venue_id))
-        ).first()
-
+        order = s.exec(select(Order).where(Order.id == int(picked), Order.venue_id == int(venue_id))).first()
     if not order:
         st.error("Pedido no encontrado.")
         return
@@ -1907,3 +1809,10 @@ def orders_tab(
         _render_lines_editor(venue_id=venue_id, order=order, actor=actor, products=products, lines=lines)
     elif status == "ready_to_send":
         _render_send_section(venue_id=venue_id, order=order, products=products, lines=lines, actor=actor)
+    # elif status == "pending_receive":
+    
+    elif status == "pending_receive":
+        st.info("coming soon")
+
+    else:
+        st.info("Historial (solo lectura).")

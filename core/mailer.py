@@ -4,7 +4,7 @@ from __future__ import annotations
 import os
 import smtplib
 from email.message import EmailMessage
-from typing import Iterable, Optional, Sequence
+from typing import Optional, Sequence, Tuple
 
 
 def _env(name: str, default: str = "") -> str:
@@ -20,6 +20,7 @@ def send_smtp_email(
     cc: Optional[Sequence[str]] = None,
     bcc: Optional[Sequence[str]] = None,
     reply_to: Optional[str] = None,
+    attachments: Optional[Sequence[Tuple[str, bytes, str]]] = None,
 ) -> None:
     host = _env("SMTP_HOST")
     port = int(_env("SMTP_PORT", "587"))
@@ -47,6 +48,18 @@ def send_smtp_email(
     msg.set_content(text_body or "")
     if html_body:
         msg.add_alternative(html_body, subtype="html")
+
+    # Optional attachments
+    for att in attachments or []:
+        try:
+            filename, data, mime = att
+        except Exception:
+            continue
+
+        ctype = (mime or "application/octet-stream").split("/", 1)
+        maintype = ctype[0] if ctype else "application"
+        subtype = ctype[1] if len(ctype) > 1 else "octet-stream"
+        msg.add_attachment(data or b"", maintype=maintype, subtype=subtype, filename=filename or "attachment")
 
     # STARTTLS
     with smtplib.SMTP(host, port, timeout=30) as server:

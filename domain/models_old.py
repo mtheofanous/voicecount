@@ -413,37 +413,3 @@ class OrderWorkflowEvent(SQLModel, table=True):
     at: datetime = Field(default_factory=datetime.utcnow, index=True)
 
     note: Optional[str] = None
-    
-    
-class UrgentReorderRequest(SQLModel, table=True):
-    """
-    Created when an incidence is marked as 'Order urgent'
-    and user clicks 'Save & request decision'.
-    """
-    __tablename__ = "urgentreorderrequest"
-    __table_args__ = {"extend_existing": True}
-    id: Optional[int] = Field(default=None, primary_key=True)
-
-    # product info
-    product_name: str
-    product_normalized: str
-    quantity: float
-    unit: str
-
-    # original provider (from invoice)
-    original_provider_id: Optional[int] = None
-    original_provider_name: Optional[str] = None
-
-    # linkage
-    incidence_id: Optional[int] = None
-    order_id: Optional[int] = None  # created when first supplier is contacted
-
-    # decision
-    selected_provider_id: Optional[int] = None
-    selected_provider_name: Optional[str] = None
-
-    status: str = Field(default="pending")
-    # pending | sent | done | cancelled
-
-    created_at: datetime = Field(default_factory=datetime.utcnow)
-    updated_at: datetime = Field(default_factory=datetime.utcnow)
