@@ -97,6 +97,7 @@ HEADER_SYNONYMS: Dict[str, str] = {
 }
 
 
+
 # ============================================================
 # Core text normalization
 # ============================================================
@@ -255,7 +256,11 @@ def match_keys(text: Any) -> List[str]:
     - primary: normalize_text (keeps script)
     - secondary: unidecode transliteration (for matching only, not display)
     """
+    def _collapse_repeats(s: str) -> str:
+        return re.sub(r"(.)\1{2,}", r"\1\1", s)
+    
     base = normalize_text(text)
+    keys = {base, _collapse_repeats(base)}
     if not base:
         return []
     keys = {base}

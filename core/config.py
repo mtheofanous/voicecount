@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import os
 import streamlit as st
+from pathlib import Path
 
 
 def get_database_url() -> str:
@@ -34,3 +35,25 @@ def get_database_url() -> str:
 
     # 3️⃣ Local SQLite fallback (dev only)
     return "sqlite:///voicecount2.db"
+
+
+def ensure_google_credentials_file():
+    # If already set to a file path, keep it.
+    if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+        return
+
+    # Streamlit Cloud: store JSON in secrets
+    creds = None
+    if "GOOGLE_CREDENTIALS_JSON" in st.secrets:
+        creds = st.secrets["GOOGLE_CREDENTIALS_JSON"]
+
+    # Render: store JSON in env var
+    if not creds:
+        creds = os.getenv("GOOGLE_CREDENTIALS_JSON")
+
+    if not creds:
+        return  # ASR can be disabled if you want
+
+    p = Path("/tmp/google-creds.json")
+    p.write_text(creds, encoding="utf-8")
+    os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(p)

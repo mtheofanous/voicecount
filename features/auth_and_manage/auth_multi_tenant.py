@@ -19,7 +19,7 @@ import re
 import pandas as pd
 import streamlit as st
 from sqlmodel import SQLModel, Field, Session, create_engine, select
-from sqlalchemy import text, UniqueConstraint
+from sqlalchemy import text, UniqueConstraint, inspect
 from sqlalchemy.exc import IntegrityError
 from core.mailer import send_smtp_email
 from core.config import get_database_url
@@ -213,9 +213,21 @@ class VenueUser(SQLModel, table=True):
 # =========================================================
 
 def _has_column(conn, table: str, column: str) -> bool:
-    cols = conn.execute(text(f"PRAGMA table_info('{table}')")).fetchall()
-    existing = {row[1] for row in cols}
-    return column in existing
+    """
+    Cross-database column existence check.
+    - Postgres: uses SQLAlchemy inspector
+    - SQLite: inspector also works, but keep PRAGMA fallback for safety
+    """
+    try:
+        insp = inspect(conn)
+        cols = insp.get_columns(table)
+        return any(c.get("name") == column for c in cols)
+    except Exception:
+        # Fallback (SQLite only)
+        rows = conn.execute(text(f"PRAGMA table_info('{table}')")).fetchall()
+        existing = {row[1] for row in rows}
+        return column in existing
+
 
 
 @st.cache_resource
@@ -259,71 +271,81 @@ def backfill_account_roles():
         s.commit()
 
 
+from sqlalchemy import text
+
 def init_auth_db() -> None:
     """
-    Creates tables and adds missing columns on older DBs.
+    Creates tables and (ONLY for SQLite) adds missing columns on older DBs.
     Safe to call on every run.
     """
-    # Initialize once
+    # 1) Ensure tables exist (works for Postgres + SQLite)
     db_initialized = init_auth_db_once()
-    
     if not db_initialized:
         st.error("Failed to initialize auth database")
         return
-    
-    # Run migrations in background if needed
+
+    # 2) Only run legacy ALTER TABLE migrations on SQLite
     with get_auth_engine().begin() as conn:
-        # account
-        if not _has_column(conn, "account", "created_at"):
-            conn.execute(text("ALTER TABLE account ADD COLUMN created_at TEXT"))
+        dialect = conn.dialect.name  # "sqlite" | "postgresql" | ...
 
-        # user
-        for col, ddl in [
-            ("full_name", "ALTER TABLE user ADD COLUMN full_name TEXT"),
-            ("account_id", "ALTER TABLE user ADD COLUMN account_id INTEGER"),
-            ("email", "ALTER TABLE user ADD COLUMN email TEXT"),
-            ("password_hash", "ALTER TABLE user ADD COLUMN password_hash TEXT"),
-            ("account_role", "ALTER TABLE user ADD COLUMN account_role TEXT"),
-            ("is_active", "ALTER TABLE user ADD COLUMN is_active INTEGER"),
-            ("created_at", "ALTER TABLE user ADD COLUMN created_at TEXT"),
-        ]:
-            if not _has_column(conn, "user", col):
-                conn.execute(text(ddl))
+        if dialect == "sqlite":
+            # account
+            if not _has_column(conn, "account", "created_at"):
+                conn.execute(text("ALTER TABLE account ADD COLUMN created_at TEXT"))
 
-        # venue
-        for col, ddl in [
-            ("account_id", "ALTER TABLE venue ADD COLUMN account_id INTEGER"),
-            ("name", "ALTER TABLE venue ADD COLUMN name TEXT"),
-            ("tax_number", "ALTER TABLE venue ADD COLUMN tax_number TEXT"),
-            ("address", "ALTER TABLE venue ADD COLUMN address TEXT"),
-            ("phone", "ALTER TABLE venue ADD COLUMN phone TEXT"),
-            ("email", "ALTER TABLE venue ADD COLUMN email TEXT"),
-            ("owner_name", "ALTER TABLE venue ADD COLUMN owner_name TEXT"),
-            ("accountant_name", "ALTER TABLE venue ADD COLUMN accountant_name TEXT"),
-            ("accountant_email", "ALTER TABLE venue ADD COLUMN accountant_email TEXT"),
-            ("email_subject_tpl", "ALTER TABLE venue ADD COLUMN email_subject_tpl TEXT"),
-            ("email_opening_tpl", "ALTER TABLE venue ADD COLUMN email_opening_tpl TEXT"),
-            ("email_closing_tpl", "ALTER TABLE venue ADD COLUMN email_closing_tpl TEXT"),
-            ("created_at", "ALTER TABLE venue ADD COLUMN created_at TEXT"),
-        ]:
-            if not _has_column(conn, "venue", col):
-                conn.execute(text(ddl))
+            # user
+            for col, ddl in [
+                ("full_name", "ALTER TABLE user ADD COLUMN full_name TEXT"),
+                ("account_id", "ALTER TABLE user ADD COLUMN account_id INTEGER"),
+                ("email", "ALTER TABLE user ADD COLUMN email TEXT"),
+                ("password_hash", "ALTER TABLE user ADD COLUMN password_hash TEXT"),
+                ("account_role", "ALTER TABLE user ADD COLUMN account_role TEXT"),
+                ("is_active", "ALTER TABLE user ADD COLUMN is_active INTEGER"),
+                ("created_at", "ALTER TABLE user ADD COLUMN created_at TEXT"),
+            ]:
+                if not _has_column(conn, "user", col):
+                    conn.execute(text(ddl))
 
-        # venue_user
-        for col, ddl in [
-            ("venue_id", "ALTER TABLE venue_user ADD COLUMN venue_id INTEGER"),
-            ("user_id", "ALTER TABLE venue_user ADD COLUMN user_id INTEGER"),
-            ("role", "ALTER TABLE venue_user ADD COLUMN role TEXT"),
-            ("created_at", "ALTER TABLE venue_user ADD COLUMN created_at TEXT"),
-        ]:
-            if not _has_column(conn, "venue_user", col):
-                conn.execute(text(ddl))
-    
-    # Run backfill in background
+            # venue
+            for col, ddl in [
+                ("account_id", "ALTER TABLE venue ADD COLUMN account_id INTEGER"),
+                ("name", "ALTER TABLE venue ADD COLUMN name TEXT"),
+                ("tax_number", "ALTER TABLE venue ADD COLUMN tax_number TEXT"),
+                ("address", "ALTER TABLE venue ADD COLUMN address TEXT"),
+                ("phone", "ALTER TABLE venue ADD COLUMN phone TEXT"),
+                ("email", "ALTER TABLE venue ADD COLUMN email TEXT"),
+                ("owner_name", "ALTER TABLE venue ADD COLUMN owner_name TEXT"),
+                ("accountant_name", "ALTER TABLE venue ADD COLUMN accountant_name TEXT"),
+                ("accountant_email", "ALTER TABLE venue ADD COLUMN accountant_email TEXT"),
+                ("email_subject_tpl", "ALTER TABLE venue ADD COLUMN email_subject_tpl TEXT"),
+                ("email_opening_tpl", "ALTER TABLE venue ADD COLUMN email_opening_tpl TEXT"),
+                ("email_closing_tpl", "ALTER TABLE venue ADD COLUMN email_closing_tpl TEXT"),
+                ("created_at", "ALTER TABLE venue ADD COLUMN created_at TEXT"),
+            ]:
+                if not _has_column(conn, "venue", col):
+                    conn.execute(text(ddl))
+
+            # venue_user
+            for col, ddl in [
+                ("venue_id", "ALTER TABLE venue_user ADD COLUMN venue_id INTEGER"),
+                ("user_id", "ALTER TABLE venue_user ADD COLUMN user_id INTEGER"),
+                ("role", "ALTER TABLE venue_user ADD COLUMN role TEXT"),
+                ("created_at", "ALTER TABLE venue_user ADD COLUMN created_at TEXT"),
+            ]:
+                if not _has_column(conn, "venue_user", col):
+                    conn.execute(text(ddl))
+
+        else:
+            # Postgres/Supabase: no SQLite PRAGMA/ALTER hacks.
+            # If you later need migrations, add Alembic.
+            pass
+
+    # 3) Backfill roles (works in both DBs)
     try:
         backfill_account_roles()
     except Exception:
-        pass  # Silent fail, will retry next time
+        pass
+
 
 
 # =========================================================

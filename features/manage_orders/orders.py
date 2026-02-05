@@ -20,7 +20,7 @@ Source base: previous refactor file. fileciteturn2file0
 from __future__ import annotations
 
 from dataclasses import dataclass
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Any, Optional
 import hashlib
 import re
@@ -30,11 +30,13 @@ import urllib.parse as up
 import pandas as pd
 import streamlit as st
 from sqlmodel import select
+from sqlalchemy import func
 
 from core.db import get_session
 from core.public_links import build_seguimiento_url, ROLE_SUPPLIER, ROLE_VENUE, norm_provider
 from core.mailer import send_smtp_email
 from core.url_nav import set_query_params, qp_int, qp_str
+from features.manage_orders.emails import build_order_email_full
 
 from domain.models import (
     Order,
@@ -94,6 +96,25 @@ def _now():
 def _s(x: Any) -> str:
     return ("" if x is None else str(x)).strip()
 
+
+
+def _fmt_pct(p: float) -> str:
+    try:
+        p = float(p or 0.0)
+    except Exception:
+        p = 0.0
+    if abs(p) < 1e-9:
+        p = 0.0
+    return f"{p:.1f}%"
+
+def _fmt_price(p: float) -> str:
+    try:
+        p = float(p or 0.0)
+    except Exception:
+        p = 0.0
+    if abs(p) < 1e-12:
+        p = 0.0
+    return f"{p:.4f}"
 
 def _safe_float(x: Any, default: float = 0.0) -> float:
     try:
@@ -214,6 +235,330 @@ def _providers_cached(_get_session_fn, venue_id: int) -> dict[str, Provider]:
     out: dict[str, Provider] = {}
     for p in rows:
         out[norm_provider(_s(getattr(p, "name", "")))] = p
+    return out
+
+
+# -----------------------------------------------------------------------------
+# Smart cesta (draft optimizer): suggest same/similar products from other providers
+# using effective net unit price (base price minus provider discount rules).
+# -----------------------------------------------------------------------------
+
+_STOPWORDS_SMART = {
+    "de","del","la","el","los","las","y","en","con","sin","para","por","a","al","un","una","unos","unas",
+    "kg","g","gr","l","ml","ud","uds","unidad","unidades",
+}
+
+def _norm_tokens_smart(s: str) -> set[str]:
+    toks = {_strip_accents(t).lower() for t in re.findall(r"[0-9]+|[^\W_]+", (s or ""), flags=re.UNICODE)}
+    return {t for t in toks if t and t not in _STOPWORDS_SMART}
+
+def _relevance_smart(a: str, b: str) -> float:
+    A = _norm_tokens_smart(a)
+    B = _norm_tokens_smart(b)
+    if not A or not B:
+        return 0.0
+    inter = len(A & B)
+    union = len(A | B)
+    j = inter / union if union else 0.0
+    # small bonus if one name contains the other (after normalization)
+    sa = " ".join(sorted(A))
+    sb = " ".join(sorted(B))
+    bonus = 0.10 if (sa and sb and (sa in sb or sb in sa)) else 0.0
+    return float(min(1.0, j + bonus))
+
+
+
+def _smart_product_label(name: str, desc: str) -> str:
+    name = (_s(name) or "").strip()
+    desc = (_s(desc) or "").strip()
+
+    if not name and not desc:
+        return "este producto"
+
+    if not name:
+        return desc
+    if not desc:
+        return name
+
+    # normalize for "contains" check
+    n = re.sub(r"\s+", " ", name).strip().lower()
+    d = re.sub(r"\s+", " ", desc).strip().lower()
+
+    # if desc already contains name (or is basically the same), don't repeat
+    if n and (n in d or d in n):
+        return desc  # desc already includes name context
+
+    return f"{name} — {desc}"
+
+@st.cache_data(ttl=60, show_spinner=False, hash_funcs={type(lambda: None): lambda _: "session_fn"})
+def _provider_rules_cached(_get_session_fn, venue_id: int, provider_id: int) -> list[ProviderDiscountRule]:
+    with _get_session_fn() as s:
+        return list(
+            s.exec(
+                select(ProviderDiscountRule)
+                .where(
+                    ProviderDiscountRule.venue_id == venue_id,
+                    ProviderDiscountRule.provider_id == provider_id,
+                    ProviderDiscountRule.is_active == True,  # noqa: E712
+                )
+                .order_by(
+                    ProviderDiscountRule.product_id.is_(None).asc(),  # product first
+                    ProviderDiscountRule.rule_kind.asc(),
+                    ProviderDiscountRule.min_qty.desc(),
+                )
+            ).all()
+        )
+
+def _prev_month_window(now: datetime) -> tuple[datetime, datetime]:
+    first_this_month = datetime(now.year, now.month, 1)
+    last_prev_month = first_this_month - timedelta(days=1)
+    start_prev_month = datetime(last_prev_month.year, last_prev_month.month, 1)
+    end_prev_month = first_this_month
+    return start_prev_month, end_prev_month
+
+@st.cache_data(ttl=60, show_spinner=False, hash_funcs={type(lambda: None): lambda _: "session_fn"})
+def _prev_month_qty_cached(
+    _get_session_fn,
+    *,
+    venue_id: int,
+    provider_norm: str,
+    product_id: Optional[int],
+) -> float:
+    start_dt, end_dt = _prev_month_window(datetime.utcnow())
+    with _get_session_fn() as s:
+        q = (
+            select(func.coalesce(func.sum(OrderLine.quantity), 0.0))
+            .join(Order, Order.id == OrderLine.order_id)
+            .where(
+                Order.venue_id == venue_id,
+                Order.status == "final",
+                Order.created_at >= start_dt,
+                Order.created_at < end_dt,
+            )
+        )
+        if product_id is not None:
+            q = q.where(OrderLine.product_id == int(product_id))
+        else:
+            q = q.where(OrderLine.provider == provider_norm)
+
+        val = s.exec(q).one()
+        try:
+            return float(val or 0.0)
+        except Exception:
+            return 0.0
+
+def _rules_for_provider_global(
+    *,
+    venue_id: int,
+    providers_by_name: dict[str, Provider],
+    provider_name: str,
+) -> list[ProviderDiscountRule]:
+    pnorm = norm_provider(provider_name)
+    prow = providers_by_name.get(pnorm)
+    if not prow or getattr(prow, "id", None) is None:
+        return []
+    return _provider_rules_cached(get_session, int(venue_id), int(prow.id))
+
+def _match_scope_ok_global(r: ProviderDiscountRule, pid: Optional[int]) -> bool:
+    if getattr(r, "product_id", None) is None:
+        return True
+    if pid is None:
+        return False
+    return int(r.product_id) == int(pid)
+
+def _rule_priority_key_global(r: ProviderDiscountRule) -> tuple:
+    is_product = 1 if getattr(r, "product_id", None) is not None else 0
+    rk = (getattr(r, "rule_kind", "") or "line_pct").strip()
+    is_prev = 1 if rk.startswith("prev_month") else 0
+    threshold = float(getattr(r, "prev_month_min_qty", 0.0) or 0.0) if is_prev else float(getattr(r, "min_qty", 0.0) or 0.0)
+    strength = float(getattr(r, "discount_percent", 0.0) or 0.0)
+    return (is_product, is_prev, threshold, strength)
+
+def _pricing_for_line_global(
+    *,
+    venue_id: int,
+    providers_by_name: dict[str, Provider],
+    provider_name: str,
+    pid: Optional[int],
+    qty: float,
+    gross_unit: float,
+) -> dict[str, Any]:
+    if qty <= 0 or gross_unit <= 0:
+        return {"net_unit": gross_unit, "discount_pct": 0.0, "rule_kind": "", "rule_id": None, "applied": False}
+
+    prov_norm = norm_provider(provider_name)
+    rules = _rules_for_provider_global(venue_id=venue_id, providers_by_name=providers_by_name, provider_name=prov_norm)
+    if not rules:
+        return {"net_unit": gross_unit, "discount_pct": 0.0, "rule_kind": "", "rule_id": None, "applied": False}
+
+    candidates: list[ProviderDiscountRule] = []
+    for r in rules:
+        rk = (getattr(r, "rule_kind", "") or "line_pct").strip()
+        if not _match_scope_ok_global(r, pid):
+            continue
+
+        if rk.startswith("prev_month"):
+            th = float(getattr(r, "prev_month_min_qty", 0.0) or 0.0)
+            if th <= 0:
+                continue
+            qty_last_month = _prev_month_qty_cached(
+                get_session,
+                venue_id=venue_id,
+                provider_norm=prov_norm,
+                product_id=(int(pid) if (pid is not None and getattr(r, "product_id", None) is not None) else None),
+            )
+            if qty_last_month >= th:
+                candidates.append(r)
+        else:
+            th = float(getattr(r, "min_qty", 0.0) or 0.0)
+            if qty >= th:
+                candidates.append(r)
+
+    if not candidates:
+        return {"net_unit": gross_unit, "discount_pct": 0.0, "rule_kind": "", "rule_id": None, "applied": False}
+
+    candidates.sort(key=_rule_priority_key_global, reverse=True)
+    chosen = candidates[0]
+    rk = (getattr(chosen, "rule_kind", "") or "line_pct").strip()
+
+    if rk.endswith("_net_price"):
+        net_unit = float(getattr(chosen, "price_override", 0.0) or 0.0)
+        if net_unit <= 0:
+            return {"net_unit": gross_unit, "discount_pct": 0.0, "rule_kind": "", "rule_id": None, "applied": False}
+        disc_pct = (1.0 - (net_unit / gross_unit)) * 100.0 if gross_unit > 0 else 0.0
+        disc_pct = max(0.0, min(100.0, disc_pct))
+        return {
+            "net_unit": float(net_unit),
+            "discount_pct": float(disc_pct),
+            "rule_kind": rk,
+            "rule_id": int(chosen.id) if getattr(chosen, "id", None) is not None else None,
+            "applied": True,
+        }
+
+    disc = float(getattr(chosen, "discount_percent", 0.0) or 0.0)
+    disc = max(0.0, min(100.0, disc))
+    net_unit = gross_unit * (1.0 - disc / 100.0)
+    return {
+        "net_unit": float(net_unit),
+        "discount_pct": float(disc),
+        "rule_kind": rk,
+        "rule_id": int(chosen.id) if getattr(chosen, "id", None) is not None else None,
+        "applied": disc > 0.0,
+    }
+
+
+def _smart_cesta_suggestions(
+    *,
+    venue_id: int,
+    providers_by_name: dict[str, Provider],
+    products_by_id: dict[int, Product],
+    draft_df: pd.DataFrame,
+    min_rel: float = 0.45,
+    min_saving_pct: float = 0.02,
+    top_k: int = 3,
+) -> list[dict[str, Any]]:
+    # Index products by unit for faster candidate search
+    by_unit: dict[str, list[tuple[int, Product]]] = {}
+    for pid, p in (products_by_id or {}).items():
+        unit = (_s(getattr(p, "unit", "")) or "unidad").strip().lower()
+        by_unit.setdefault(unit, []).append((int(pid), p))
+
+    out: list[dict[str, Any]] = []
+
+    for row_idx, r in draft_df.iterrows():
+        if bool(r.get("delete", False)):
+            continue
+        pid = _pid_to_int(r.get("product_id"))
+        if pid is None:
+            continue
+        qty = float(_safe_float(r.get("quantity"), 0.0))
+        if qty <= 0:
+            continue
+
+        cur_p = products_by_id.get(int(pid))
+        if not cur_p:
+            continue
+
+        cur_name = _s(getattr(cur_p, "name", "")) or ""
+        cur_desc = _s(getattr(cur_p, "description", "")) or ""
+        cur_unit = (_s(getattr(cur_p, "unit", "")) or "unidad").strip().lower()
+        cur_provider = norm_provider(_s(getattr(cur_p, "provider_name", "")) or "")
+        cur_gross = float(_safe_float(getattr(cur_p, "price", 0.0), 0.0))
+
+        cur_pr = _pricing_for_line_global(
+            venue_id=int(venue_id),
+            providers_by_name=providers_by_name,
+            provider_name=cur_provider,
+            pid=int(pid),
+            qty=qty,
+            gross_unit=cur_gross,
+        )
+        cur_net = float(cur_pr.get("net_unit") or cur_gross)
+
+        cands: list[dict[str, Any]] = []
+        for cand_pid, cand_p in by_unit.get(cur_unit, []):
+            cand_provider = norm_provider(_s(getattr(cand_p, "provider_name", "")) or "")
+            if not cand_provider or cand_provider == cur_provider:
+                continue
+
+            rel = float(_relevance_smart(cur_name, _s(getattr(cand_p, "name", "")) or "") or 0.0)
+            if rel < float(min_rel):
+                continue
+
+            cand_gross = float(_safe_float(getattr(cand_p, "price", 0.0), 0.0))
+            if cand_gross <= 0:
+                continue
+
+            cand_pr = _pricing_for_line_global(
+                venue_id=int(venue_id),
+                providers_by_name=providers_by_name,
+                provider_name=cand_provider,
+                pid=int(cand_pid),
+                qty=qty,
+                gross_unit=cand_gross,
+            )
+            cand_net = float(cand_pr.get("net_unit") or cand_gross)
+
+            if cur_net > 0:
+                saving_pct = (cur_net - cand_net) / cur_net
+                if saving_pct < float(min_saving_pct):
+                    continue
+
+            cands.append(
+                {
+                    "provider": cand_provider,
+                    "product_id": int(cand_pid),
+                    "name": _s(getattr(cand_p, "name", "")) or "",
+                    "description": _s(getattr(cand_p, "description", "")) or "",
+                    "relevance": float(rel),
+                    "gross_unit": float(cand_gross),
+                    "net_unit": float(cand_net),
+                    "discount_pct": float(cand_pr.get("discount_pct") or 0.0),
+                    "rule_kind": _s(cand_pr.get("rule_kind") or ""),
+                }
+            )
+
+        cands.sort(key=lambda x: (x["net_unit"], -x["relevance"]))
+        best = cands[: max(1, int(top_k))]
+
+        if best:
+            out.append(
+                {
+                    "row_idx": int(row_idx),
+                    "line_id": r.get("line_id", None),
+                    "line_product_id": int(pid),
+                    "line_name": cur_name,
+                    "line_description": cur_desc,
+                    "qty": float(qty),
+                    "unit": cur_unit,
+                    "current_provider": cur_provider,
+                    "current_gross": float(cur_gross),
+                    "current_net": float(cur_net),
+                    "current_discount_pct": float(cur_pr.get("discount_pct") or 0.0),
+                    "suggestions": best,
+                }
+            )
+
     return out
 
 
@@ -573,36 +918,59 @@ def _editor_df_from_lines(lines: list[OrderLine], products_by_id: dict[int, Prod
     return pd.DataFrame(rows)
 
 
-def _build_supplier_message_text(*, templates: VenueTemplates, order_id: int, provider_name: str, prov_lines: list[dict[str, Any]], products_by_id: dict[int, Product]) -> str:
-    venue = templates.venue_name or "Pedido"
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    supplier_link = build_seguimiento_url(order_id=order_id, provider_name=provider_name, role=ROLE_SUPPLIER, page_path="seguimiento")
-    txt: list[str] = []
-    txt.append(f"{venue} — Pedido #{order_id} — {date_str}")
-    txt.append("")
-    txt.append("Hola,")
-    txt.append("Te comparto el pedido y el link para confirmar el envío (full / partial / none).")
-    txt.append("")
-    txt.append("LINK (confirmación proveedor):")
-    txt.append(supplier_link)
-    txt.append("")
-    txt.append("PEDIDO:")
+def _build_supplier_message_text(
+    *,
+    templates: VenueTemplates,
+    order_id: int,
+    provider_name: str,
+    prov_lines: list[dict[str, Any]],
+    products_by_id: dict[int, Product],
+) -> str:
+    supplier_link = build_seguimiento_url(
+        order_id=order_id,
+        provider_name=provider_name,
+        role=ROLE_SUPPLIER,
+        page_path="seguimiento",
+    )
+
+    items: list[dict[str, Any]] = []
     for it in prov_lines:
         qty = _safe_float(it.get("qty"), 0.0)
         if qty <= 0:
             continue
+
         pid = _pid_to_int(it.get("product_id"))
         prod = products_by_id.get(pid) if pid else None
+
         name = _s(getattr(prod, "name", None) if prod else it.get("name") or "Producto")
+        desc = _s(getattr(prod, "description", None) if prod else it.get("description") or "")
         unit = (_s(getattr(prod, "unit", "")) if prod else _s(it.get("unit", ""))) or "unidad"
-        txt.append(f"- {name} · {qty:g} {unit}")
-    return "\n".join(txt).strip()
 
+        items.append({"name": name, "description": desc, "qty": qty, "unit": unit})
 
-def _build_subject(templates: VenueTemplates, order_id: int) -> str:
-    venue = templates.venue_name or "Pedido"
-    date_str = datetime.now().strftime("%Y-%m-%d")
-    return f"Pedido #{order_id} — {venue} — {date_str}"
+    # subject+body consistency handled in emails.py; here we only return body text
+    _subject, body = build_order_email_full(
+        venue_ctx=templates,
+        order_id=int(order_id),
+        provider_name=provider_name,
+        supplier_link=supplier_link,
+        items=items,
+        lang=_s(getattr(templates, "email_lang", "es")) or "es",
+    )
+    return body
+
+def _build_subject(templates: VenueTemplates, order_id: int, provider_name: str) -> str:
+    supplier_link = ""  # not needed for subject
+    items: list[dict[str, Any]] = []
+    subject, _body = build_order_email_full(
+        venue_ctx=templates,
+        order_id=int(order_id),
+        provider_name=provider_name,
+        supplier_link=supplier_link,
+        items=items,
+        lang=_s(getattr(templates, "email_lang", "es")) or "es",
+    )
+    return subject
 
 
 def _inject_css() -> None:
@@ -653,7 +1021,11 @@ def _inject_css() -> None:
         .voi-chip-warn{background:rgba(255,159,10,.12);border-color:rgba(255,159,10,.35);}
         .voi-chip-bad{background:rgba(255,69,58,.12);border-color:rgba(255,69,58,.35);}
         .voi-divider{height:1px;background:rgba(49,51,63,.12);margin:14px 0;}
-        </style>
+        .voi-alert{border:1px solid rgba(255,159,10,.35);background:rgba(255,159,10,.10);border-radius:14px;padding:8px 10px;margin-top:8px;display:flex;gap:10px;align-items:flex-start;}
+        .voi-alert b{font-weight:800;}
+        .voi-alert-icon{width:28px;height:28px;border-radius:999px;display:flex;align-items:center;justify-content:center;background:rgba(255,159,10,.18);border:1px solid rgba(255,159,10,.35);flex:0 0 28px;}
+        .voi-alert-text{font-size:.9rem;line-height:1.25;}
+    </style>
         """,
         unsafe_allow_html=True,
     )
@@ -684,6 +1056,7 @@ def _render_workflow_actions(*, venue_id: int, order: Order, role: Optional[str]
         if status == "draft":
             if st.button("✅ Pasar a Listo", type="primary", use_container_width=True):
                 _set_order_status(int(order.id), "ready_to_send", actor)
+                st.session_state.pop(f"orders_active_order_id_{venue_id}", None)
                 _bump_refresh(venue_id)
                 set_query_params(page="orders", status="ready_to_send", order_id=str(int(order.id)))
                 st.rerun()
@@ -707,10 +1080,27 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
     label_by_id = _products_label_map(products)
     editor_key = f"order_editor_{int(order.id)}"
     df_state_key = f"{editor_key}__df"
+    
+    # -----------------------------
+    # -----------------------------
+    # ✅ External refresh detection
+    # If DB changed outside this editor (e.g., new_order_tab added lines),
+    # drop local editor buffer and rebuild from DB truth.
+    # -----------------------------
+    refresh_sig_key = f"{editor_key}__refresh_sig"
+    cur_sig = (int(order.id), int(st.session_state.get(f"orders_refresh_token_{venue_id}", 0)))
+
+    if st.session_state.get(refresh_sig_key) != cur_sig:
+        st.session_state[refresh_sig_key] = cur_sig
+        st.session_state.pop(df_state_key, None)   # ✅ this is the key one
+
+
+
     if df_state_key not in st.session_state:
         st.session_state[df_state_key] = _sanitize_editor_df(_editor_df_from_lines(lines, products_by_id))
     else:
         st.session_state[df_state_key] = _sanitize_editor_df(st.session_state[df_state_key])
+
 
     
     # -----------------------------
@@ -1040,6 +1430,8 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
         with c2:
             descartar = st.form_submit_button("↩️ Descartar cambios", use_container_width=True)
 
+    
+    # -----------------------------
     # --- Handle submits (ONLY runs when one of the form buttons is clicked) ---
     if guardar or descartar:
         # Read whatever is currently in the editor, sanitize + recompute unit
@@ -1077,9 +1469,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
             st.rerun()
 
 
-
 def _render_send_section(*, venue_id: int, order: Order, products: list[Product], lines: list[OrderLine], actor: str) -> None:
-    
     v = _load_venue_templates(venue_id, _refresh_token(venue_id))
     missing_required = _venue_missing_required(v)
     if missing_required:
@@ -1091,6 +1481,7 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
     if not grouped:
         st.info("No hay líneas para enviar.")
         return
+
     st.markdown("### Summary")
 
     cA, cB, cC, cD = st.columns([1.15, 1.1, 1.2, 1.6], vertical_alignment="center")
@@ -1126,145 +1517,55 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
             key=f"sum_mode_{int(order.id)}",
         )
 
+    apply_smart_prices = st.toggle(
+        "🧠 Aplicar precios inteligentes",
+        value=False,
+        key=f"sum_apply_smart_{int(order.id)}",
+        disabled=not show_prices,
+        help="Reasigna automáticamente cada línea al proveedor más barato (incluyendo descuentos) para enviar y para que el link del proveedor funcione sin pasos extra.",
+    )
+
     # ---- pricing helpers (optional) ----
-    from datetime import timedelta
-    from sqlalchemy import func
-
     providers_by_name = _providers_cached(get_session, venue_id)
-    _rules_by_provider_norm: dict[str, list[ProviderDiscountRule]] = {}
 
-    @st.cache_data(ttl=60, show_spinner=False, hash_funcs={type(lambda: None): lambda _: "session_fn"})
-    def _provider_rules_cached(_get_session_fn, venue_id: int, provider_id: int) -> list[ProviderDiscountRule]:
-        with _get_session_fn() as s:
-            return list(
-                s.exec(
-                    select(ProviderDiscountRule)
-                    .where(
-                        ProviderDiscountRule.venue_id == venue_id,
-                        ProviderDiscountRule.provider_id == provider_id,
-                        ProviderDiscountRule.is_active == True,  # noqa: E712
-                    )
-                    .order_by(
-                        ProviderDiscountRule.product_id.is_(None).asc(),  # product first
-                        ProviderDiscountRule.rule_kind.asc(),
-                        ProviderDiscountRule.min_qty.desc(),
-                    )
-                ).all()
+    # ---- Smart price opportunities (best alternative per line) ----
+    smart_best_by_pid: dict[int, dict[str, Any]] = {}
+    smart_current_net_by_pid: dict[int, float] = {}
+
+    if show_prices:
+        df_smart = _sanitize_editor_df(_editor_df_from_lines(lines, products_by_id))
+
+        try:
+            smart_sugg = _smart_cesta_suggestions(
+                venue_id=int(venue_id),
+                providers_by_name=providers_by_name,
+                products_by_id=products_by_id,
+                draft_df=df_smart,
+                min_rel=0.45,
+                min_saving_pct=0.0,  # show any cheaper option
+                top_k=1,
             )
+        except Exception:
+            smart_sugg = []
 
-    def _rules_for_provider(provider_name: str) -> list[ProviderDiscountRule]:
-        pnorm = norm_provider(provider_name)
-        if pnorm in _rules_by_provider_norm:
-            return _rules_by_provider_norm[pnorm]
-        prow = providers_by_name.get(pnorm)
-        if not prow or getattr(prow, "id", None) is None:
-            _rules_by_provider_norm[pnorm] = []
-            return []
-        rules = _provider_rules_cached(get_session, venue_id, int(prow.id))
-        _rules_by_provider_norm[pnorm] = rules
-        return rules
-
-    def _prev_month_window(now: datetime) -> tuple[datetime, datetime]:
-        first_this_month = datetime(now.year, now.month, 1)
-        last_prev_month = first_this_month - timedelta(days=1)
-        start_prev_month = datetime(last_prev_month.year, last_prev_month.month, 1)
-        end_prev_month = first_this_month
-        return start_prev_month, end_prev_month
-
-    @st.cache_data(ttl=60, show_spinner=False, hash_funcs={type(lambda: None): lambda _: "session_fn"})
-    def _prev_month_qty_cached(
-        _get_session_fn,
-        *,
-        venue_id: int,
-        provider_norm: str,
-        product_id: Optional[int],
-    ) -> float:
-        start_dt, end_dt = _prev_month_window(datetime.utcnow())
-        with _get_session_fn() as s:
-            q = (
-                select(func.coalesce(func.sum(OrderLine.quantity), 0.0))
-                .join(Order, Order.id == OrderLine.order_id)
-                .where(
-                    Order.venue_id == venue_id,
-                    Order.status == "final",
-                    Order.created_at >= start_dt,
-                    Order.created_at < end_dt,
-                )
-            )
-            if product_id is not None:
-                q = q.where(OrderLine.product_id == int(product_id))
-            else:
-                q = q.where(OrderLine.provider == provider_norm)
-            val = s.exec(q).one()
-            try:
-                return float(val or 0.0)
-            except Exception:
-                return 0.0
-
-    def _match_scope_ok(r: ProviderDiscountRule, pid: Optional[int]) -> bool:
-        if getattr(r, "product_id", None) is None:
-            return True
-        if pid is None:
-            return False
-        return int(r.product_id) == int(pid)
-
-    def _rule_priority_key(r: ProviderDiscountRule) -> tuple:
-        is_product = 1 if getattr(r, "product_id", None) is not None else 0
-        rk = (getattr(r, "rule_kind", "") or "line_pct").strip()
-        is_prev = 1 if rk.startswith("prev_month") else 0
-        threshold = float(getattr(r, "prev_month_min_qty", 0.0) or 0.0) if is_prev else float(getattr(r, "min_qty", 0.0) or 0.0)
-        strength = float(getattr(r, "discount_percent", 0.0) or 0.0)
-        return (is_product, is_prev, threshold, strength)
-
-    def _pricing_for_line(provider_name: str, pid: Optional[int], qty: float, gross_unit: float) -> dict[str, Any]:
-        if qty <= 0 or gross_unit <= 0:
-            return {"net_unit": gross_unit, "discount_pct": 0.0, "rule_kind": "", "rule_id": None, "applied": False}
-        prov_norm = norm_provider(provider_name)
-        rules = _rules_for_provider(prov_norm)
-        if not rules:
-            return {"net_unit": gross_unit, "discount_pct": 0.0, "rule_kind": "", "rule_id": None, "applied": False}
-
-        candidates: list[ProviderDiscountRule] = []
-        for r in rules:
-            rk = (getattr(r, "rule_kind", "") or "line_pct").strip()
-            if not _match_scope_ok(r, pid):
+        for it in smart_sugg or []:
+            cur_pid = int(it.get("line_product_id") or 0)
+            if not cur_pid or not it.get("suggestions"):
                 continue
-            if rk.startswith("prev_month"):
-                th = float(getattr(r, "prev_month_min_qty", 0.0) or 0.0)
-                if th <= 0:
-                    continue
-                qty_last_month = _prev_month_qty_cached(
-                    get_session,
-                    venue_id=venue_id,
-                    provider_norm=prov_norm,
-                    product_id=(int(pid) if (pid is not None and getattr(r, "product_id", None) is not None) else None),
-                )
-                if qty_last_month >= th:
-                    candidates.append(r)
-            else:
-                th = float(getattr(r, "min_qty", 0.0) or 0.0)
-                if qty >= th:
-                    candidates.append(r)
+            best = it["suggestions"][0]
+            smart_best_by_pid[cur_pid] = best
+            smart_current_net_by_pid[cur_pid] = float(it.get("current_net") or 0.0)
 
-        if not candidates:
-            return {"net_unit": gross_unit, "discount_pct": 0.0, "rule_kind": "", "rule_id": None, "applied": False}
-
-        candidates.sort(key=_rule_priority_key, reverse=True)
-        chosen = candidates[0]
-        rk = (getattr(chosen, "rule_kind", "") or "line_pct").strip()
-
-        if rk.endswith("_net_price"):
-            net_unit = float(getattr(chosen, "price_override", 0.0) or 0.0)
-            if net_unit <= 0:
-                return {"net_unit": gross_unit, "discount_pct": 0.0, "rule_kind": "", "rule_id": None, "applied": False}
-            disc_pct = (1.0 - (net_unit / gross_unit)) * 100.0 if gross_unit > 0 else 0.0
-            disc_pct = max(0.0, min(100.0, disc_pct))
-            return {"net_unit": net_unit, "discount_pct": float(disc_pct), "rule_kind": rk, "rule_id": int(chosen.id) if getattr(chosen, "id", None) is not None else None, "applied": True}
-
-        disc = float(getattr(chosen, "discount_percent", 0.0) or 0.0)
-        disc = max(0.0, min(100.0, disc))
-        net_unit = gross_unit * (1.0 - disc / 100.0)
-        return {"net_unit": float(net_unit), "discount_pct": float(disc), "rule_kind": rk, "rule_id": int(chosen.id) if getattr(chosen, "id", None) is not None else None, "applied": disc > 0.0}
+    # Shared discount engine (also used by Smart Cesta in Draft)
+    def _pricing_for_line(provider_name: str, pid: Optional[int], qty: float, gross_unit: float) -> dict[str, Any]:
+        return _pricing_for_line_global(
+            venue_id=int(venue_id),
+            providers_by_name=providers_by_name,
+            provider_name=provider_name,
+            pid=pid,
+            qty=qty,
+            gross_unit=gross_unit,
+        )
 
     def _price_for_pid(pid: Optional[int]) -> float:
         if pid is None:
@@ -1278,8 +1579,9 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
         p = products_by_id.get(pid)
         if not p:
             return float(default_pct)
-        v = _safe_float(getattr(p, "iva", None), float(default_pct))
-        return float(default_pct) if v <= 0 else float(v)
+        v2 = _safe_float(getattr(p, "iva", None), float(default_pct))
+        return float(default_pct) if v2 <= 0 else float(v2)
+
     # --- label helpers: show description without repeating name words ---
     def _strip_accents(s: str) -> str:
         s = unicodedata.normalize("NFD", s or "")
@@ -1312,8 +1614,7 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
         desc_clean = _remove_name_words_from_description(name, desc)
         return f"{name} — {desc_clean}" if desc_clean else name
 
-
-    def _summary_rows(provider_name: str, prov_lines: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    def _summary_rows(provider_name: str, prov_lines: list[dict[str, Any]], *, apply_smart: bool) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         for it in prov_lines:
             qty = _safe_float(it.get("qty"), 0.0)
@@ -1339,20 +1640,78 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
                     if gross_unit > 0
                     else {"net_unit": 0.0, "discount_pct": 0.0, "rule_kind": "", "applied": False}
                 )
-                net_unit = float(pricing.get("net_unit", gross_unit) or 0.0)
-                disc_pct = float(pricing.get("discount_pct", 0.0) or 0.0)
+
+                base_net_unit = float(pricing.get("net_unit", gross_unit) or 0.0)
+                base_disc_pct = float(pricing.get("discount_pct", 0.0) or 0.0)
+
+                net_unit = base_net_unit
+                disc_pct = base_disc_pct
+                gross_for_ahorro = gross_unit
+
+                smart = smart_best_by_pid.get(int(pid)) if pid is not None else None
+                smart_available = False
+                smart_applied = False
+                smart_saving = 0.0
+                smart_to_provider = ""
+                smart_to_pid: Optional[int] = None
+
+                if pid is not None and smart:
+                    best_net = float(smart.get("net_unit") or 0.0)
+                    if best_net > 0 and best_net + 1e-9 < base_net_unit:
+                        smart_available = True
+                        smart_saving = qty * (base_net_unit - best_net)
+                        smart_to_provider = _s(smart.get("provider") or "")
+                        smart_to_pid = _pid_to_int(smart.get("product_id"))
+
+                        if apply_smart:
+                            smart_applied = True
+                            net_unit = best_net
+                            disc_pct = float(smart.get("discount_pct") or 0.0)
+                            gross_for_ahorro = float(smart.get("gross_unit") or 0.0) or gross_unit
+
+                            if smart_to_provider:
+                                row["Proveedor"] = smart_to_provider
+                            if smart_to_pid is not None:
+                                row["Label"] = _product_label(smart_to_pid, row.get("Label") or "Producto")
 
                 amount = qty * net_unit
-                ahorro = qty * max(0.0, (gross_unit - net_unit))
+                ahorro = qty * max(0.0, (gross_for_ahorro - net_unit))
+
+                best = smart_best_by_pid.get(pid)
+                smart_available = bool(best)
+
+                sug_name = ""
+                sug_desc = ""
+                if smart_available:
+                    tpid_raw = best.get("product_id")
+                    try:
+                        tpid = int(tpid_raw) if tpid_raw is not None else None
+                    except Exception:
+                        tpid = None
+                    if tpid is not None:
+                        p2 = products_by_id.get(tpid)
+                        if p2 is not None:
+                            sug_name = _s(getattr(p2, "name", "")) or ""
+                            sug_desc = _s(getattr(p2, "description", "")) or ""
+
                 row.update({
                     "Precio": net_unit,
                     "Desc.%": disc_pct if disc_pct > 0 else 0.0,
                     "Importe": amount,
                     "Ahorro": ahorro,
+
+                    "Smart disponible": bool(smart_available),
+                    "Smart aplicado": bool(smart_applied) if smart_available else False,
+                    "Ahorro smart": float(smart_saving) if smart_available else 0.0,
+                    "Smart proveedor": (_s(best.get("provider")) if smart_available else ""),
+
+                    "Smart producto nombre": sug_name if smart_available else "",
+                    "Smart producto descripción": sug_desc if smart_available else "",
                 })
 
                 if include_iva:
-                    iva_pct = _iva_pct_for_pid(pid, 21.0)
+                    pid_for_iva = smart_to_pid if (smart_applied and smart_to_pid is not None) else pid
+                    iva_pct = _iva_pct_for_pid(pid_for_iva, 21.0)
                     iva_eur = amount * (iva_pct / 100.0)
                     row.update({
                         "% IVA": iva_pct,
@@ -1361,6 +1720,7 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
                     })
 
             rows.append(row)
+
         return rows
 
     def _render_rows(rows: list[dict[str, Any]]) -> None:
@@ -1371,16 +1731,55 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
         if compact:
             for r in rows:
                 label = _s(r.get("Label"))
+                provider = _s(r.get("Proveedor") or r.get("Provider"))
                 qty_txt = f"{float(r.get('Qty') or 0.0):g} {_s(r.get('Unidad'))}"
+
+                label_txt = (
+                    f"{label} <span style='color:#64748b;font-weight:700'>— {provider}</span>"
+                    if provider else label
+                )
 
                 top = (
                     "<div style=\"display:flex;gap:10px;justify-content:space-between;align-items:baseline;flex-wrap:wrap\">"
-                    f"<div style=\"font-weight:850;flex:1;min-width:220px\">{label}</div>"
+                    f"<div style=\"font-weight:850;flex:1;min-width:220px\">{label_txt}</div>"
                     f"<div style=\"font-weight:850;white-space:nowrap\">{qty_txt}</div>"
                     "</div>"
                 )
 
                 chips = ""
+                alert = ""
+
+                # 🧠 Smart price alert
+                if bool(r.get("Smart disponible")):
+                    s_save = float(r.get("Ahorro smart") or 0.0)
+
+                    if bool(r.get("Smart aplicado")):
+                        alert = (
+                            "<div class='voi-alert' style='border-color:rgba(46,160,67,.35);background:rgba(46,160,67,.10)'>"
+                            "<div class='voi-alert-icon' style='background:rgba(46,160,67,.18);border-color:rgba(46,160,67,.35)'>🧠</div>"
+                            "<div class='voi-alert-text'><b>Smart aplicado</b><br/>"
+                            "Precio optimizado antes de enviar.</div>"
+                            "</div>"
+                        )
+                    else:
+                        if s_save > 0.005:
+                            sp = _s(r.get("Smart proveedor") or "")
+                            vv = f"{s_save:,.2f}"
+
+                            prod_txt = _smart_product_label(
+                                r.get("Smart producto nombre") or "",
+                                r.get("Smart producto descripción") or "",
+                            )
+
+                            alert = (
+                                "<div class='voi-alert'>"
+                                "<div class='voi-alert-icon'>🏷️</div>"
+                                f"Con <b>{prod_txt}</b> de <b>{sp}</b> "
+                                f"ahorras <b>{vv}€</b></div>"
+                                "</div>"
+                            )
+
+                # Price chips
                 if show_prices:
                     chips_items = [
                         ("Precio", float(r.get("Precio") or 0.0)),
@@ -1415,8 +1814,8 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
 
                 st.markdown(
                     "<div class=\"voi-card\" style=\"padding:10px 12px\">"
-                    f"<div class=\"voi-muted\">Proveedor: <b>{_s(r.get('Proveedor'))}</b></div>"
                     f"{top}"
+                    f"{alert}"
                     f"{chips}"
                     "</div>",
                     unsafe_allow_html=True,
@@ -1439,26 +1838,61 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
         total = sum(float(r.get("Total") or 0.0) for r in rows) if include_iva else subtotal
         return subtotal, ahorro, iva_eur, total
 
-    if sum_mode == "total":
-        rows_all: list[dict[str, Any]] = []
-        for prov, prov_lines in grouped.items():
-            rows_all.extend(_summary_rows(prov, prov_lines))
-        _render_rows(rows_all)
+    # Build baseline rows (current providers) and effective rows (optionally smart-applied)
+    rows_all_base: list[dict[str, Any]] = []
+    for prov, prov_lines in grouped.items():
+        rows_all_base.extend(_summary_rows(prov, prov_lines, apply_smart=False))
 
-        if show_prices and rows_all:
-            subtotal, ahorro, iva_eur, total = _totals(rows_all)
+    rows_all_eff: list[dict[str, Any]] = []
+    for prov, prov_lines in grouped.items():
+        rows_all_eff.extend(_summary_rows(prov, prov_lines, apply_smart=bool(apply_smart_prices)))
+
+    def _money_saved(base_rows: list[dict[str, Any]], eff_rows: list[dict[str, Any]]) -> tuple[float, float]:
+        base_sub = sum(float(r.get("Importe") or 0.0) for r in base_rows)
+        eff_sub = sum(float(r.get("Importe") or 0.0) for r in eff_rows)
+        base_tot = sum(float(r.get("Total") or 0.0) for r in base_rows) if include_iva else base_sub
+        eff_tot = sum(float(r.get("Total") or 0.0) for r in eff_rows) if include_iva else eff_sub
+        return max(0.0, base_sub - eff_sub), max(0.0, base_tot - eff_tot)
+
+    if sum_mode == "total":
+        _render_rows(rows_all_eff)
+
+        if show_prices and rows_all_eff:
+            subtotal, ahorro, iva_eur, total = _totals(rows_all_eff)
+            saved_net, saved_total = _money_saved(rows_all_base, rows_all_eff)
+
             st.markdown("### Totales")
             if include_iva:
-                st.markdown(f"**Subtotal (neto):** {subtotal:,.2f} · **Ahorro:** {ahorro:,.2f} · **IVA:** {iva_eur:,.2f} · **Total:** {total:,.2f}")
+                st.markdown(
+                    f"**Subtotal (neto):** {subtotal:,.2f} · **Ahorro (descuentos):** {ahorro:,.2f} · "
+                    f"**IVA:** {iva_eur:,.2f} · **Total:** {total:,.2f}"
+                )
+                if apply_smart_prices and saved_total > 0:
+                    st.markdown(f"🧠 **Ahorro smart aplicado:** **{saved_total:,.2f}€** (vs. precios actuales)")
+                elif (not apply_smart_prices) and saved_total > 0:
+                    st.markdown(f"⚡ **Ahorro smart potencial:** **{saved_total:,.2f}€** si aplicas precios inteligentes")
             else:
-                st.markdown(f"**Total estimado (neto):** {subtotal:,.2f} · **Ahorro:** {ahorro:,.2f}")
+                st.markdown(f"**Total estimado (neto):** {subtotal:,.2f} · **Ahorro (descuentos):** {ahorro:,.2f}")
+                if apply_smart_prices and saved_net > 0:
+                    st.markdown(f"🧠 **Ahorro smart aplicado:** **{saved_net:,.2f}€** (vs. precios actuales)")
+                elif (not apply_smart_prices) and saved_net > 0:
+                    st.markdown(f"⚡ **Ahorro smart potencial:** **{saved_net:,.2f}€** si aplicas precios inteligentes")
+
             st.caption("Estimación: catálogo + reglas. La factura oficial del proveedor manda.")
         else:
-            st.caption(f"{len(rows_all)} líneas en total.")
-
+            st.caption(f"{len(rows_all_eff)} líneas en total.")
     else:
-        for prov, prov_lines in grouped.items():
-            rows = _summary_rows(prov, prov_lines)
+        if apply_smart_prices:
+            grouped_rows: dict[str, list[dict[str, Any]]] = {}
+            for r in rows_all_eff:
+                grouped_rows.setdefault(_s(r.get("Proveedor") or "—"), []).append(r)
+        else:
+            grouped_rows = {}
+            for prov, prov_lines in grouped.items():
+                grouped_rows[prov] = _summary_rows(prov, prov_lines, apply_smart=False)
+
+        for prov in sorted(grouped_rows.keys()):
+            rows = grouped_rows.get(prov) or []
             if not rows:
                 continue
             with st.expander(f"{prov} · {len(rows)} líneas", expanded=False):
@@ -1466,67 +1900,202 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
                 if show_prices:
                     subtotal, ahorro, iva_eur, total = _totals(rows)
                     if include_iva:
-                        st.markdown(f"**Subtotal:** {subtotal:,.2f} · **Ahorro:** {ahorro:,.2f} · **IVA:** {iva_eur:,.2f} · **Total:** {total:,.2f}")
+                        st.markdown(
+                            f"**Subtotal:** {subtotal:,.2f} · **Ahorro:** {ahorro:,.2f} · "
+                            f"**IVA:** {iva_eur:,.2f} · **Total:** {total:,.2f}"
+                        )
                     else:
                         st.markdown(f"**Subtotal:** {subtotal:,.2f} · **Ahorro:** {ahorro:,.2f}")
 
-
-    st.markdown("<div class='voi-divider'></div>", unsafe_allow_html=True)
-
-    provider_dir = _providers_cached(get_session, venue_id)
-    send_map = _get_send_status_map(order_id=int(order.id))
-
-    t1, t2, t3 = st.columns([1.0, 1.0, 1.2], vertical_alignment="center")
-    with t1:
-        use_email = st.toggle("Email", value=True)
-    with t2:
-        use_wa = st.toggle("WhatsApp", value=False)
-    with t3:
-        wa_cc = st.text_input("Prefijo país", value="+34")
-
-    st.caption(f"CC: {v.email_cc or '—'} · BCC: {v.email_bcc or '—'}")
-
-    sent_count = sum(1 for prov in grouped.keys() if bool(send_map.get(norm_provider(prov)) and getattr(send_map[norm_provider(prov)], "sent", False)))
-    st.progress(sent_count / max(1, len(grouped)))
-    st.caption(f"Enviados: {sent_count}/{len(grouped)}")
-
-    c_all1, c_all2 = st.columns([1.5, 1.0], vertical_alignment="center")
-    with c_all1:
-        if st.button("🚀 Enviar a todos (SMTP)", type="primary", use_container_width=True, disabled=(not use_email)):
-            ok, fail = 0, 0
-            for prov, prov_lines in grouped.items():
+    # -----------------------------
+    # 🧠 Group lines for sending
+    # -----------------------------
+    def _group_lines_for_sending(*, apply_smart: bool) -> dict[str, list[dict[str, Any]]]:
+        if not apply_smart:
+            out: dict[str, list[dict[str, Any]]] = {}
+            for prov, prov_lines in (grouped or {}).items():
                 prov_norm = norm_provider(prov)
-                p = provider_dir.get(prov_norm)
-                to_email = _split_first_pipe(_s(getattr(p, "order_email", None) or getattr(p, "email", None) or getattr(p, "emails", None))) if p else ""
-                if not to_email:
-                    _touch_send_status(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor, channel="email", ok=False, error="missing provider email")
-                    fail += 1
-                    continue
-                _ensure_workflow_order_sent(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor)
-                subject = _build_subject(v, int(order.id))
-                body_text = _build_supplier_message_text(templates=v, order_id=int(order.id), provider_name=prov_norm, prov_lines=prov_lines, products_by_id=products_by_id)
-                try:
-                    send_smtp_email(to=_split_emails(to_email), cc=_split_emails(v.email_cc), bcc=_split_emails(v.email_bcc), subject=subject, text_body=body_text)
-                    _touch_send_status(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor, channel="email", ok=True)
-                    ok += 1
-                except Exception as e:
-                    _touch_send_status(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor, channel="email", ok=False, error=str(e))
-                    fail += 1
-            if _all_providers_sent(order_id=int(order.id), provider_names=list(grouped.keys())):
-                _set_order_status(int(order.id), "pending_receive", actor); _bump_refresh(venue_id)
-                st.success(f"✅ Enviados {ok} · ❌ Fallos {fail} · Pedido → Pendiente"); st.rerun()
-            else:
-                st.success(f"✅ Enviados {ok} · ❌ Fallos {fail}"); st.rerun()
+                out.setdefault(prov_norm, []).extend(prov_lines or [])
+            for p in out:
+                out[p] = sorted(out[p], key=lambda x: (_s(x.get("name")) or "").lower())
+            return dict(sorted(out.items(), key=lambda kv: (kv[0] or "").lower()))
 
-    with c_all2:
-        if st.button("🧹 Reset enviados", use_container_width=True):
-            _reset_send_status(order_id=int(order.id)); st.rerun()
+        out: dict[str, list[dict[str, Any]]] = {}
+
+        for prov, prov_lines in (grouped or {}).items():
+            for it in (prov_lines or []):
+                qty = _safe_float(it.get("qty"), 0.0)
+                if qty <= 0:
+                    continue
+
+                pid = _pid_to_int(it.get("product_id"))
+                base_unit = (_s(it.get("unit")) or "unidad")
+                base_name = _s(it.get("name") or "Producto")
+
+                target_prov = prov
+                target_pid = pid
+
+                if pid is not None:
+                    smart = smart_best_by_pid.get(int(pid))
+                    base_net = float(smart_current_net_by_pid.get(int(pid)) or 0.0)
+                    best_net = float(smart.get("net_unit") or 0.0) if smart else 0.0
+
+                    if smart and base_net > 0 and best_net > 0 and (best_net + 1e-9) < base_net:
+                        target_prov = _s(smart.get("provider") or prov) or prov
+                        target_pid = _pid_to_int(smart.get("product_id")) or pid
+
+                prod2 = products_by_id.get(int(target_pid)) if target_pid is not None else None
+                name2 = _s(getattr(prod2, "name", "")) if prod2 is not None else base_name
+                unit2 = (_s(getattr(prod2, "unit", "")) or base_unit) if prod2 is not None else base_unit
+
+                prov_norm = norm_provider(target_prov)
+                out.setdefault(prov_norm, []).append(
+                    {
+                        "line_id": int(it.get("line_id") or 0),
+                        "product_id": target_pid,
+                        "name": name2 or base_name,
+                        "qty": float(qty),
+                        "unit": (unit2 or "unidad"),
+                    }
+                )
+
+        for p in out:
+            out[p] = sorted(out[p], key=lambda x: (_s(x.get("name")) or "").lower())
+
+        return dict(sorted(out.items(), key=lambda kv: (kv[0] or "").lower()))
+
+    apply_smart_for_send = bool(apply_smart_prices)
+    grouped_send = _group_lines_for_sending(apply_smart=apply_smart_for_send)
+
+    # ✅ KEY FIX:
+    # When smart sending is ON, we MUST materialize the smart provider/product
+    # into OrderLine before sending so that the supplier link (seguimiento)
+    # can actually find the products for that supplier.
+    def _materialize_smart_to_db_for_send(*, provider_name: Optional[str] = None) -> int:
+        if not apply_smart_for_send:
+            return 0
+        if not grouped_send:
+            return 0
+
+        target_map: dict[int, tuple[str, int, str]] = {}  # line_id -> (prov_norm, pid, unit)
+        for prov_norm, prov_lines in grouped_send.items():
+            if provider_name is not None and norm_provider(provider_name) != norm_provider(prov_norm):
+                continue
+            for it in (prov_lines or []):
+                lid = int(it.get("line_id") or 0)
+                pid = _pid_to_int(it.get("product_id"))
+                if lid <= 0 or pid is None:
+                    continue
+                p2 = products_by_id.get(int(pid))
+                unit2 = (_s(getattr(p2, "unit", "")) if p2 else _s(it.get("unit") or "")) or "unidad"
+                target_map[lid] = (norm_provider(prov_norm), int(pid), unit2.lower())
+
+        if not target_map:
+            return 0
+
+        applied = 0
+        now = _now()
+        with get_session() as s:
+            for lid, (prov_norm, pid, unit2) in target_map.items():
+                ol = s.get(OrderLine, int(lid))
+                if not ol:
+                    continue
+                # update only if needed (minimizes writes)
+                cur_pid = getattr(ol, "product_id", None)
+                cur_prov = norm_provider(_s(getattr(ol, "provider", "")))
+                cur_unit = (_s(getattr(ol, "unit", "")) or "").lower()
+
+                needs = False
+                if cur_pid is None or int(cur_pid) != int(pid):
+                    needs = True
+                if cur_prov != prov_norm:
+                    needs = True
+                if unit2 and cur_unit != unit2:
+                    needs = True
+
+                if not needs:
+                    continue
+
+                ol.product_id = int(pid)
+                ol.provider = prov_norm
+                ol.unit = unit2 or "unidad"
+                ol.updated_at = now
+                ol.updated_by = actor
+                s.add(ol)
+                applied += 1
+
+            s.commit()
+
+        return applied
+    
+    # ✅ Reload lines from DB after materializing smart changes
+    def _reload_lines_from_db() -> list[OrderLine]:
+        with get_session() as s:
+            # Adjust field name if yours differs (most likely OrderLine.order_id)
+            return (
+                s.query(OrderLine)
+                .filter(OrderLine.order_id == int(order.id))
+                .all()
+            )
+
+    if apply_smart_for_send:
+        st.info(
+            "🧠 **Smart activo:** al enviar, el pedido se reasigna automáticamente (por línea) al proveedor más barato "
+            "para que el email y el link del proveedor funcionen sin tocar nada en 'Cesta inteligente'."
+        )
 
     st.markdown("<div class='voi-divider'></div>", unsafe_allow_html=True)
 
     provider_dir = _providers_cached(get_session, venue_id)
     send_map = _get_send_status_map(order_id=int(order.id))
 
+    # Build once (used by sending message builder)
+    products_by_id = {int(p.id): p for p in products if getattr(p, "id", None) is not None}
+
+    # # -----------------------------
+    # # Smart basket expander (optional). Kept for transparency, but NOT required for sending anymore.
+    # # -----------------------------
+    # with st.expander("🧠 Cesta inteligente (opcional: revisar alternativas)", expanded=False):
+    #     st.caption(
+    #         "Este panel es opcional. Con **🧠 Aplicar precios inteligentes** activo, el envío ya funciona sin aplicar nada aquí."
+    #     )
+    #     df_curr = _sanitize_editor_df(_editor_df_from_lines(lines, products_by_id))
+
+    #     csc1, csc2 = st.columns([1.0, 1.0], vertical_alignment="center")
+    #     with csc1:
+    #         min_rel = st.slider(
+    #             "Similitud mínima (más alto = más estricta)",
+    #             0.0, 1.0, 0.45, 0.05,
+    #             key=f"smart_ready_rel_{int(order.id)}",
+    #             help="Sube este valor si te sugiere productos que no son realmente equivalentes."
+    #         )
+    #     with csc2:
+    #         min_save_pct = (
+    #             st.slider(
+    #                 "Ahorro mínimo (%)",
+    #                 0.0, 25.0, 2.0, 0.5,
+    #                 key=f"smart_ready_save_{int(order.id)}",
+    #                 help="Ignora alternativas con ahorro pequeño."
+    #             ) / 100.0
+    #         )
+
+    #     try:
+    #         sugg = _smart_cesta_suggestions(
+    #             venue_id=int(venue_id),
+    #             providers_by_name=provider_dir,
+    #             products_by_id=products_by_id,
+    #             draft_df=df_curr,
+    #             min_rel=float(min_rel),
+    #             min_saving_pct=float(min_save_pct),
+    #             top_k=3,
+    #         )
+    #     except Exception:
+    #         sugg = []
+
+    #     if not sugg:
+    #         st.success("✅ No hay alternativas más baratas (con descuentos aplicados) para este pedido.")
+    #     else:
+    #         st.caption(f"Se encontraron {len(sugg)} oportunidades (vista previa).")
     # -----------------------------
     # Send settings (mobile-friendly)
     # -----------------------------
@@ -1546,18 +2115,28 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
     # -----------------------------
     sent_count = sum(
         1
-        for prov in grouped.keys()
+        for prov in grouped_send.keys()
         if bool(send_map.get(norm_provider(prov)) and getattr(send_map[norm_provider(prov)], "sent", False))
     )
-    st.progress(sent_count / max(1, len(grouped)))
-    st.caption(f"Enviados: {sent_count}/{len(grouped)}")
+    st.progress(sent_count / max(1, len(grouped_send)))
+    st.caption(f"Enviados: {sent_count}/{len(grouped_send)}")
 
     g1, g2 = st.columns([1.6, 1.0], vertical_alignment="center")
     with g1:
         send_all_disabled = (not use_email)
         if st.button("🚀 Enviar a todos (Email)", type="primary", use_container_width=True, disabled=send_all_disabled):
             ok, fail = 0, 0
-            for prov, prov_lines in grouped.items():
+
+            # ✅ IMPORTANT: If smart is ON, persist to DB ONCE and rebuild sending groups
+            if apply_smart_for_send:
+                changed = _materialize_smart_to_db_for_send(provider_name=None)
+                if changed:
+                    lines = _reload_lines_from_db()
+                    grouped = _group_lines_by_provider(lines, products_by_id)
+                    grouped_send = _group_lines_for_sending(apply_smart=True)
+                    _bump_refresh(venue_id)
+
+            for prov, prov_lines in grouped_send.items():
                 prov_norm = norm_provider(prov)
                 p = provider_dir.get(prov_norm)
                 to_email = _split_first_pipe(_s(getattr(p, "order_email", None) or getattr(p, "email", None) or getattr(p, "emails", None))) if p else ""
@@ -1575,7 +2154,7 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
                     continue
 
                 _ensure_workflow_order_sent(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor)
-                subject = _build_subject(v, int(order.id))
+                subject = _build_subject(v, int(order.id), prov_norm)
                 body_text = _build_supplier_message_text(
                     templates=v,
                     order_id=int(order.id),
@@ -1598,8 +2177,9 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
                     _touch_send_status(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor, channel="email", ok=False, error=str(e))
                     fail += 1
 
+
             # move order to pending_receive only if every supplier has been sent at least once
-            if _all_providers_sent(order_id=int(order.id), provider_names=list(grouped.keys())):
+            if _all_providers_sent(order_id=int(order.id), provider_names=list(grouped_send.keys())):
                 _set_order_status(int(order.id), "pending_receive", actor)
                 _bump_refresh(venue_id)
                 st.success(f"✅ Enviados {ok} · ❌ Fallos {fail} · Pedido → Pendiente")
@@ -1622,7 +2202,7 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
     # -----------------------------
     # Per-provider cards (mobile-first)
     # -----------------------------
-    for prov, prov_lines in grouped.items():
+    for prov, prov_lines in grouped_send.items():
         prov_norm = norm_provider(prov)
         p = provider_dir.get(prov_norm)
 
@@ -1653,13 +2233,25 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
                 st.caption(f"⚠️ {last_error}")
 
             # Primary actions
-            b1, b2, b3 = st.columns([1.25, 1.05, 1.05], vertical_alignment="center")
+            b1, b2 = st.columns(2, vertical_alignment="center")
             with b1:
                 email_disabled = (not use_email) or (not to_email)
                 email_label = "🔁 Reenviar email" if sent else "✅ Enviar email"
                 if st.button(email_label, type="primary", use_container_width=True, disabled=email_disabled, key=f"send_email_{int(order.id)}_{prov_norm}"):
+                    # ✅ IMPORTANT: If smart is ON, persist to DB and rebuild groups BEFORE sending
+                    if apply_smart_for_send:
+                        changed = _materialize_smart_to_db_for_send(provider_name=None)
+                        if changed:
+                            lines = _reload_lines_from_db()
+                            grouped = _group_lines_by_provider(lines, products_by_id)
+                            grouped_send = _group_lines_for_sending(apply_smart=True)
+                            _bump_refresh(venue_id)
+
+                            # refresh prov_lines so email matches DB + link
+                            prov_lines = grouped_send.get(prov_norm, prov_lines)
+                            
                     _ensure_workflow_order_sent(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor)
-                    subject = _build_subject(v, int(order.id))
+                    subject = _build_subject(v, int(order.id), prov_norm)
                     body_text = _build_supplier_message_text(
                         templates=v,
                         order_id=int(order.id),
@@ -1676,7 +2268,7 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
                             text_body=body_text,
                         )
                         _touch_send_status(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor, channel="email", ok=True)
-                        if _all_providers_sent(order_id=int(order.id), provider_names=list(grouped.keys())):
+                        if _all_providers_sent(order_id=int(order.id), provider_names=list(grouped_send.keys())):
                             _set_order_status(int(order.id), "pending_receive", actor)
                             _bump_refresh(venue_id)
                         st.rerun()
@@ -1702,40 +2294,6 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
                         st.link_button("📲 WhatsApp", wa, use_container_width=True)
                     else:
                         st.button("📲 WhatsApp", use_container_width=True, disabled=True, key=f"wa_bad_{int(order.id)}_{prov_norm}")
-
-            with b3:
-                body_text = _build_supplier_message_text(
-                    templates=v,
-                    order_id=int(order.id),
-                    provider_name=prov_norm,
-                    prov_lines=prov_lines,
-                    products_by_id=products_by_id,
-                )
-                st.download_button(
-                    "📄 TXT",
-                    data=body_text.encode("utf-8"),
-                    file_name=f"pedido_{prov_norm.replace(' ','_')}_{datetime.now().strftime('%Y%m%d')}.txt",
-                    mime="text/plain",
-                    use_container_width=True,
-                    key=f"dl_{int(order.id)}_{prov_norm}",
-                )
-
-            with st.expander("Detalles", expanded=False):
-                l1, l2 = st.columns([1.0, 1.0], vertical_alignment="center")
-                with l1:
-                    st.link_button("🔗 Link proveedor", supplier_link, use_container_width=True)
-                with l2:
-                    st.link_button("👀 Link local", venue_link, use_container_width=True)
-
-                st.text_input("Link proveedor", value=supplier_link, disabled=True, label_visibility="collapsed", key=f"sl_{int(order.id)}_{prov_norm}")
-                st.text_input("Link local", value=venue_link, disabled=True, label_visibility="collapsed", key=f"vl_{int(order.id)}_{prov_norm}")
-
-                if use_wa and phone:
-                    if st.button("✅ Marcar WA como enviado", use_container_width=True, key=f"mark_wa_{int(order.id)}_{prov_norm}"):
-                        _touch_send_status(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor, channel="whatsapp", ok=True)
-                        st.rerun()
-
-                st.caption(f"Email proveedor: {to_email or '—'} · Tel: {phone or '—'}")
 
 
 def orders_tab(

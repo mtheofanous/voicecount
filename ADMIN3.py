@@ -6,6 +6,15 @@ import re
 import json
 import unicodedata
 import zipfile
+
+from core.normalization import *
+
+# Optional: improves Greeklish / transliteration alias generation
+try:
+    from unidecode import unidecode  # type: ignore
+except Exception:  # pragma: no cover
+    unidecode = None  # type: ignore
+
 from datetime import datetime, timedelta
 from typing import List, Set, Dict, Optional, Tuple, Any
 
@@ -57,12 +66,27 @@ except Exception:
     from db import get_session  # type: ignore
 
 try:
-    from domain.models import Product  # type: ignore
+    from domain.models import Product, VenueTranscriptionSettings  # type: ignore
 except Exception:
     try:
         from models import Product  # type: ignore
     except Exception:
         Product = None  # type: ignore
+        
+try:
+    from core.public_links import norm_provider  # type: ignore
+except Exception:
+    # fallback: use clean_basic already in this file
+    def norm_provider(x: str) -> str:
+        return clean_basic(x or "")
+
+try:
+    from domain.models import Provider  # type: ignore
+except Exception:
+    try:
+        from models import Provider  # type: ignore
+    except Exception:
+        Provider = None  # type: ignore
 
 
 # =========================================================
@@ -74,8 +98,9 @@ SUPERADMIN_EMAILS = {
     if e.strip()
 }
 
-def is_superadmin(user: dict) -> bool:
-    return user.get("email", "").lower() in SUPERADMIN_EMAILS
+def is_superadmin(user: Optional[dict]) -> bool:
+    user = user or {}
+    return str(user.get("email", "") or "").lower() in SUPERADMIN_EMAILS
 
 
 # =========================================================
@@ -239,6 +264,63 @@ def safe_excel_file(uploaded_file) -> Tuple[pd.ExcelFile, bytes, bool]:
             return xls, fixed, did
         raise
 
+from sqlalchemy import text
+
+def reset_venue_data(venue_id: int) -> dict:
+    """
+    Deletes ALL operational data for a venue (products/providers/orders/etc),
+    but keeps auth data (accounts/users/venues) intact.
+
+    Returns counts per table (best-effort).
+    """
+    vid = int(venue_id)
+
+    # IMPORTANT: delete children first (FK safety)
+    delete_plan = [
+        # provider-related children
+        ("provider_discount_rule", "venue_id"),
+        ("provider_line_follow_up", "venue_id"),
+        ("provider_send_status", "venue_id"),
+        ("provider_resolution", "venue_id"),
+        ("provider_receipt", "venue_id"),
+
+        # tickets/seguimiento
+        ("seguimiento_ticket", "venue_id"),
+
+        # orders workflow
+        ("order_workflow_event", "venue_id"),
+        ("order_workflow", "venue_id"),
+        ("order_presence", "venue_id"),
+        ("orderline", "venue_id"),  # some DBs may have "order_line" vs "orderline" → see note below
+        ("order_line", "venue_id"),
+        ("order", "venue_id"),
+
+        # catalog
+        ("product", "venue_id"),
+
+        # providers (parent)
+        ("provider", "venue_id"),
+    ]
+
+    results = {}
+    with get_session() as s:
+        for table, col in delete_plan:
+            try:
+                r = s.exec(text(f"DELETE FROM {table} WHERE {col} = :vid"), {"vid": vid})
+                # r.rowcount exists for many drivers; SQLite usually supports it
+                results[table] = getattr(r, "rowcount", None)
+            except Exception:
+                # table might not exist (migration drift) — keep going
+                results[table] = "skipped/unknown"
+        s.commit()
+
+    log_audit(
+        action="VENUE_RESET_DATA",
+        entity_type="venue",
+        venue_id=vid,
+        meta={"deleted_tables": results},
+    )
+    return results
 
 # =========================================================
 # Normalization helpers
@@ -273,12 +355,6 @@ def dedupe_keep_order(items: List[str]) -> List[str]:
         seen.add(x)
         out.append(x)
     return out
-
-def normalize_unit(u: str) -> str:
-    u = clean_basic(u).replace(".", "").strip()
-    u = re.sub(r"\s+", " ", u)
-    return u
-
 
 # =========================================================
 # Alias generation (provider NOT used) + conflict safety
@@ -327,6 +403,71 @@ def greek_variants_phrase(text: str, max_total: int = 12) -> Set[str]:
     rec(0, [])
     return out
 
+
+_LATIN_RE = re.compile(r"[a-zA-Z]")
+
+def has_latin(s: str) -> bool:
+    return bool(_LATIN_RE.search(s or ""))
+
+def english_to_greek(text: str) -> str:
+    """
+    Very lightweight EN->GR phonetic transliteration for brands in ordering context.
+    Goal: boost matching, not perfect linguistics.
+    """
+    s = clean_basic(text)  # lower, keep spaces, remove punctuation
+    if not s:
+        return ""
+
+    # multi-char first
+    rules = [
+        ("ch", "τσ"),
+        ("sh", "σ"),
+        ("th", "θ"),
+        ("ph", "φ"),
+        ("ou", "ου"),
+        ("oo", "ου"),
+        ("ee", "ι"),
+        ("ai", "αι"),
+        ("ei", "ει"),
+        ("oi", "οι"),
+    ]
+
+    # single-char
+    rules += [
+        ("c", "κ"),
+        ("k", "κ"),
+        ("q", "κ"),
+        ("x", "ξ"),
+        ("v", "β"),
+        ("b", "μπ"),
+        ("d", "ντ"),
+        ("g", "γκ"),
+        ("j", "τζ"),
+        ("z", "ζ"),
+        ("a", "α"),
+        ("e", "ε"),
+        ("i", "ι"),
+        ("o", "ο"),
+        ("u", "ου"),
+        ("y", "ι"),
+        ("l", "λ"),
+        ("m", "μ"),
+        ("n", "ν"),
+        ("r", "ρ"),
+        ("s", "σ"),
+        ("t", "τ"),
+        ("f", "φ"),
+        ("p", "π"),
+        ("w", "ου"),
+        ("h", ""),  # often silent in brand names
+    ]
+
+    for a, b in rules:
+        s = s.replace(a, b)
+
+    return clean_basic(s)
+
+
 def generate_aliases_smart(
     name: str,
     lang: str = "auto",
@@ -338,26 +479,48 @@ def generate_aliases_smart(
     raw = (name or "").strip()
     if not raw:
         return []
+
     if lang == "auto":
         lang = "el" if has_greek(raw) else "es"
+
     base = clean_basic(raw)
     no_acc = clean_basic(strip_accents(raw))
+
     aliases: List[str] = [base, no_acc]
 
-    if lang == "el" and base:
+    # --- Greek plural handling ---
+    if lang == "el" and has_greek(base):
         plur = " ".join(greek_plural_token(t) for t in base.split())
-        aliases += [clean_basic(plur), clean_basic(strip_accents(plur))]
+        aliases += [
+            clean_basic(plur),
+            clean_basic(strip_accents(plur)),
+        ]
 
+    # --- ✅ English → Greek if toggle ON and Latin exists (independent of lang) ---
+    if include_english_in_greek and has_latin(base):
+        en2gr_1 = english_to_greek(base)
+        en2gr_2 = english_to_greek(no_acc)
+
+        if en2gr_1:
+            aliases.append(en2gr_1)
+        if en2gr_2:
+            aliases.append(en2gr_2)
+
+    # --- Misspellings / variants ---
     if include_misspellings:
         if lang == "el" and has_greek(base):
             aliases += list(greek_variants_phrase(base))
             aliases += list(greek_variants_phrase(no_acc))
         else:
-            aliases += [re.sub(r"(.)\1+", r"\1", base)]
+            # collapse doubled letters: "coooola" → "cola"
+            aliases.append(re.sub(r"(.)\1+", r"\1", base))
 
     aliases = [a for a in aliases if a and len(a) >= 2]
     aliases = dedupe_keep_order(aliases)[:max_aliases]
     return sorted(aliases)
+
+
+
 
 # stopwords / claims
 STOPWORDS = {
@@ -367,7 +530,7 @@ STOPWORDS = {
     # greek packaging words
     "μεριδα","μερίδα","μεριδες","μερίδες","στικ","στικάκι","στικακι","φακελακι","φακελάκι",
     # measures
-    "kg","g","l","ml","ltr","lt"
+    "kg","g","l","ml","ltr","lt",
     "κιλο",
     "κιλά",
     "κιλα",
@@ -381,7 +544,7 @@ STOPWORDS = {
     "κιβώτια",
     "χ",
 }
-CLAIM_TERMS = {"0","0%","zero","sugar","sugarfree","light","free","bio","organic","eco","ζαχαρη","ζάχαρη","χωρις","χωρίς","natrue"}
+CLAIM_TERMS = {"0","0%","zero","sugar","sugarfree","light","free","bio","organic","eco","ζαχαρη","ζάχαρη","χωρις","χωρίς","natural"}
 
 GENERIC_TERMS = {"γαλα","γάλα","milk","leche","καφε","καφες","καφές","coffee","λαδι","λάδι","oil","water","νερο","νερό","agua","mince","κιμα","κιμά","κιμας","κιμάς"}
 
@@ -801,22 +964,61 @@ def list_products_for_venue(venue_id: int) -> pd.DataFrame:
         })
     return pd.DataFrame(data)
 
-def upsert_products_from_df(venue_id: int, df_upload: pd.DataFrame, mode: str = "upsert") -> Tuple[int, int]:
+def upsert_products_from_df(
+    venue_id: int,
+    df_upload: pd.DataFrame,
+    mode: str = "upsert",
+    *,
+    aliases_mode: str = "overwrite",  # ✅ NEW
+) -> Tuple[int, int]:
+
     if Product is None:
         raise RuntimeError("Product model not importable.")
 
-    required = {"name","description","category","unit","quantity","price","provider_name","aliases"}
+        # Minimal required column
+    required = {"name"}
     missing = required - set(df_upload.columns)
     if missing:
-        raise ValueError(f"Upload file missing columns: {sorted(missing)}")
+        raise ValueError(f"Upload file missing required column(s): {sorted(missing)}")
+
+    # Fill optional columns if missing (keeps imports resilient)
+    defaults = {
+        "description": "",
+        "category": "",
+        "unit": "unit",
+        "quantity": 1.0,
+        "price": 0.0,
+        "iva": 21.0,
+        "provider_name": "",
+        "aliases": "",
+        "provider_delivery_schedule_json": "",
+    }
+    for col, default in defaults.items():
+        if col not in df_upload.columns:
+            df_upload[col] = default
+# Fill optional columns with safe defaults
+    df_u = df_upload.copy()
+    for col, default in {
+        "description": "",
+        "category": "",
+        "unit": "unit",
+        "quantity": 1.0,
+        "price": 0.0,
+        "iva": 21.0,
+        "provider_name": "",
+        "aliases": "",
+        "provider_delivery_schedule_json": "",
+    }.items():
+        if col not in df_u.columns:
+            df_u[col] = default
 
     def key(name: str, unit: str) -> str:
         return clean_basic(name) + "||" + normalize_unit(unit or "unit")
 
-    df_u = df_upload.copy()
-    df_u["unit"] = df_u["unit"].astype(str).replace({"": "unit"})
+        df_u["unit"] = df_u["unit"].astype(str).replace({"": "unit"})
     df_u["quantity"] = pd.to_numeric(df_u["quantity"], errors="coerce").fillna(1.0)
     df_u["price"] = pd.to_numeric(df_u["price"], errors="coerce").fillna(0.0)
+    df_u["iva"] = pd.to_numeric(df_u["iva"], errors="coerce").fillna(21.0)
 
     inserted = 0
     updated = 0
@@ -844,6 +1046,8 @@ def upsert_products_from_df(venue_id: int, df_upload: pd.DataFrame, mode: str = 
                 p.unit = str(r.get("unit") or "unit") or "unit"
                 p.quantity = float(r.get("quantity") or 1.0)
                 p.price = float(r.get("price") or 0.0)
+                p.iva = float(r.get("iva") or 21.0)
+
                 p.provider_name = str(r.get("provider_name") or "") or None
                 p.aliases = str(r.get("aliases") or "") or None
                 if hasattr(p, "updated_at"):
@@ -865,6 +1069,7 @@ def upsert_products_from_df(venue_id: int, df_upload: pd.DataFrame, mode: str = 
                     unit=(str(r.get("unit") or "unit").strip() or "unit"),
                     quantity=float(r.get("quantity") or 1.0),
                     price=float(r.get("price") or 0.0),
+                    iva=float(r.get("iva") or 21.0),
                     provider_name=(str(r.get("provider_name") or "").strip() or None),
                     aliases=(str(r.get("aliases") or "").strip() or None),
                 )
@@ -891,6 +1096,154 @@ def upsert_products_from_df(venue_id: int, df_upload: pd.DataFrame, mode: str = 
     )
     return inserted, updated
 
+def upsert_providers_from_df(
+    venue_id: int,
+    df_upload: pd.DataFrame,
+    *,
+    overwrite: bool = False,
+) -> Tuple[int, int, int]:
+    """
+    Upsert providers into Provider table for a given venue.
+    Returns: (inserted, updated, skipped)
+
+    Expected columns:
+      - provider_name
+      - provider_email
+      - provider_phone
+      - provider_tax_number
+      - provider_address
+    """
+    if Provider is None:
+        raise RuntimeError("Provider model not importable.")
+
+    required = {"provider_name", "provider_email", "provider_phone", "provider_tax_number", "provider_address"}
+    missing = required - set([str(c).strip() for c in df_upload.columns])
+    if missing:
+        raise ValueError(f"Upload file missing columns: {sorted(missing)}")
+
+    def _s(x: Any) -> str:
+        return ("" if x is None else str(x)).strip()
+
+    def _first_pipe(x: Any) -> str:
+        s = _s(x)
+        if not s:
+            return ""
+        parts = [p.strip() for p in s.replace(",", "|").split("|") if p.strip()]
+        return parts[0] if parts else ""
+
+    def _merge(existing: str, incoming: str) -> Tuple[str, bool]:
+        existing = _s(existing)
+        incoming = _s(incoming)
+        if not incoming:
+            return existing, False
+        if overwrite:
+            return incoming, (incoming != existing)
+        if not existing:
+            return incoming, True
+        return existing, False
+
+    df = df_upload.copy()
+    df.columns = [str(c).strip() for c in df.columns]
+
+    df["provider_name"] = df["provider_name"].astype(str).map(lambda x: _s(x))
+    df = df[df["provider_name"] != ""].copy()
+    df["provider_name_norm"] = df["provider_name"].map(lambda x: norm_provider(_s(x)))
+
+    # one row per provider
+    df = df.drop_duplicates(subset=["provider_name_norm"], keep="first").copy()
+
+    inserted = 0
+    updated = 0
+    skipped = 0
+
+    total = int(len(df))
+    prog = st.progress(0.0)
+    status = st.empty()
+
+    with get_session() as s:
+        existing_rows = s.exec(select(Provider).where(Provider.venue_id == int(venue_id))).all()
+        by_name = {norm_provider(getattr(p, "name", "")): p for p in existing_rows}
+
+        for i, (_, r) in enumerate(df.iterrows(), start=1):
+            prov = norm_provider(_s(r.get("provider_name_norm") or r.get("provider_name")))
+            if not prov:
+                skipped += 1
+                continue
+
+            email = _first_pipe(r.get("provider_email"))
+            phone = _first_pipe(r.get("provider_phone"))
+            tax = _s(r.get("provider_tax_number"))
+            addr = _s(r.get("provider_address"))
+            sched = _s(r.get("provider_delivery_schedule_json"))
+
+
+            row = by_name.get(prov)
+
+            if not row:
+                row = Provider(
+                    venue_id=int(venue_id),
+                    name=prov,
+                    tax_number=(tax or None),
+                    address=(addr or None),
+                    emails=(email or None),
+                    phones=(phone or None),
+                    order_email=(email or None),
+                    order_phone=(phone or None),
+                    delivery_schedule_json=(sched or None),
+
+                )
+                s.add(row)
+                inserted += 1
+            else:
+                changed = False
+
+                new_tax, ch = _merge(getattr(row, "tax_number", ""), tax)
+                if ch: row.tax_number = new_tax; changed = True
+
+                new_addr, ch = _merge(getattr(row, "address", ""), addr)
+                if ch: row.address = new_addr; changed = True
+
+                new_em, ch = _merge(getattr(row, "emails", ""), email)
+                if ch: row.emails = new_em; changed = True
+
+                new_ph, ch = _merge(getattr(row, "phones", ""), phone)
+                if ch: row.phones = new_ph; changed = True
+
+                # align order_* as well (same merge rules)
+                new_oe, ch = _merge(getattr(row, "order_email", ""), email)
+                if ch: row.order_email = new_oe; changed = True
+
+                new_op, ch = _merge(getattr(row, "order_phone", ""), phone)
+                if ch: row.order_phone = new_op; changed = True
+                
+                new_sched, ch = _merge(getattr(row, "delivery_schedule_json", ""), sched)
+                if ch:
+                    row.delivery_schedule_json = new_sched
+                    changed = True
+
+
+                if changed:
+                    s.add(row)
+                    updated += 1
+                else:
+                    skipped += 1
+
+            if total > 0 and (i % 20 == 0 or i == total):
+                prog.progress(min(1.0, i / total))
+                status.text(f"Syncing providers… {i}/{total}")
+
+        s.commit()
+
+    prog.progress(1.0)
+    status.text(f"Provider sync committed ✅ Inserted: {inserted} • Updated: {updated} • Skipped: {skipped}")
+
+    log_audit(
+        action="PROVIDER_SYNC_UPLOAD",
+        entity_type="provider",
+        venue_id=int(venue_id),
+        meta={"inserted": inserted, "updated": updated, "skipped": skipped, "rows": total, "overwrite": bool(overwrite)},
+    )
+    return inserted, updated, skipped
 
 # =========================================================
 # App boot
@@ -913,13 +1266,13 @@ if is_superadmin(u):
 st.title("🧩 Import Assistant + Admin")
 st.caption("Create DB-ready product files (with safe aliases) + manage venues/users/catalogs + audit logs.")
 
-tabs = st.tabs(["🧩 Import Assistant", "🛠️ Admin"])
+section = st.sidebar.radio("Section", ["🧩 Import Assistant", "🛠️ Admin", "Transcripción"], key="admin3_section")
 
 
 # =========================================================
 # TAB 1: Import Assistant (DB-ready)
 # =========================================================
-with tabs[0]:
+if section == "🧩 Import Assistant":
     st.subheader("Import Assistant (DB-ready)")
 
     with st.sidebar:
@@ -1031,7 +1384,10 @@ with tabs[0]:
             return default
         return df_raw[colname]
 
-    df = pd.DataFrame()
+    # ✅ KEEP EVERYTHING from the uploaded Excel
+    df = df_raw.copy()
+
+    # ✅ Add/overwrite the canonical columns needed for DB upload
     df["name"] = get_series(name_col, pd.Series([""] * len(df_raw))).astype(str).map(lambda x: x.strip())
     df["description"] = get_series(desc_col, pd.Series([""] * len(df_raw))).astype(str).fillna("")
     df["category"] = get_series(category_col, pd.Series([""] * len(df_raw))).astype(str).fillna("")
@@ -1039,6 +1395,7 @@ with tabs[0]:
     df["quantity"] = pd.to_numeric(get_series(qty_col, pd.Series([None] * len(df_raw))), errors="coerce")
     df["price"] = pd.to_numeric(get_series(price_col, pd.Series([None] * len(df_raw))), errors="coerce")
     df["provider_name"] = get_series(provider_col, pd.Series([""] * len(df_raw))).astype(str).fillna("")
+
 
     if venue_id_enabled and venue_id_value is not None:
         df["venue_id"] = int(venue_id_value)
@@ -1048,31 +1405,67 @@ with tabs[0]:
     df.loc[df["unit"].astype(str).str.strip().eq(""), "unit"] = "unit"
     df = df[df["name_norm"].str.len() > 0].copy()
 
+
     st.markdown("### Generate aliases")
+
+    # --------------------------------------------------
+    # Detect existing aliases in uploaded Excel
+    # --------------------------------------------------
+    has_existing_aliases = (
+        "aliases" in df.columns
+        and df["aliases"].astype(str).fillna("").str.strip().ne("").any()
+    )
+
+    alias_merge_mode = "overwrite"
+    if has_existing_aliases:
+        st.info("This Excel already contains an **aliases** column.")
+        alias_merge_mode = st.radio(
+            "When generating aliases, what should we do with existing aliases?",
+            ["append", "overwrite"],
+            index=0,  # safer default
+            horizontal=True,
+            key="imp_alias_merge_mode",
+        )
+
     gen_clicked = st.button("✨ Generate aliases", type="primary", key="imp_gen_aliases")
 
     if gen_clicked:
-        # build name index (uploaded names + optionally current venue catalog names)
+        # --------------------------------------------------
+        # Build name index (uploaded + optional venue catalog)
+        # --------------------------------------------------
         all_names: List[str] = df["name"].astype(str).tolist()
         if venue_id_enabled and venue_id_value is not None and Product is not None:
             try:
                 with get_session() as s:
-                    rows = s.exec(select(Product.name).where(Product.venue_id == int(venue_id_value))).all()
+                    rows = s.exec(
+                        select(Product.name).where(Product.venue_id == int(venue_id_value))
+                    ).all()
                 all_names += [r[0] for r in rows if r and r[0]]
             except Exception:
                 pass
-        all_name_norms = dedupe_keep_order([_norm_name_for_conflict(n) for n in all_names if _norm_name_for_conflict(n)])
+
+        all_name_norms = dedupe_keep_order(
+            [
+                _norm_name_for_conflict(n)
+                for n in all_names
+                if _norm_name_for_conflict(n)
+            ]
+        )
 
         prog = st.progress(0.0)
+
         with st.spinner("Generating safe aliases…"):
             out_aliases: List[str] = []
             debug_rows: List[Dict[str, List[str]]] = []
             total = max(1, len(df))
+
             for i, r in enumerate(df.to_dict(orient="records"), start=1):
                 name = str(r.get("name") or "")
                 desc = str(r.get("description") or "") if use_desc_in_alias else ""
                 cat = str(r.get("category") or "")
+
                 dbg: Dict[str, List[str]] = {}
+
                 aliases_list = generate_aliases_robust(
                     name=name,
                     description=desc,
@@ -1088,31 +1481,131 @@ with tabs[0]:
                     include_desc_greek=bool(include_desc_greek) and bool(use_desc_in_alias),
                     include_desc_phrases=bool(include_desc_phrases) and bool(use_desc_in_alias),
                     debug=dbg,
-
                 )
+
                 name_norm = _norm_name_for_conflict(name)
-                cleaned = []
+
+                # --------------------------------------------------
+                # Clean generated aliases
+                # --------------------------------------------------
+                generated_cleaned: List[str] = []
                 for a in aliases_list:
                     a_norm = clean_basic(strip_accents(a))
                     if not a_norm or a_norm in STOPWORDS or a_norm in CLAIM_TERMS:
                         continue
-                    if filter_single_word_collisions and _alias_conflicts_single_word_only(a_norm, name_norm, all_name_norms):
+                    if (
+                        filter_single_word_collisions
+                        and _alias_conflicts_single_word_only(
+                            a_norm, name_norm, all_name_norms
+                        )
+                    ):
                         continue
-                    cleaned.append(a_norm)
+                    generated_cleaned.append(a_norm)
 
-                # optional: remove shared generic terms (only if user disables)
                 if not allow_generic_shared:
-                    cleaned = [a for a in cleaned if a not in {clean_basic(strip_accents(x)) for x in GENERIC_TERMS}]
+                    generated_cleaned = [
+                        a
+                        for a in generated_cleaned
+                        if a
+                        not in {clean_basic(strip_accents(x)) for x in GENERIC_TERMS}
+                    ]
 
-                out_aliases.append(" | ".join(dedupe_keep_order(cleaned)))
+                generated_final = dedupe_keep_order(generated_cleaned)
+
+                # --------------------------------------------------
+                # 🔁 Append vs Overwrite logic
+                # --------------------------------------------------
+                if has_existing_aliases and alias_merge_mode == "append":
+                    existing_raw = r.get("aliases")
+                    existing = _split_aliases_cell(existing_raw)
+                    existing_norm = [
+                        clean_basic(strip_accents(x))
+                        for x in existing
+                        if clean_basic(strip_accents(x))
+                    ]
+                    merged = dedupe_keep_order(existing_norm + generated_final)
+                    out_aliases.append(" | ".join(merged))
+                else:
+                    out_aliases.append(" | ".join(generated_final))
+
                 debug_rows.append(dbg)
+
                 if i % 20 == 0 or i == total:
                     prog.progress(min(1.0, i / total))
 
+            # --------------------------------------------------
+            # Write back to dataframe
+            # --------------------------------------------------
             df["aliases"] = out_aliases
             st.session_state["alias_debug_rows"] = debug_rows
 
         st.success("Aliases generated. Preview + export are ready below.")
+
+    # st.markdown("### Generate aliases")
+    # gen_clicked = st.button("✨ Generate aliases", type="primary", key="imp_gen_aliases")
+
+    # if gen_clicked:
+    #     # build name index (uploaded names + optionally current venue catalog names)
+    #     all_names: List[str] = df["name"].astype(str).tolist()
+    #     if venue_id_enabled and venue_id_value is not None and Product is not None:
+    #         try:
+    #             with get_session() as s:
+    #                 rows = s.exec(select(Product.name).where(Product.venue_id == int(venue_id_value))).all()
+    #             all_names += [r[0] for r in rows if r and r[0]]
+    #         except Exception:
+    #             pass
+    #     all_name_norms = dedupe_keep_order([_norm_name_for_conflict(n) for n in all_names if _norm_name_for_conflict(n)])
+
+    #     prog = st.progress(0.0)
+    #     with st.spinner("Generating safe aliases…"):
+    #         out_aliases: List[str] = []
+    #         debug_rows: List[Dict[str, List[str]]] = []
+    #         total = max(1, len(df))
+    #         for i, r in enumerate(df.to_dict(orient="records"), start=1):
+    #             name = str(r.get("name") or "")
+    #             desc = str(r.get("description") or "") if use_desc_in_alias else ""
+    #             cat = str(r.get("category") or "")
+    #             dbg: Dict[str, List[str]] = {}
+    #             aliases_list = generate_aliases_robust(
+    #                 name=name,
+    #                 description=desc,
+    #                 category=cat,
+    #                 lang=alias_lang,
+    #                 include_misspellings=include_misspellings,
+    #                 include_english_in_greek=include_eng_to_gr,
+    #                 max_aliases=int(max_aliases),
+    #                 add_concepts=bool(add_concepts),
+    #                 openai_enrich=bool(openai_enrich),
+    #                 openai_max_new=int(openai_max_new),
+    #                 include_desc_latin=bool(include_desc_latin) and bool(use_desc_in_alias),
+    #                 include_desc_greek=bool(include_desc_greek) and bool(use_desc_in_alias),
+    #                 include_desc_phrases=bool(include_desc_phrases) and bool(use_desc_in_alias),
+    #                 debug=dbg,
+
+    #             )
+    #             name_norm = _norm_name_for_conflict(name)
+    #             cleaned = []
+    #             for a in aliases_list:
+    #                 a_norm = clean_basic(strip_accents(a))
+    #                 if not a_norm or a_norm in STOPWORDS or a_norm in CLAIM_TERMS:
+    #                     continue
+    #                 if filter_single_word_collisions and _alias_conflicts_single_word_only(a_norm, name_norm, all_name_norms):
+    #                     continue
+    #                 cleaned.append(a_norm)
+
+    #             # optional: remove shared generic terms (only if user disables)
+    #             if not allow_generic_shared:
+    #                 cleaned = [a for a in cleaned if a not in {clean_basic(strip_accents(x)) for x in GENERIC_TERMS}]
+
+    #             out_aliases.append(" | ".join(dedupe_keep_order(cleaned)))
+    #             debug_rows.append(dbg)
+    #             if i % 20 == 0 or i == total:
+    #                 prog.progress(min(1.0, i / total))
+
+    #         df["aliases"] = out_aliases
+    #         st.session_state["alias_debug_rows"] = debug_rows
+
+    #     st.success("Aliases generated. Preview + export are ready below.")
 
         # -----------------------------------------------------
         # Why these aliases? (debug)
@@ -1176,12 +1669,22 @@ with tabs[0]:
 # =========================================================
 # TAB 2: Admin
 # =========================================================
-with tabs[1]:
+if section == "🛠️ Admin":
     st.subheader("Admin")
     u_admin, acc_admin = require_admin()
     acc_id = int(acc_admin["id"])
 
-    admin_tabs = st.tabs(["🏬 Venues", "👤 Users", "📦 Venue Catalog", "⬆️ Upload to DB", "🧾 Audit Logs"])
+    admin_tab_labels = ["🏬 Venues", "🎙️ Transcripción","👤 Users", "📦 Venue Catalog", "⬆️ Upload to DB", "🧾 Audit Logs"]
+    st.session_state.setdefault("admin_tab", admin_tab_labels[0])
+    if st.session_state["admin_tab"] not in admin_tab_labels:
+        st.session_state["admin_tab"] = admin_tab_labels[0]
+    admin_selected = st.radio(
+        "Admin",
+        admin_tab_labels,
+        horizontal=True,
+        key="admin_tab",
+        label_visibility="collapsed",
+    )
 
     if is_superadmin(u_admin):
         venues_scope = list_all_venues()
@@ -1190,7 +1693,7 @@ with tabs[1]:
         venues_scope = list_venues_for_account(acc_id)
         users_scope = list_users_for_account(acc_id)
 
-    with admin_tabs[0]:
+    if admin_selected == "🏬 Venues":
         st.markdown("### Venues")
         if not venues_scope:
             st.info("No venues found.")
@@ -1215,8 +1718,114 @@ with tabs[1]:
                     st.success("Venue updated ✅")
                 except Exception as e:
                     st.error(str(e))
+            
+            st.divider()
+            st.markdown("## ⚠️ Danger zone")
 
-    with admin_tabs[1]:
+            with st.expander("Reset venue operational data (products/providers/orders)", expanded=False):
+                st.warning(
+                    "This will permanently delete ALL operational data for this venue:\n"
+                    "- Products\n- Providers + delivery schedules\n- Orders + lines + workflow\n- Receipts/follow-ups/rules\n\n"
+                    "It will NOT delete users/accounts/venues (login stays)."
+                )
+
+                confirm = st.text_input(
+                    "Type RESET {venue_id} to confirm",
+                    value="",
+                    key="adm_reset_confirm",
+                    help="Safety check to avoid accidental clicks. Example: RESET 12",
+                )
+
+                if st.button("🧨 Reset venue data", type="primary", key="adm_reset_venue_btn", disabled=(confirm.strip() != f"RESET {int(v.id)}")):
+                    try:
+                        res = reset_venue_data(int(v.id))
+                        st.success("Venue data reset ✅")
+                        st.json(res)
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Reset failed: {e}")
+    if admin_selected == "🎙️ Transcripción":
+        st.subheader("🎙️ Configuración de transcripción (por local)")
+        st.caption("Estos ajustes se aplican en 'Nuevo pedido'. Los usuarios no los verán.")
+
+        if VenueTranscriptionSettings is None:
+            st.error("VenueTranscriptionSettings model no está disponible (revisa imports/models).")
+            st.stop()
+
+        # ✅ choose venue here (so venue_id is defined)
+        if not venues_scope:
+            st.info("No venues found.")
+            st.stop()
+
+        venue_labels = [f"{v.name} (#{v.id})" for v in venues_scope]
+        chosen = st.selectbox("Selecciona el local", venue_labels, index=0, key="asr_cfg_venue_sel")
+        v = venues_scope[venue_labels.index(chosen)]
+        venue_id = int(v.id)
+
+        with get_session() as s:
+            cfg = s.exec(
+                select(VenueTranscriptionSettings).where(VenueTranscriptionSettings.venue_id == venue_id)
+            ).first()
+
+            if cfg is None:
+                cfg = VenueTranscriptionSettings(venue_id=venue_id)
+                s.add(cfg)
+                s.commit()
+                s.refresh(cfg)
+
+        with st.form("asr_cfg_form", clear_on_submit=False):
+            asr_backend = st.selectbox(
+                "Backend ASR",
+                ["OpenAI Whisper API", "Google Speech-to-Text", "Faster-Whisper (local)"],
+                index=["OpenAI Whisper API", "Google Speech-to-Text", "Faster-Whisper (local)"].index(
+                    getattr(cfg, "asr_backend", "OpenAI Whisper API")
+                ),
+            )
+
+            lang_code = st.selectbox(
+                "Idioma",
+                ["auto", "es", "el", "en"],
+                index=["auto", "es", "el", "en"].index(
+                    getattr(cfg, "lang_code", "auto") if getattr(cfg, "lang_code", "auto") in ["auto","es","el","en"] else "auto"
+                ),
+            )
+
+            samplerate = st.selectbox(
+                "Samplerate",
+                [16000, 22050, 24000],
+                index=[16000, 22050, 24000].index(
+                    int(getattr(cfg, "samplerate", 16000)) if int(getattr(cfg, "samplerate", 16000)) in [16000,22050,24000] else 16000
+                ),
+            )
+
+            hide_user_controls = st.checkbox(
+                "Ocultar controles al usuario (recomendado)",
+                value=bool(getattr(cfg, "hide_user_controls", True)),
+            )
+
+            submitted = st.form_submit_button("💾 Guardar")
+            if submitted:
+                actor = (current_user() or {}).get("email")
+                with get_session() as s:
+                    cfg2 = s.exec(
+                        select(VenueTranscriptionSettings).where(VenueTranscriptionSettings.venue_id == venue_id)
+                    ).first() or VenueTranscriptionSettings(venue_id=venue_id)
+
+                    cfg2.asr_backend = asr_backend
+                    cfg2.lang_code = lang_code
+                    cfg2.samplerate = int(samplerate)
+                    cfg2.hide_user_controls = bool(hide_user_controls)
+                    cfg2.updated_at = datetime.utcnow()
+                    cfg2.updated_by = actor
+
+                    s.add(cfg2)
+                    s.commit()
+
+                st.success("Configuración guardada ✅")
+                st.rerun()
+
+
+    if admin_selected == "👤 Users":
         st.markdown("### Users")
         if not users_scope:
             st.info("No users found.")
@@ -1251,7 +1860,7 @@ with tabs[1]:
                 except Exception as e:
                     st.error(str(e))
 
-    with admin_tabs[2]:
+    if admin_selected == "📦 Venue Catalog":
         if Product is None:
             st.error("Product model couldn't be imported. Make sure domain/models.py is available.")
         elif not venues_scope:
@@ -1431,7 +2040,7 @@ with tabs[1]:
                     except Exception as e:
                         st.error(str(e))
 
-    with admin_tabs[3]:
+    if admin_selected == "⬆️ Upload to DB":
         if Product is None:
             st.error("Product model couldn't be imported. Upload-to-DB requires Product.")
         elif not venues_scope:
@@ -1445,13 +2054,36 @@ with tabs[1]:
 
             mode = st.radio("Mode", ["upsert", "append"], index=0, horizontal=True, key="adm_up_mode")
 
+            # ✅ NEW: Aliases update strategy for existing products
+            aliases_db_mode = st.radio(
+                "Aliases update strategy (when product already exists)",
+                ["append", "overwrite"],
+                index=0,  # safer default
+                horizontal=True,
+                key="adm_aliases_db_mode",
+            )
+
+            overwrite_providers = st.toggle(
+                "Overwrite existing provider fields (emails/phones/address/tax)",
+                value=False,
+                key="adm_prov_overwrite",
+            )
+
             st.markdown("#### Option A: Use the last generated file from Import Assistant")
             last_df = st.session_state.get("last_ready_df")
+
             if isinstance(last_df, pd.DataFrame) and len(last_df) > 0:
                 st.dataframe(last_df.head(50), use_container_width=True)
+
                 if st.button("Upload this to DB", type="primary", key="adm_up_last"):
                     try:
-                        ins, upd = upsert_products_from_df(venue_id, last_df, mode=mode)
+                        # ✅ products: pass aliases strategy
+                        ins, upd = upsert_products_from_df(
+                            venue_id,
+                            last_df,
+                            mode=mode,
+                            aliases_mode=aliases_db_mode,
+                        )
                         st.success(f"Upload complete ✅ Inserted: {ins} • Updated: {upd}")
                     except Exception as e:
                         st.error(str(e))
@@ -1459,7 +2091,11 @@ with tabs[1]:
                 st.info("Generate an enriched file in the Import Assistant tab first.")
 
             st.markdown("#### Option B: Upload an Excel/CSV (must have DB-ready columns)")
-            up_file = st.file_uploader("Upload Ready_For_Upload.xlsx or .csv", type=["xlsx", "csv"], key="adm_up_file")
+            up_file = st.file_uploader(
+                "Upload Ready_For_Upload.xlsx or .csv",
+                type=["xlsx", "csv"],
+                key="adm_up_file",
+            )
 
             if up_file is not None:
                 try:
@@ -1470,15 +2106,37 @@ with tabs[1]:
                         if did2:
                             st.warning("This upload file was auto-repaired for reading.")
                         df_up = pd.read_excel(xls2, sheet_name=0)
+
                     st.dataframe(df_up.head(50), use_container_width=True)
 
                     if st.button("Upload file to DB", type="primary", key="adm_up_file_btn"):
-                        ins, upd = upsert_products_from_df(venue_id, df_up, mode=mode)
+                        # ✅ 1) Upsert providers from SAME Excel (if columns exist)
+                        try:
+                            ins_p, upd_p, sk_p = upsert_providers_from_df(
+                                venue_id=int(venue_id),
+                                df_upload=df_up,
+                                overwrite=bool(overwrite_providers),
+                            )
+                            st.success(f"Providers ✅ Inserted: {ins_p} • Updated: {upd_p} • Skipped: {sk_p}")
+                        except Exception as e:
+                            st.warning(f"Providers sync skipped/failed: {e}")
+
+                        # ✅ 2) Upsert products as before + aliases strategy
+                        ins, upd = upsert_products_from_df(
+                            venue_id,
+                            df_up,
+                            mode=mode,
+                            aliases_mode=aliases_db_mode,
+                        )
+
+                        st.success(f"Products ✅ Inserted: {ins} • Updated: {upd}")
                         st.success(f"Upload complete ✅ Inserted: {ins} • Updated: {upd}")
+
                 except Exception as e:
                     st.error(f"Could not load/upload file: {e}")
 
-    with admin_tabs[4]:
+
+    if admin_selected == "🧾 Audit Logs":
         st.markdown("### Audit Logs")
         st.caption("Who changed what, when. Passwords are never stored or logged.")
 
@@ -1556,3 +2214,7 @@ with tabs[1]:
             with cC:
                 st.caption("Meta")
                 st.code(chosen.meta_json or "{}", language="json")
+
+
+
+

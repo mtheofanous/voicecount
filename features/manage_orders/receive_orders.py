@@ -18,8 +18,8 @@ UX additions implemented:
 This module does NOT handle payments.
 """
 
-from dataclasses import dataclass
-from datetime import datetime
+from dataclasses import dataclass, field
+from datetime import datetime, date
 from typing import Any, Dict, List, Optional, Tuple
 import requests
 import json
@@ -36,6 +36,10 @@ from core.mailer import send_smtp_email
 from core.public_links import ROLE_SUPPLIER, build_seguimiento_url, norm_provider
 from core.url_nav import set_query_params, qp_int, qp_str
 from datetime import datetime, timedelta
+
+from features.manage_orders.orders import _load_venue_templates
+from features.manage_orders.emails import build_resolution_email_full, build_urgent_email_full
+
 from sqlalchemy import func
 from domain.models import (
     Order,
@@ -47,7 +51,7 @@ from domain.models import (
     ProviderLineFollowUp,
     ProviderReceipt,
     SeguimientoTicket, ProviderDiscountRule,ProviderSendStatus,
-    UrgentReorderRequest
+    UrgentReorderRequest, ProviderResolution
 
 )
 
@@ -94,13 +98,139 @@ def _inject_css() -> None:
 .pill--bad{background:#fef2f2;border-color:#fecaca;color:#991b1b;}
 .pill--info{background:#eff6ff;border-color:#bfdbfe;color:#1e3a8a;}
 
+/* ---------- Invoice-like mini table ---------- */
+.inv{margin-top:6px;}
+.inv-t{
+  border-collapse:collapse;
+  margin-left:auto;          /* align right */
+  font-size:.78rem;
+  color:var(--text);
+}
+.inv-t td{padding:1px 0;vertical-align:top;}
+.inv-k{padding-right:10px;color:var(--muted);}
+.inv-v{width:78px;text-align:right;padding-right:10px;color:var(--text);}
+.inv-a{width:96px;text-align:right;font-variant-numeric:tabular-nums;color:var(--text);}
+
+.inv-total td{
+  padding-top:6px;
+  border-top:1px solid var(--border);
+  font-weight:900;
+  font-size:.85rem;
+  color:var(--text);
+}
+
+/* Optional: make discount slightly muted (invoice style) */
+.inv-discount .inv-k,
+.inv-discount .inv-v,
+.inv-discount .inv-a{
+  color:#92400e;
+}
+
+/* Optional: tax slightly muted */
+.inv-tax .inv-k,
+.inv-tax .inv-v,
+.inv-tax .inv-a{
+  color:var(--muted);
+}
+/* ---------- Invoice table (many products) ---------- */
+.inv-wrap{margin-top:10px;}
+.inv-table{
+  width:100%;
+  border-collapse:separate;
+  border-spacing:0;
+  border:1px solid var(--border);
+  border-radius:14px;
+  overflow:hidden;
+  background:#fff;
+  font-variant-numeric: tabular-nums;
+}
+.inv-table th, .inv-table td{
+  padding:8px 10px;
+  border-bottom:1px solid var(--border);
+  font-size:.82rem;
+}
+.inv-table thead th{
+  position:sticky; top:0; /* nice inside popovers */
+  background:#f8fafc;
+  color:var(--muted);
+  font-weight:900;
+  text-transform:uppercase;
+  letter-spacing:.02em;
+  font-size:.72rem;
+}
+.inv-table td.name{
+  width:44%;
+  font-weight:900;
+  color:var(--text);
+}
+.inv-table td.num, .inv-table th.num{
+  text-align:right;
+  white-space:nowrap;
+}
+.inv-table td.muted{
+  color:var(--muted);
+  font-weight:800;
+}
+.inv-table tfoot td{
+  background:#f8fafc;
+  font-weight:950;
+  border-bottom:none;
+}
+.inv-table tr:last-child td{border-bottom:none;}
+.inv-neg{color:#b45309;font-weight:900;}
+.inv-meta{margin-top:2px;color:var(--muted);font-size:.75rem;font-weight:800;opacity:.9;}
+.inv-table td.name{width:32%;}
+.inv-desc{margin-top:2px;color:var(--muted);font-size:.75rem;font-weight:700;opacity:.9;}
+/* ---------- Invoice header ---------- */
+.inv-head{
+  display:flex;
+  justify-content:space-between;
+  align-items:baseline;
+  gap:12px;
+  margin:6px 4px 10px 4px;
+  color:var(--muted);
+  font-weight:900;
+  font-size:.82rem;
+}
+.inv-head-left{
+  white-space:nowrap;
+}
+.inv-head-right{
+  white-space:nowrap;
+}
+.inv-table td.reason{color:var(--muted);font-weight:800;font-size:.78rem;white-space:nowrap;}
+.inv-flag{
+  margin-left:6px;
+  padding:2px 8px;
+  border-radius:999px;
+  border:1px solid var(--border);
+  background:#fff7ed;
+  color:#9a3412;
+  font-weight:900;
+  font-size:.68rem;
+}
+
 
 .small{font-size:.85rem;color:var(--muted);}
+
+/* ---------- Supplier/Venue comments (compact) ---------- */
+.voi-commentline{
+  margin:-4px 0 8px 0;
+  padding:8px 12px;
+  border:1px solid var(--border);
+  border-radius:14px;
+  background:#f8fafc;
+  color:var(--text);
+  font-weight:800;
+  font-size:.85rem;
+}
+.voi-commentline .lbl{color:var(--muted);font-weight:900;margin-right:6px;}
+.voi-commentline .txt{font-weight:800; color:var(--text); opacity:.92;}
+
 </style>
 """,
         unsafe_allow_html=True,
     )
-
 
 # =============================
 # Helpers
@@ -121,6 +251,77 @@ def _safe_float(v: Any, default: float = 0.0) -> float:
         return float(v)
     except Exception:
         return float(default)
+
+
+
+_VENUE_STATUS_RE = re.compile(r"\[VENUE_STATUS=([a-zA-Z_]+)\]")
+
+def _get_received_info(ctx: OrderContext, prov: str, lid: int) -> tuple[str, float, float, bool, str]:
+    """
+    Returns:
+      (issue_status, received_qty, issue_qty, in_invoice, reason)
+
+    - issue_status: "ok" | "missing" | "damaged" | "wrong_item" | "unknown"
+    - received_qty: what venue received (fu.venue_qty) (may be 0)
+    - issue_qty: what venue marked as missing/damaged/wrong qty (fu.qty_invoiced reused)
+    - in_invoice: True/False depending on invoice_listed when Missing. For damaged/wrong we treat as True.
+    - reason: human readable reason (status + optional comment)
+    """
+    fu = ctx.followups_by_key.get((prov, int(lid)))
+
+    # Defaults
+    issue_status = "unknown"
+    received_qty = 0.0
+    issue_qty = 0.0
+    in_invoice = True
+    reason = "—"
+
+    if not fu:
+        return issue_status, received_qty, issue_qty, in_invoice, reason
+
+    # Quantities saved by "Venue received" flow
+    received_qty = _safe_float(getattr(fu, "venue_qty", None), 0.0)
+    issue_qty = _safe_float(getattr(fu, "qty_invoiced", None), 0.0)  # you reuse this as issue qty
+
+    # Status is stored as a tag in venue_comment: "[VENUE_STATUS=missing]"
+    vc = _s(getattr(fu, "venue_comment", None)).strip()
+    m = _VENUE_STATUS_RE.search(vc)
+    if m:
+        issue_status = (m.group(1) or "").strip().lower()
+
+    # invoice_listed only meaningful for Missing; can be True/False/None
+    inv = getattr(fu, "invoice_listed", None)
+    if issue_status == "missing":
+        if inv is True:
+            in_invoice = True
+        elif inv is False:
+            in_invoice = False
+        else:
+            in_invoice = True  # treat unknown as "in invoice" to avoid accidentally pricing it out
+    elif issue_status in ("damaged", "wrong_item"):
+        in_invoice = True  # your UI forces "In invoice" for these anyway
+    else:
+        in_invoice = True
+
+    # Human reason: use status label + any free text (without the tag)
+    status_label = {
+        "ok": "OK",
+        "missing": "Missing",
+        "damaged": "Damaged",
+        "wrong_item": "Wrong item",
+        "unknown": "—",
+    }.get(issue_status, issue_status.upper() if issue_status else "—")
+
+    # remove the tag from the comment to keep it clean
+    clean_comment = _VENUE_STATUS_RE.sub("", vc).strip()
+    if clean_comment:
+        reason = f"{status_label} · {clean_comment}"
+    else:
+        reason = status_label if status_label != "—" else "—"
+
+    return issue_status, received_qty, issue_qty, in_invoice, reason
+
+
 
 
 # =============================
@@ -193,22 +394,107 @@ def _next_delivery_dt(provider: Optional[Provider], now: Optional[datetime] = No
     return None
 
 
+import unicodedata
+import re
+
+_STOP = {
+    "de", "del", "la", "el", "los", "las", "con", "sin", "para", "por",
+    "and", "or", "the", "a", "an",
+    "kg", "kilo", "kilos", "gr", "g", "ml", "l", "lt", "litro", "litros",
+    "uds", "ud", "unidad", "unidades", "pcs", "pc", "pack", "x",
+}
+
+_UNIT_ALIASES = {
+    "kg": {"kg", "kilo", "kilos"},
+    "g": {"g", "gr"},
+    "l": {"l", "lt", "litro", "litros"},
+    "ml": {"ml"},
+    "ud": {"ud", "uds", "unidad", "unidades", "pcs", "pc"},
+}
+
+def _strip_accents(s: str) -> str:
+    s = unicodedata.normalize("NFKD", s or "")
+    return "".join(ch for ch in s if not unicodedata.combining(ch))
+
 def _norm_words(s: str) -> set[str]:
-    import re
+    """
+    Stronger tokenization for catalog matching:
+    - lowercase + strip accents
+    - split to alnum tokens
+    - remove stop words / unit aliases normalized
+    - light singularization
+    """
+    s = _strip_accents((s or "").lower())
+    s = re.sub(r"[^a-z0-9\s]+", " ", s)
+    raw = [t for t in s.split() if t.strip()]
 
-    words = re.findall(r"[0-9]+|[^\W_]+", (s or ""), flags=re.UNICODE)
-    return {w.lower() for w in words if w and len(w) >= 3}
+    out: set[str] = set()
+    for t in raw:
+        if t in _STOP:
+            continue
 
+        # normalize units
+        for canon, alts in _UNIT_ALIASES.items():
+            if t in alts:
+                out.add(canon)
+                t = ""
+                break
+        if not t:
+            continue
+
+        # naive singularization
+        if len(t) > 4 and t.endswith("s"):
+            t = t[:-1]
+        if len(t) > 5 and t.endswith("es"):
+            t = t[:-2]
+
+        if t and t not in _STOP:
+            out.add(t)
+
+    return out
+
+def _extract_unit_tokens(tokens: set[str]) -> set[str]:
+    return {t for t in tokens if t in {"kg", "g", "l", "ml", "ud"}}
 
 def _relevance(a: str, b: str) -> float:
-    """Jaccard similarity on token sets."""
+    """
+    Improved relevance:
+    - base: Jaccard
+    - + containment bonus
+    - + unit match bonus
+    """
+    a = (a or "").strip()
+    b = (b or "").strip()
+    if not a or not b:
+        return 0.0
+
     A = _norm_words(a)
     B = _norm_words(b)
     if not A or not B:
         return 0.0
+
     inter = len(A & B)
     uni = len(A | B)
-    return float(inter) / float(uni) if uni else 0.0
+    base = float(inter) / float(uni) if uni else 0.0
+
+    contains_bonus = 0.0
+    a_norm = " ".join(sorted(A))
+    b_norm = " ".join(sorted(B))
+    if a_norm and b_norm and (a_norm in b_norm or b_norm in a_norm):
+        contains_bonus = 0.15
+
+    unit_bonus = 0.0
+    ua = _extract_unit_tokens(A)
+    ub = _extract_unit_tokens(B)
+    if ua and ub and ua == ub:
+        unit_bonus = 0.10
+
+    score = base + contains_bonus + unit_bonus
+    if score < 0.0:
+        score = 0.0
+    if score > 1.0:
+        score = 1.0
+    return float(score)
 
 
 def find_alternative_providers(*, ctx: Any, ticket: Any, line: Optional[OrderLine]) -> list[dict[str, Any]]:
@@ -312,77 +598,77 @@ def find_alternative_providers(*, ctx: Any, ticket: Any, line: Optional[OrderLin
     return out
 
 
-def _get_or_create_draft_for_op_missing(*, venue_id: int, actor: str) -> int:
-    """Return an existing draft order id or create a new one."""
-    with get_session() as s:
-        o = s.exec(
-            select(Order)
-            .where(Order.venue_id == int(venue_id), Order.status == "draft")
-            .order_by(Order.created_at.desc())
-        ).first()
-        if o and getattr(o, "id", None) is not None:
-            return int(o.id)
+# def _get_or_create_draft_for_op_missing(*, venue_id: int, actor: str) -> int:
+#     """Return an existing draft order id or create a new one."""
+#     with get_session() as s:
+#         o = s.exec(
+#             select(Order)
+#             .where(Order.venue_id == int(venue_id), Order.status == "draft")
+#             .order_by(Order.created_at.desc())
+#         ).first()
+#         if o and getattr(o, "id", None) is not None:
+#             return int(o.id)
 
-        new_o = Order(
-            venue_id=int(venue_id),
-            status="draft",
-            created_at=_now(),
-            updated_at=_now(),
-            created_by=actor,
-            updated_by=actor,
-            title="Operational missing (draft)",
-            note="Auto-created draft for non-urgent operational missing.",
-        )
-        s.add(new_o)
-        s.commit()
-        s.refresh(new_o)
-        return int(new_o.id)
+#         new_o = Order(
+#             venue_id=int(venue_id),
+#             status="draft",
+#             created_at=_now(),
+#             updated_at=_now(),
+#             created_by=actor,
+#             updated_by=actor,
+#             title="Operational missing (draft)",
+#             note="Auto-created draft for non-urgent operational missing.",
+#         )
+#         s.add(new_o)
+#         s.commit()
+#         s.refresh(new_o)
+#         return int(new_o.id)
 
 
-def _add_product_to_order(*, venue_id: int, order_id: int, actor: str, product_id: Optional[int], qty: float, unit: str, provider_name: str, spoken_name: str = "") -> None:
-    """Add (or increment) a product line in an order.
+# def _add_product_to_order(*, venue_id: int, order_id: int, actor: str, product_id: Optional[int], qty: float, unit: str, provider_name: str, spoken_name: str = "") -> None:
+#     """Add (or increment) a product line in an order.
 
-    Simplicity rules:
-    - If same product_id already exists in order, increment qty.
-    - We never create invoices here (new order => new invoice later).
-    """
-    qty = _safe_float(qty, 0.0)
-    if qty <= 0:
-        return
-    now = _now()
-    provider_name = norm_provider(provider_name)
-    with get_session() as s:
-        ln = None
-        if product_id is not None:
-            ln = s.exec(
-                select(OrderLine).where(OrderLine.order_id == int(order_id), OrderLine.product_id == int(product_id))
-            ).first()
-        if ln:
-            ln.quantity = float(_safe_float(getattr(ln, "quantity", 0.0), 0.0) + qty)
-            ln.updated_at = now
-            ln.updated_by = actor
-            s.add(ln)
-        else:
-            s.add(
-                OrderLine(
-                    venue_id=int(venue_id),
-                    order_id=int(order_id),
-                    product_id=(int(product_id) if product_id is not None else None),
-                    spoken_name=_s(spoken_name),
-                    quantity=float(qty),
-                    unit=(_s(unit) or "unit"),
-                    provider=(provider_name or None),
-                    updated_at=now,
-                    updated_by=actor,
-                )
-            )
+#     Simplicity rules:
+#     - If same product_id already exists in order, increment qty.
+#     - We never create invoices here (new order => new invoice later).
+#     """
+#     qty = _safe_float(qty, 0.0)
+#     if qty <= 0:
+#         return
+#     now = _now()
+#     provider_name = norm_provider(provider_name)
+#     with get_session() as s:
+#         ln = None
+#         if product_id is not None:
+#             ln = s.exec(
+#                 select(OrderLine).where(OrderLine.order_id == int(order_id), OrderLine.product_id == int(product_id))
+#             ).first()
+#         if ln:
+#             ln.quantity = float(_safe_float(getattr(ln, "quantity", 0.0), 0.0) + qty)
+#             ln.updated_at = now
+#             ln.updated_by = actor
+#             s.add(ln)
+#         else:
+#             s.add(
+#                 OrderLine(
+#                     venue_id=int(venue_id),
+#                     order_id=int(order_id),
+#                     product_id=(int(product_id) if product_id is not None else None),
+#                     spoken_name=_s(spoken_name),
+#                     quantity=float(qty),
+#                     unit=(_s(unit) or "unit"),
+#                     provider=(provider_name or None),
+#                     updated_at=now,
+#                     updated_by=actor,
+#                 )
+#             )
 
-        o = s.exec(select(Order).where(Order.id == int(order_id))).first()
-        if o:
-            o.updated_at = now
-            o.updated_by = actor
-            s.add(o)
-        s.commit()
+#         o = s.exec(select(Order).where(Order.id == int(order_id))).first()
+#         if o:
+#             o.updated_at = now
+#             o.updated_by = actor
+#             s.add(o)
+#         s.commit()
 
 
 def _create_urgent_order_from_cart(
@@ -526,37 +812,37 @@ def _parse_delivery_schedule(raw: Any) -> Dict[str, List[str]]:
     except Exception:
         return {}
 
-def _next_delivery_datetime(provider: Optional[Provider], now: Optional[datetime] = None) -> Optional[datetime]:
-    """Return the next delivery datetime based on provider.delivery_schedule_json."""
-    if now is None:
-        now = _now()
-    if not provider:
-        return None
-    sched = _parse_delivery_schedule(getattr(provider, "delivery_schedule_json", None))
-    if not sched:
-        return None
+# def _next_delivery_datetime(provider: Optional[Provider], now: Optional[datetime] = None) -> Optional[datetime]:
+#     """Return the next delivery datetime based on provider.delivery_schedule_json."""
+#     if now is None:
+#         now = _now()
+#     if not provider:
+#         return None
+#     sched = _parse_delivery_schedule(getattr(provider, "delivery_schedule_json", None))
+#     if not sched:
+#         return None
 
-    def _slot_start(slot: str) -> Optional[Tuple[int, int]]:
-        m = re.match(r"^\s*(\d{1,2}):(\d{2})\s*-", slot or "")
-        if not m:
-            return None
-        return int(m.group(1)), int(m.group(2))
+#     def _slot_start(slot: str) -> Optional[Tuple[int, int]]:
+#         m = re.match(r"^\s*(\d{1,2}):(\d{2})\s*-", slot or "")
+#         if not m:
+#             return None
+#         return int(m.group(1)), int(m.group(2))
 
-    best: Optional[datetime] = None
-    for add_days in range(0, 8):
-        d = now.date() + timedelta(days=add_days)
-        key = _WEEKDAY_KEYS[(now.weekday() + add_days) % 7]
-        slots = sched.get(key) or []
-        for slot in slots:
-            hm = _slot_start(slot)
-            if not hm:
-                continue
-            cand = datetime.combine(d, datetime.min.time()).replace(hour=hm[0], minute=hm[1])
-            if cand < now:
-                continue
-            if best is None or cand < best:
-                best = cand
-    return best
+#     best: Optional[datetime] = None
+#     for add_days in range(0, 8):
+#         d = now.date() + timedelta(days=add_days)
+#         key = _WEEKDAY_KEYS[(now.weekday() + add_days) % 7]
+#         slots = sched.get(key) or []
+#         for slot in slots:
+#             hm = _slot_start(slot)
+#             if not hm:
+#                 continue
+#             cand = datetime.combine(d, datetime.min.time()).replace(hour=hm[0], minute=hm[1])
+#             if cand < now:
+#                 continue
+#             if best is None or cand < best:
+#                 best = cand
+#     return best
 
 def _fmt_eta(now: datetime, dt: Optional[datetime]) -> str:
     if not dt:
@@ -785,10 +1071,13 @@ def _send_urgent_request_email(
     source_order_id: Optional[int] = None,
 ) -> Tuple[bool, str]:
     prov = norm_provider(provider_name)
+
+    # 1) Resolve supplier emails
     with get_session() as s:
         p = s.exec(select(Provider).where(Provider.venue_id == int(venue_id), Provider.name == prov)).first()
         if not p:
             p = s.exec(select(Provider).where(Provider.venue_id == int(venue_id), Provider.name == provider_name)).first()
+
         emails: List[str] = []
         if p and getattr(p, "order_email", None):
             emails = [x.strip() for x in (p.order_email or "").split("|") if x.strip()]
@@ -797,27 +1086,65 @@ def _send_urgent_request_email(
         if not emails:
             return False, "No supplier email configured."
 
-    # ✅ Supplier link (same pattern you already use elsewhere)
-    link = build_seguimiento_url(order_id=int(order_id), provider_name=prov, role=ROLE_SUPPLIER, page_path="seguimiento")
+    # 2) Load venue templates (for footer + language)
+    templates = _load_venue_templates(int(venue_id), 0)
+    lang = _s(getattr(templates, "email_lang", "en")) or "en"
 
-    lines = [f"- {it.get('name','')} · {it.get('qty','')} {it.get('unit','')}" for it in items]
-    src_txt = f" (from order #{int(source_order_id)})" if source_order_id else ""
-
-    subject = f"URGENT — re-order request (order #{int(order_id)}){src_txt}"
-    body = (
-        f"URGENT re-order request\n"
-        f"New order: #{int(order_id)}{src_txt}\n"
-        f"Provider: {prov}\n\n"
-        + "\n".join(lines)
-        + "\n\n"
-        "Please open the link to view/confirm and coordinate delivery:\n"
-        f"{link}\n"
+    # 3) Supplier link
+    link = build_seguimiento_url(
+        order_id=int(order_id),
+        provider_name=prov,
+        role=ROLE_SUPPLIER,
+        page_path="seguimiento",
     )
 
+    # 4) Enrich items with description (best effort)
+    # Expecting items like: {"product_id": 123, "name": "...", "qty": 2, "unit": "kg"}
+    with get_session() as s:
+        pids = [int(it["product_id"]) for it in items if it.get("product_id") is not None]
+        products_by_id: Dict[int, Product] = {}
+        if pids:
+            prows = list(
+                s.exec(
+                    select(Product).where(
+                        Product.venue_id == int(venue_id),
+                        Product.id.in_(list(set(pids))),
+                    )
+                ).all()
+            )
+            products_by_id = {int(pp.id): pp for pp in prows if getattr(pp, "id", None) is not None}
+
+    enriched: List[Dict[str, Any]] = []
+    for it in items:
+        pid = it.get("product_id")
+        prod = products_by_id.get(int(pid)) if pid is not None else None
+
+        enriched.append(
+            {
+                "name": _s(it.get("name") or getattr(prod, "name", "") or "Product"),
+                "description": _s(getattr(prod, "description", "")) if prod else _s(it.get("description") or ""),
+                "qty": it.get("qty"),
+                "unit": it.get("unit"),
+            }
+        )
+
+    # 5) Subject + body from centralized builder (includes footer + consistent format)
+    subject, body = build_urgent_email_full(
+        venue_ctx=templates,
+        order_id=int(order_id),
+        provider_name=prov,
+        supplier_link=link,
+        items=enriched,
+        source_order_id=source_order_id,
+        lang=lang,
+    )
+
+    # 6) Send
     try:
         send_smtp_email(to=emails, subject=subject, text_body=body)
     except Exception as e:
         return False, f"Email failed: {e}"
+
     return True, link
 
 
@@ -895,96 +1222,96 @@ def _upsert_provider_send_status(
         s.commit()
 
 
-def _move_urgent_items_into_order(
-    *, venue_id: int, order_id: int, provider_name: str, items: List[Dict[str, Any]], actor: str
-) -> None:
-    """Create OrderLines in this same order, so they appear in Receive."""
-    prov = norm_provider(provider_name)
-    now = _now()
+# def _move_urgent_items_into_order(
+#     *, venue_id: int, order_id: int, provider_name: str, items: List[Dict[str, Any]], actor: str
+# ) -> None:
+#     """Create OrderLines in this same order, so they appear in Receive."""
+#     prov = norm_provider(provider_name)
+#     now = _now()
 
-    with get_session() as s:
-        for it in (items or []):
-            pid = it.get("product_id")
-            pid_i = None
-            try:
-                if pid is not None:
-                    pid_i = int(pid)
-            except Exception:
-                pid_i = None
+#     with get_session() as s:
+#         for it in (items or []):
+#             pid = it.get("product_id")
+#             pid_i = None
+#             try:
+#                 if pid is not None:
+#                     pid_i = int(pid)
+#             except Exception:
+#                 pid_i = None
 
-            qty = float(it.get("qty") or 0.0)
-            if qty <= 0:
-                continue
+#             qty = float(it.get("qty") or 0.0)
+#             if qty <= 0:
+#                 continue
 
-            unit = _s(it.get("unit")) or "unit"
-            name = _s(it.get("name")) or "Urgent item"
+#             unit = _s(it.get("unit")) or "unit"
+#             name = _s(it.get("name")) or "Urgent item"
 
-            # If same product already exists for same provider in this order, increment qty
-            existing = None
-            if pid_i is not None:
-                existing = s.exec(
-                    select(OrderLine).where(
-                        OrderLine.order_id == int(order_id),
-                        OrderLine.product_id == int(pid_i),
-                        OrderLine.provider == prov,
-                    )
-                ).first()
+#             # If same product already exists for same provider in this order, increment qty
+#             existing = None
+#             if pid_i is not None:
+#                 existing = s.exec(
+#                     select(OrderLine).where(
+#                         OrderLine.order_id == int(order_id),
+#                         OrderLine.product_id == int(pid_i),
+#                         OrderLine.provider == prov,
+#                     )
+#                 ).first()
 
-            if existing:
-                existing.quantity = float(_safe_float(getattr(existing, "quantity", 0.0), 0.0) + qty)
-                existing.updated_at = now
-                existing.updated_by = actor
-                s.add(existing)
-            else:
-                s.add(
-                    OrderLine(
-                        venue_id=int(venue_id),
-                        order_id=int(order_id),
-                        product_id=pid_i,
-                        provider=prov,
-                        spoken_name=f"{name} [URGENT]",
-                        quantity=float(qty),
-                        unit=unit,
-                        updated_at=now,
-                        updated_by=actor,
-                    )
-                )
+#             if existing:
+#                 existing.quantity = float(_safe_float(getattr(existing, "quantity", 0.0), 0.0) + qty)
+#                 existing.updated_at = now
+#                 existing.updated_by = actor
+#                 s.add(existing)
+#             else:
+#                 s.add(
+#                     OrderLine(
+#                         venue_id=int(venue_id),
+#                         order_id=int(order_id),
+#                         product_id=pid_i,
+#                         provider=prov,
+#                         spoken_name=f"{name} [URGENT]",
+#                         quantity=float(qty),
+#                         unit=unit,
+#                         updated_at=now,
+#                         updated_by=actor,
+#                     )
+#                 )
 
-        # ensure workflow exists (Receive uses it)
-        wf = s.exec(
-            select(OrderWorkflow).where(
-                OrderWorkflow.order_id == int(order_id),
-                OrderWorkflow.provider_name == prov,
-            )
-        ).first()
-        if not wf:
-            wf = OrderWorkflow(
-                venue_id=int(venue_id),
-                order_id=int(order_id),
-                provider_name=prov,
-                state="ORDER_SENT",
-                updated_at=now,
-                updated_by=actor,
-            )
-            s.add(wf)
+#         # ensure workflow exists (Receive uses it)
+#         wf = s.exec(
+#             select(OrderWorkflow).where(
+#                 OrderWorkflow.order_id == int(order_id),
+#                 OrderWorkflow.provider_name == prov,
+#             )
+#         ).first()
+#         if not wf:
+#             wf = OrderWorkflow(
+#                 venue_id=int(venue_id),
+#                 order_id=int(order_id),
+#                 provider_name=prov,
+#                 state="ORDER_SENT",
+#                 updated_at=now,
+#                 updated_by=actor,
+#             )
+#             s.add(wf)
 
-        s.commit()
+#         s.commit()
 
-def _ensure_order_pending_receive(*, order_id: int, actor: str) -> None:
-    """Make sure the order is visible in Receive/Track Order."""
-    now = _now()
-    with get_session() as s:
-        o = s.exec(select(Order).where(Order.id == int(order_id))).first()
-        if not o:
-            return
+# def _ensure_order_pending_receive(*, order_id: int, actor: str) -> None:
+#     """Make sure the order is visible in Receive/Track Order."""
+#     now = _now()
+#     with get_session() as s:
+#         o = s.exec(select(Order).where(Order.id == int(order_id))).first()
+#         if not o:
+#             return
 
-        # Only bump from draft -> pending_receive (do not downgrade other states)
-        if (_s(getattr(o, "status", "")).lower() in {"draft", "borrador"}):
-            o.status = "pending_receive"
-            o.updated_at = now
-            o.updated_by = actor or "venue"
-            s.add(o)
-            s.commit()
+#         # Only bump from draft -> pending_receive (do not downgrade other states)
+#         if (_s(getattr(o, "status", "")).lower() in {"draft", "borrador"}):
+#             o.status = "pending_receive"
+#             o.updated_at = now
+#             o.updated_by = actor or "venue"
+#             s.add(o)
+#             s.commit()
 
 def _render_urgent_tab(ctx: 'OrderContext') -> None:
     st.markdown("### ⚡ Urgent reorders")
@@ -1004,6 +1331,9 @@ def _render_urgent_tab(ctx: 'OrderContext') -> None:
             use_wa = st.toggle("WhatsApp", value=False, key=f"urg_use_wa_{int(ctx.order.id)}")
         wa_cc = st.text_input("Prefijo país (WhatsApp)", value="+34", key=f"urg_wa_cc_{int(ctx.order.id)}")
 
+    # ✅ NEW: used for the Suggested badge (delivery within 24h + relevance ≥ 0.45)
+    now_dt = _now()
+
     pending_send: Dict[str, List[Dict[str, Any]]] = {}
 
     for r in reqs:
@@ -1012,7 +1342,6 @@ def _render_urgent_tab(ctx: 'OrderContext') -> None:
         qty = float(_safe_float(getattr(r, "quantity", 0.0), 0.0))
         srcp = norm_provider(_s(getattr(r, "original_provider_name", "")))
         unit = _s(getattr(r, "unit", "")) or "unit"
-
 
         with st.container(border=True):
             st.markdown(f"**{pname}**")
@@ -1029,10 +1358,19 @@ def _render_urgent_tab(ctx: 'OrderContext') -> None:
                 st.warning("No provider suggestions found.")
                 continue
 
+            # ✅ UPDATED label: adds "✅ Suggested" when fast + strong match
             def _lbl(sug: Dict[str, Any]) -> str:
                 dt = sug.get("delivery_dt")
                 dt_txt = dt.strftime("%a %d %b %H:%M") if isinstance(dt, datetime) else "—"
-                return f"{sug['provider_name']} · {sug.get('eta_txt','—')} · {dt_txt}"
+
+                rel = float(sug.get("relevance") or 0.0)
+                badge = ""
+                if isinstance(dt, datetime):
+                    hrs = (dt - now_dt).total_seconds() / 3600.0
+                    if 0 <= hrs <= 24 and rel >= 0.45:
+                        badge = "✅ Suggested · "
+
+                return f"{badge}{sug['provider_name']} · {sug.get('eta_txt','—')} · {dt_txt}"
 
             idxs = list(range(len(suggestions)))
             chosen_idx = st.radio(
@@ -1064,7 +1402,6 @@ def _render_urgent_tab(ctx: 'OrderContext') -> None:
                     }
                 )
 
-
     st.markdown("#### Send grouped messages")
     if not pending_send:
         st.info("Select a qty > 0 to prepare messages.")
@@ -1078,7 +1415,12 @@ def _render_urgent_tab(ctx: 'OrderContext') -> None:
         key=f"urg_send_sel_{int(ctx.order.id)}",
     )
 
-    if st.button("🚀 Send urgent requests", type="primary", use_container_width=True, key=f"urg_send_btn_{int(ctx.order.id)}"):
+    if st.button(
+        "🚀 Send urgent requests",
+        type="primary",
+        use_container_width=True,
+        key=f"urg_send_btn_{int(ctx.order.id)}",
+    ):
         actor = _s(st.session_state.get("user_email") or st.session_state.get("actor") or "venue")
         any_fail = False
 
@@ -1119,7 +1461,7 @@ def _render_urgent_tab(ctx: 'OrderContext') -> None:
             if use_email:
                 ok, msg_or_link = _send_urgent_request_email(
                     venue_id=int(ctx.order.venue_id),
-                    order_id=int(urgent_order_id),   # ✅ NEW ORDER
+                    order_id=int(urgent_order_id),  # ✅ NEW ORDER
                     provider_name=prov,
                     items=items,
                     source_order_id=int(ctx.order.id),
@@ -1150,7 +1492,7 @@ def _render_urgent_tab(ctx: 'OrderContext') -> None:
             if email_ok or wa_ok:
                 _upsert_provider_send_status(
                     venue_id=int(ctx.order.venue_id),
-                    order_id=int(urgent_order_id),   # ✅ NEW ORDER
+                    order_id=int(urgent_order_id),  # ✅ NEW ORDER
                     provider_name=prov,
                     sent_email=bool(email_ok),
                     sent_whatsapp=False,
@@ -1160,18 +1502,18 @@ def _render_urgent_tab(ctx: 'OrderContext') -> None:
         with get_session() as s:
             for prov in prov_selected:
                 for it in (pending_send.get(prov) or []):
-                    rid = int(it.get("req_id") or 0)
-                    rr = s.exec(select(UrgentReorderRequest).where(UrgentReorderRequest.id == rid)).first()
+                    rid2 = int(it.get("req_id") or 0)
+                    rr = s.exec(select(UrgentReorderRequest).where(UrgentReorderRequest.id == rid2)).first()
                     if rr:
                         rr.status = "sent"
-                        for attr, val in [
-                            ("selected_provider_name", prov),
-                            ("updated_at", _now()),
-                        ]:
-                            try:
-                                setattr(rr, attr, val)
-                            except Exception:
-                                pass
+                        try:
+                            rr.selected_provider_name = prov
+                        except Exception:
+                            pass
+                        try:
+                            rr.updated_at = _now()
+                        except Exception:
+                            pass
                         s.add(rr)
             s.commit()
 
@@ -1181,6 +1523,7 @@ def _render_urgent_tab(ctx: 'OrderContext') -> None:
         # ✅ Jump user to the NEW urgent order in Track Order
         set_query_params(page="tracking", order_id=str(int(urgent_order_id)))
         st.rerun()
+
 
 
 
@@ -1362,8 +1705,10 @@ def _iva_pct_for_pid(products_by_id: dict[int, Product], pid: Optional[int], def
     return float(default_pct) if v <= 0 else float(v)
 
 def _badge(text: str, kind: str) -> str:
+    if not text:
+        return ""
     kind = kind if kind in {"ok", "warn", "bad", "info"} else "info"
-    return f"<span class='voi-badge {kind}'>{text}</span>"
+    return f"<span class='voi-badge {kind}'>{html.escape(text)}</span>"
 
 
 def _state_badge(state: str) -> Tuple[str, str]:
@@ -1410,6 +1755,7 @@ class OrderContext:
     lines_by_provider: Dict[str, List[OrderLine]]
     followups_by_key: Dict[Tuple[str, int], ProviderLineFollowUp]
     receipts_by_provider: Dict[str, ProviderReceipt]
+    resolutions_by_provider: Dict[str, List[ProviderResolution]] = field(default_factory=dict)
 
 
 # =============================
@@ -1500,6 +1846,19 @@ def _load_order_context(venue_id: int, order_id: int) -> OrderContext:
         )
         receipts_by_provider = {norm_provider(r.provider_name): r for r in receipts}
 
+        # ✅ NEW: load ProviderResolution rows and group by provider
+        resolutions = list(
+            s.exec(
+                select(ProviderResolution)
+                .where(ProviderResolution.order_id == int(order_id))
+            ).all()
+        )
+        resolutions_by_provider: Dict[str, List[ProviderResolution]] = {}
+        for r in resolutions:
+            prov = norm_provider(getattr(r, "provider_name", "") or "")
+            if prov:
+                resolutions_by_provider.setdefault(prov, []).append(r)
+
         providers = list(s.exec(select(Provider).where(Provider.venue_id == int(venue_id))).all())
         providers_by_name = {norm_provider(p.name): p for p in providers}
 
@@ -1512,6 +1871,54 @@ def _load_order_context(venue_id: int, order_id: int) -> OrderContext:
         lines_by_provider=lines_by_provider,
         followups_by_key=followups_by_key,
         receipts_by_provider=receipts_by_provider,
+        resolutions_by_provider=resolutions_by_provider,  # ✅ NEW
+    )
+
+
+
+
+# =============================
+# Comments (supplier/venue)
+# =============================
+
+def _supplier_comment_for_provider(ctx: "OrderContext", prov_key: str) -> str:
+    """Best-effort supplier comment for a provider.
+
+    Primary source: ProviderReceipt.supplier_declared_comment (supplier confirmation).
+    Fallback: OrderWorkflow.note when supplier confirmed and note looks like free text.
+    """
+    prov_key = norm_provider(prov_key)
+    receipt = getattr(ctx, "receipts_by_provider", {}).get(prov_key)
+    comment = _s(getattr(receipt, "supplier_declared_comment", None))
+    if comment:
+        return comment
+
+    wf = getattr(ctx, "workflows_by_provider", {}).get(prov_key)
+    state = _s(getattr(wf, "state", None)).upper()
+    note = _s(getattr(wf, "note", None))
+    if not note:
+        return ""
+
+    # Only use workflow.note as a fallback when we're in supplier confirmation states.
+    if not state.startswith("SUPPLIER_CONFIRMED"):
+        return ""
+
+    # Avoid showing resolution meta / JSON-ish blobs.
+    noisy_tokens = ("{", "}", "[", "]", "resolution", "credit", "re-delivery", "redelivery", "meta:")
+    low = note.lower()
+    if any(t in low for t in noisy_tokens) and len(note) > 80:
+        return ""
+
+    return note.strip()
+
+
+def _render_commentline(*, label: str, text: str) -> None:
+    txt = (text or "").strip()
+    if not txt:
+        return
+    st.markdown(
+        f"""<div class='voi-commentline'><span class='lbl'>{html.escape(label)}</span><span class='txt'>{html.escape(txt)}</span></div>""",
+        unsafe_allow_html=True,
     )
 
 
@@ -1597,18 +2004,18 @@ def _load_timeline(order_id: int, provider: str) -> List[OrderWorkflowEvent]:
         )
 
 
-def _render_timeline(ctx: OrderContext, provider: str) -> None:
-    events = _load_timeline(int(ctx.order.id), provider)
-    if not events:
-        st.caption("No timeline yet.")
-        return
-    for e in events:
-        at = e.at.strftime("%Y-%m-%d %H:%M") if getattr(e, "at", None) else ""
-        note = _s(getattr(e, "note", None))
-        frm = _s(getattr(e, "from_state", None))
-        to = _s(getattr(e, "to_state", None))
-        who = f"{_s(getattr(e, 'actor_role', None))}:{_s(getattr(e, 'actor', None))}".strip(":")
-        st.markdown(f"- **{at}** · `{who}` · {frm} → {to}" + (f" · {note}" if note else ""))
+# def _render_timeline(ctx: OrderContext, provider: str) -> None:
+#     events = _load_timeline(int(ctx.order.id), provider)
+#     if not events:
+#         st.caption("No timeline yet.")
+#         return
+#     for e in events:
+#         at = e.at.strftime("%Y-%m-%d %H:%M") if getattr(e, "at", None) else ""
+#         note = _s(getattr(e, "note", None))
+#         frm = _s(getattr(e, "from_state", None))
+#         to = _s(getattr(e, "to_state", None))
+#         who = f"{_s(getattr(e, 'actor_role', None))}:{_s(getattr(e, 'actor', None))}".strip(":")
+#         st.markdown(f"- **{at}** · `{who}` · {frm} → {to}" + (f" · {note}" if note else ""))
 
 
 # =============================
@@ -1702,12 +2109,14 @@ def _derive_expected_qty(line: OrderLine, fu: Optional[ProviderLineFollowUp]) ->
     return ordered
 
 
+
 def _render_expected_lines(
     ctx: OrderContext,
     provider: str,
     *,
     show_prices: bool = False,
-    include_iva: bool = False
+    include_iva: bool = False,
+    supplier_resolution_by_line_id: Optional[Dict[int, str]] = None,
 ) -> None:
     prov = norm_provider(provider)
     lines = ctx.lines_by_provider.get(prov, []) or []
@@ -1715,49 +2124,49 @@ def _render_expected_lines(
         st.info("No products.")
         return
 
-    st.markdown("<div class='voi-muted'><b>Supplier confirmation</b></div>", unsafe_allow_html=True)
+    # ---------- Precompute summary + per-line data ----------
+    total_lines = 0
+    missing_lines = 0
+    partial_lines = 0
+    mismatch_lines = 0  # expected < ordered
 
-    for ln in sorted(lines, key=lambda x: _line_name(x, ctx.products_by_id).lower()):
+    table_subtotal = 0.0
+    table_iva = 0.0
+    table_total = 0.0
+
+    computed: dict[int, dict] = {}
+
+    for ln in lines:
         lid = int(ln.id)
-        name = _line_name(ln, ctx.products_by_id)
-        unit = _line_unit(ln, ctx.products_by_id)
-        desc = _line_desc(ln, ctx.products_by_id)
         ordered = _safe_float(getattr(ln, "quantity", 0.0), 0.0)
 
         fu = ctx.followups_by_key.get((prov, lid))
         stt = (_s(getattr(fu, "supplier_status", None))).lower() if fu else "unknown"
         sqty = getattr(fu, "supplier_qty", None) if fu else None
 
-        # supplier confirmed qty (expected)
+        # Supplier "expected" qty logic
         if stt == "missing":
-            tag = ("❌ Not sending", "bad")
             expected_qty = 0.0
-            send_txt = f"0 {unit}"
-            is_bad = True
+            missing_lines += 1
         elif stt == "partial":
-            tag = ("🟡 Partial", "warn")
             expected_qty = _safe_float(sqty, 0.0)
-            send_txt = f"{expected_qty:g} {unit}"
-            is_bad = expected_qty < ordered
+            partial_lines += 1
         elif stt == "ok":
-            tag = ("✅ Full", "ok")
             expected_qty = _safe_float(sqty, ordered) if sqty is not None else ordered
-            send_txt = f"{expected_qty:g} {unit}"
-            is_bad = False
         else:
-            tag = ("⚪ Not specified", "warn")
-            expected_qty = ordered  # best guess
-            send_txt = "(not specified)"
-            is_bad = False
+            expected_qty = ordered
 
-        # ---- pricing pills (optional) ----
-        price_html = ""
+        total_lines += 1
+        if expected_qty < ordered:
+            mismatch_lines += 1
+
+        # Pricing lookup (units, discount) — amounts will be computed later per row
         if show_prices:
             pid_raw = getattr(ln, "product_id", None)
             pid = int(pid_raw) if pid_raw not in (None, "", 0, "0") else None
+            gross_unit = _price_for_pid(ctx.products_by_id, pid)
 
-            gross_unit = _price_for_pid(ctx.products_by_id, pid)  # catalog/unit price (gross/base)
-            if gross_unit > 0 and expected_qty > 0:
+            if gross_unit > 0:
                 pricing = _pricing_for_line(
                     venue_id=int(ctx.order.venue_id),
                     providers_by_name=ctx.providers_by_name,
@@ -1768,40 +2177,226 @@ def _render_expected_lines(
                 )
                 net_unit = float(pricing.get("net_unit", gross_unit) or gross_unit)
                 disc_pct = float(pricing.get("discount_pct", 0.0) or 0.0)
+                iva_pct = _iva_pct_for_pid(ctx.products_by_id, pid, 21.0) if include_iva else 0.0
 
-                subtotal = float(expected_qty) * net_unit
+                computed[lid] = {
+                    "ordered": float(ordered),
+                    "expected_qty": float(expected_qty),
+                    "stt": stt,
+                    "gross_unit": float(gross_unit),
+                    "net_unit": float(net_unit),
+                    "disc_pct": float(disc_pct),
+                    "iva_pct": float(iva_pct),
+                }
+            else:
+                computed[lid] = {
+                    "ordered": float(ordered),
+                    "expected_qty": float(expected_qty),
+                    "stt": stt,
+                }
+        else:
+            computed[lid] = {
+                "ordered": float(ordered),
+                "expected_qty": float(expected_qty),
+                "stt": stt,
+            }
 
-                pills = [
-                    f"<span class='pill'>€/{unit}: {net_unit:,.2f}</span>",
-                ]
-                if disc_pct > 0:
-                    pills.append(f"<span class='pill pill--warn'>Disc: {disc_pct:g}%</span>")
-                pills.append(f"<span class='pill pill--ok'>Subtotal: {subtotal:,.2f}</span>")
+    # ---------- Summary header ----------
+    summary_left = f"📦 {total_lines} items"
+    if missing_lines or partial_lines or mismatch_lines:
+        summary_left += f" · ❌ {missing_lines} missing · 🟡 {partial_lines} partial · ⚠️ {mismatch_lines} mismatch"
 
-                if include_iva:
-                    iva_pct = _iva_pct_for_pid(ctx.products_by_id, pid, 21.0)
-                    iva_eur = subtotal * (iva_pct / 100.0)
-                    total = subtotal + iva_eur
-                    pills.append(f"<span class='pill'>IVA {iva_pct:g}%: {iva_eur:,.2f}</span>")
-                    pills.append(f"<span class='pill pill--ok'>Total: {total:,.2f}</span>")
+    st.markdown(
+        f"<div class='voi-muted'><b>Supplier confirmation</b> · {summary_left}</div>",
+        unsafe_allow_html=True,
+    )
 
-                price_html = "<div class='pillrow'>" + "".join(pills) + "</div>"
+    # ---------- Render invoice-like list (many products) ----------
+    rows_html = ""
+    table_subtotal = 0.0
+    table_iva = 0.0
+    table_total = 0.0
 
-        cls = "line bad" if is_bad else "line"
-        st.markdown(
-            f"<div class='{cls}'>"
-            f"<div class='top'><div><div class='name'>{name}</div>"
-            + (f"<div class='desc'>{desc}</div>" if desc else "")
-            + f"</div><div class='qty'>{send_txt}</div></div>"
-            f"<div class='pillrow'>"
-            f"<span class='pill'>Ordered: {ordered:g} {unit}</span>"
-            f"<span class='pill pill--{tag[1]}'>{tag[0]}</span>"
-            f"</div>"
-            f"{price_html}"
-            f"</div>",
-            unsafe_allow_html=True,
+    for ln in sorted(lines, key=lambda x: _line_name(x, ctx.products_by_id).lower()):
+        lid = int(ln.id)
+        name = _line_name(ln, ctx.products_by_id)
+        unit = _line_unit(ln, ctx.products_by_id)
+        desc = _line_desc(ln, ctx.products_by_id)
+
+        c = computed.get(lid, {})
+        ordered_qty = float(c.get("ordered", 0.0) or 0.0)
+        expected_qty = float(c.get("expected_qty", 0.0) or 0.0)
+
+        # returns: (issue_status, received_qty, issue_qty, in_invoice, reason)
+        issue_status, venue_received_qty, issue_qty, in_invoice, reason = _get_received_info(ctx, prov, lid)
+
+        # RECEIVED + REASON
+        if issue_status == "ok":
+            received_qty = expected_qty
+            reason_cell = "—"
+        else:
+            received_qty = float(venue_received_qty or 0.0)
+
+            # ✅ BUSINESS RULE:
+            # missing + present in invoice => invoice discrepancy
+            if issue_status == "missing" and in_invoice is True:
+                reason_cell = "Invoice discrepancy"
+            else:
+                reason_cell = (
+                    reason
+                    if reason and reason != "—"
+                    else (issue_status.upper() if issue_status not in ("unknown", "") else "—")
+                )
+
+        # ✅ SOLUTION column (supplier-only)
+        if issue_status == "ok":
+            solution_cell = "—"
+        else:
+            solution_cell = ""  # empty until supplier resolution exists
+
+        if supplier_resolution_by_line_id:
+            r = (supplier_resolution_by_line_id.get(lid) or "").strip().lower()
+            if r == "credit_note":
+                solution_cell = "Credit note"
+            elif r in {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}:
+                solution_cell = "Re-delivery"
+            elif r == "reject":
+                solution_cell = "Rejected"
+            elif r == "partial_delivery":
+                solution_cell = "Partial delivery"
+
+        # PRICING quantity
+        price_qty = expected_qty
+
+        # If supplier decided re-delivery, invoice shouldn’t be credited for missing qty
+        if supplier_resolution_by_line_id:
+            r = (supplier_resolution_by_line_id.get(lid) or "").strip().lower()
+            if r in {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}:
+                price_qty = received_qty
+
+        # fallback legacy rule
+        elif issue_status == "missing" and (in_invoice is False):
+            price_qty = received_qty
+
+        # Cells
+        net_unit_cell = "—"
+        base_cell = "—"
+        disc_cell = "—"
+        iva_cell = "—"
+        total_cell = "—"
+
+        if show_prices and ("net_unit" in c) and price_qty >= 0:
+            unit_net = float(c.get("net_unit", 0.0) or 0.0)
+            gross_unit = float(c.get("gross_unit", unit_net) or unit_net)
+            disc_pct = float(c.get("disc_pct", 0.0) or 0.0)
+            iva_pct = float(c.get("iva_pct", 0.0) or 0.0) if include_iva else 0.0
+
+            net_unit_cell = f"€{unit_net:,.2f}"
+
+            subtotal = price_qty * unit_net
+            iva_eur = subtotal * (iva_pct / 100.0) if include_iva else 0.0
+            total = subtotal + iva_eur
+
+            base_before_disc = price_qty * gross_unit
+            discount_eur = max(0.0, base_before_disc - subtotal)
+
+            base_cell = f"€{subtotal:,.2f}"
+            if disc_pct > 0.0001 or discount_eur > 0.004:
+                disc_cell = f"<span class='inv-neg'>-€{discount_eur:,.2f}</span>"
+            else:
+                disc_cell = "—"
+
+            iva_cell = f"€{iva_eur:,.2f}" if include_iva else "—"
+            total_cell = f"€{total:,.2f}" if include_iva else f"€{subtotal:,.2f}"
+
+            table_subtotal += subtotal
+            table_iva += iva_eur
+            table_total += total
+
+        desc_html = f"<div class='inv-desc'>{desc}</div>" if desc else ""
+        not_in_invoice_badge = "" if (in_invoice is not False) else " <span class='inv-flag'>NOT IN INVOICE</span>"
+
+        rows_html += (
+            "<tr>"
+            f"<td class='name'>{name}{not_in_invoice_badge}{desc_html}</td>"
+            f"<td class='num'>{ordered_qty:g} {unit}</td>"
+            f"<td class='num'>{expected_qty:g} {unit}</td>"
+            f"<td class='num'>{received_qty:g} {unit}</td>"
+            f"<td class='reason'>{reason_cell}</td>"
+            f"<td class='reason'>{solution_cell}</td>"
+            f"<td class='num'>{net_unit_cell}</td>"
+            f"<td class='num'>{base_cell}</td>"
+            f"<td class='num'>{disc_cell}</td>"
+            f"<td class='num'>{iva_cell}</td>"
+            f"<td class='num'><b>{total_cell}</b></td>"
+            "</tr>"
         )
 
+    # Footer totals
+    footer_subtotal = f"€{table_subtotal:,.2f}" if show_prices else "—"
+    footer_iva = f"€{table_iva:,.2f}" if (show_prices and include_iva) else "—"
+    footer_total = (
+        f"€{table_total:,.2f}" if (show_prices and include_iva)
+        else (f"€{table_subtotal:,.2f}" if show_prices else "—")
+    )
+
+    # Invoice header
+    receipt = (ctx.receipts_by_provider or {}).get(prov)
+    invoice_no = _s(getattr(receipt, "invoice_number", None)).strip() if receipt else ""
+    invoice_label = f"Invoice Nº {invoice_no}" if invoice_no else ""
+
+    summary_right = ""
+    if show_prices:
+        if include_iva:
+            summary_right = f"Est. total (IVA incl): {footer_total}"
+        else:
+            summary_right = f"Est. subtotal: {footer_subtotal}"
+
+    invoice_html = (
+        "<div class='inv-wrap'>"
+        "<div class='inv-head'>"
+        f"<div class='inv-head-left'>{invoice_label}</div>"
+        f"<div class='inv-head-right'>{summary_right}</div>"
+        "</div>"
+        "<table class='inv-table'>"
+        "<thead>"
+        "<tr>"
+        "<th>Product</th>"
+        "<th class='num'>Ordered</th>"
+        "<th class='num'>Expected</th>"
+        "<th class='num'>Received</th>"
+        "<th>Reason</th>"
+        "<th>Solution</th>"
+        "<th class='num'>Net €/unit</th>"
+        "<th class='num'>Disc%</th>"
+        "<th class='num'>Net</th>"
+        "<th class='num'>IVA</th>"
+        "<th class='num'>Total</th>"
+        "</tr>"
+        "</thead>"
+        "<tbody>"
+        f"{rows_html}"
+        "</tbody>"
+        "<tfoot>"
+        "<tr>"
+        "<td class='muted'>TOTAL</td>"
+        "<td class='num'></td>"
+        "<td class='num'></td>"
+        "<td class='num'></td>"
+        "<td></td>"
+        "<td></td>"
+        "<td></td>"  # Net €/unit column
+        f"<td class='num'>{footer_subtotal}</td>"
+        "<td class='num'></td>"
+        f"<td class='num'>{footer_iva}</td>"
+        f"<td class='num'>{footer_total}</td>"
+        "</tr>"
+        "</tfoot>"
+        "</table>"
+        "</div>"
+    )
+
+    st.markdown(invoice_html, unsafe_allow_html=True)
 
 
 def _render_receive_form(ctx: OrderContext, provider: str) -> None:
@@ -1813,8 +2408,8 @@ def _render_receive_form(ctx: OrderContext, provider: str) -> None:
 
     st.markdown("<div class='voi-muted'><b>Venue received</b></div>", unsafe_allow_html=True)
 
-    STATUS_OPTIONS = ["OK", "Missing", "Damaged", "Wrong item"]  # split for better accountability
-    INVOICE_OPTIONS = ["In invoice", "Not in invoice"]  # no "Unknown"
+    STATUS_OPTIONS_ALL = ["OK", "Missing", "Damaged", "Wrong item"]
+    INVOICE_OPTIONS_ALL = ["In invoice", "Not in invoice"]
 
     # --- callback: sync dependent fields when Status changes (works ONLY outside st.form) ---
     def _on_status_change(status_key: str, issue_key: str, invoice_key: str, qty_expected_key: str) -> None:
@@ -1826,23 +2421,17 @@ def _render_receive_form(ctx: OrderContext, provider: str) -> None:
             st.session_state[invoice_key] = "Not in invoice"
 
         elif status_now == "Missing":
-            # Default issue qty to expected ONLY if user hasn't already put a value
             cur = _safe_float(st.session_state.get(issue_key, 0.0), 0.0)
             if cur <= 0:
                 st.session_state[issue_key] = qty_expected
-
-            # Missing => invoice listed relevant; keep existing if valid else default
             inv = _s(st.session_state.get(invoice_key, "Not in invoice"))
-            if inv not in INVOICE_OPTIONS:
+            if inv not in INVOICE_OPTIONS_ALL:
                 st.session_state[invoice_key] = "Not in invoice"
 
         elif status_now in {"Damaged", "Wrong item"}:
             cur = _safe_float(st.session_state.get(issue_key, 0.0), 0.0)
             if cur <= 0:
                 st.session_state[issue_key] = qty_expected
-
-            # Invoice selector is disabled for Damaged / Wrong item (needs_invoice=False),
-            # but we still set a deterministic value
             st.session_state[invoice_key] = "In invoice"
 
     for ln in sorted(lines, key=lambda x: _line_name(x, ctx.products_by_id).lower()):
@@ -1850,15 +2439,19 @@ def _render_receive_form(ctx: OrderContext, provider: str) -> None:
         name = _line_name(ln, ctx.products_by_id)
         unit = _line_unit(ln, ctx.products_by_id)
         qty_ordered = _safe_float(getattr(ln, "quantity", 0.0), 0.0)
+
         fu = ctx.followups_by_key.get((prov, lid))
+
+        # supplier confirmed "not sending"
+        supplier_status = (_s(getattr(fu, "supplier_status", None))).lower() if fu else ""
+        supplier_confirmed_missing = (supplier_status == "missing")
+
         qty_expected = _derive_expected_qty(ln, fu)
 
         base = f"recv_{int(order.id)}_{prov}_{lid}_"
         status_key = base + "status"
         issue_key = base + "issue_qty"
         invoice_key = base + "invoice"
-
-        # helper key to pass expected qty into callback safely
         qty_expected_key = base + "qty_expected"
 
         # defaults from existing followup
@@ -1877,7 +2470,9 @@ def _render_receive_form(ctx: OrderContext, provider: str) -> None:
             elif "[venue_status=ok]" in vc:
                 default_status = "OK"
 
+            # Note: qty_invoiced is used as "issue qty" in your UI
             default_issue_qty = _safe_float(getattr(fu, "qty_invoiced", None), 0.0)
+
             inv_db = getattr(fu, "invoice_listed", None)
             if inv_db is True:
                 default_invoice = "In invoice"
@@ -1885,6 +2480,13 @@ def _render_receive_form(ctx: OrderContext, provider: str) -> None:
                 default_invoice = "Not in invoice"
             else:
                 default_invoice = "Not in invoice"
+
+        # ✅ Hard rule: if supplier confirmed missing -> only Missing + Not in invoice
+        # and issue qty should represent the ordered qty missing.
+        if supplier_confirmed_missing:
+            default_status = "Missing"
+            default_invoice = "Not in invoice"
+            default_issue_qty = float(qty_ordered) if qty_ordered > 0 else 0.0
 
         # Initialize state
         if status_key not in st.session_state:
@@ -1894,14 +2496,29 @@ def _render_receive_form(ctx: OrderContext, provider: str) -> None:
         if invoice_key not in st.session_state:
             st.session_state[invoice_key] = default_invoice
 
-        # Always refresh expected qty for callback (it can change based on followups)
-        st.session_state[qty_expected_key] = float(qty_expected)
+        # ✅ expected max base for issue qty:
+        # - normal: qty_expected
+        # - supplier missing: qty_ordered (so we can record the missing qty properly)
+        issue_max_base = float(qty_ordered) if supplier_confirmed_missing else float(qty_expected)
 
-        # Normalize old values
+        # refresh expected qty for callback + clamping
+        st.session_state[qty_expected_key] = float(issue_max_base)
+
+        # Per-line allowed options
+        STATUS_OPTIONS = ["Missing"] if supplier_confirmed_missing else STATUS_OPTIONS_ALL
+        INVOICE_OPTIONS = ["Not in invoice"] if supplier_confirmed_missing else INVOICE_OPTIONS_ALL
+
+        # Normalize old values (but respect locked mode)
         if st.session_state[status_key] not in STATUS_OPTIONS:
-            st.session_state[status_key] = default_status
+            st.session_state[status_key] = STATUS_OPTIONS[0]
         if st.session_state[invoice_key] not in INVOICE_OPTIONS:
-            st.session_state[invoice_key] = default_invoice
+            st.session_state[invoice_key] = INVOICE_OPTIONS[0]
+
+        # ✅ Force locked values every render (robust against old session state)
+        if supplier_confirmed_missing:
+            st.session_state[status_key] = "Missing"
+            st.session_state[invoice_key] = "Not in invoice"
+            st.session_state[issue_key] = float(qty_ordered) if qty_ordered > 0 else 0.0
 
         status_now = _s(st.session_state.get(status_key, default_status))
         needs_issue_qty = status_now in {"Missing", "Damaged", "Wrong item"}
@@ -1911,18 +2528,21 @@ def _render_receive_form(ctx: OrderContext, provider: str) -> None:
 
         with c0:
             st.markdown(f"**{name}**")
-            st.caption(f"Expected: {qty_expected:g} {unit} · Ordered: {qty_ordered:g} {unit}")
+            if supplier_confirmed_missing:
+                st.caption("🚫 Supplier confirmed: **Not sending**")
+            # st.caption(f"Expected: {qty_expected:g} {unit} · Ordered: {qty_ordered:g} {unit}")
 
-        # Status selectbox WITH callback (now allowed, since we're not in st.form)
+        # Status selectbox
         with c1:
             st.selectbox(
                 "Status",
                 STATUS_OPTIONS,
-                index=STATUS_OPTIONS.index(st.session_state[status_key]),
+                index=0 if supplier_confirmed_missing else STATUS_OPTIONS.index(st.session_state[status_key]),
                 key=status_key,
                 label_visibility="collapsed",
-                on_change=_on_status_change,
-                kwargs=dict(
+                disabled=supplier_confirmed_missing,  # ✅ lock if supplier said not sending
+                on_change=None if supplier_confirmed_missing else _on_status_change,
+                kwargs=None if supplier_confirmed_missing else dict(
                     status_key=status_key,
                     issue_key=issue_key,
                     invoice_key=invoice_key,
@@ -1930,50 +2550,56 @@ def _render_receive_form(ctx: OrderContext, provider: str) -> None:
                 ),
             )
 
-        # Re-read after widget (callback may have changed state)
+        # Re-read after widget
         status_now = _s(st.session_state.get(status_key, default_status))
         needs_issue_qty = status_now in {"Missing", "Damaged", "Wrong item"}
         needs_invoice = status_now == "Missing"
 
-        # Safety: if user flips to OK, keep issue qty 0 even if they previously had a value
-        if status_now == "OK":
-            st.session_state[issue_key] = 0.0
-            
-        # Enforce bounds based on expected qty
-        if needs_issue_qty:
-            # clamp to [1, qty_expected]
-            cur = _safe_float(st.session_state.get(issue_key, 0.0), 0.0)
-            if cur < 1:
-                st.session_state[issue_key] = 1.0
-            elif cur > float(qty_expected):
-                st.session_state[issue_key] = float(qty_expected)
+        # Enforce issue qty rules + bounds
+        if supplier_confirmed_missing:
+            # locked to ordered qty missing, no editing
+            st.session_state[issue_key] = float(qty_ordered) if qty_ordered > 0 else 0.0
         else:
-            # OK status => no issue
-            st.session_state[issue_key] = 0.0
+            if status_now == "OK":
+                st.session_state[issue_key] = 0.0
+            elif needs_issue_qty:
+                cur = _safe_float(st.session_state.get(issue_key, 0.0), 0.0)
+                if cur < 1:
+                    st.session_state[issue_key] = 1.0
+                elif cur > float(issue_max_base):
+                    st.session_state[issue_key] = float(issue_max_base)
 
         with c2:
             st.number_input(
                 "Issue qty",
                 min_value=1.0 if needs_issue_qty else 0.0,
-                max_value=float(qty_expected) if needs_issue_qty else 0.0,
-                value=float(st.session_state.get(issue_key, 0.0)),
+                max_value=float(issue_max_base) if needs_issue_qty else 0.0,
                 step=1.0,
-                disabled=not needs_issue_qty,
+                disabled=(not needs_issue_qty) or supplier_confirmed_missing,
                 key=issue_key,
                 label_visibility="collapsed",
             )
+
+        # Invoice selector rules:
+        # - Only relevant for Missing
+        # - Locked to "Not in invoice" when supplier confirmed missing
+        if supplier_confirmed_missing:
+            st.session_state[invoice_key] = "Not in invoice"
+        else:
+            if status_now == "OK":
+                st.session_state[invoice_key] = "Not in invoice"
+            elif status_now in {"Damaged", "Wrong item"}:
+                st.session_state[invoice_key] = "In invoice"
 
         with c3:
             st.selectbox(
                 "Invoice listed",
                 INVOICE_OPTIONS,
-                index=INVOICE_OPTIONS.index(st.session_state[invoice_key]),
-                disabled=not needs_invoice,
+                index=0 if supplier_confirmed_missing else INVOICE_OPTIONS.index(st.session_state[invoice_key]),
+                disabled=(not needs_invoice) or supplier_confirmed_missing,  # ✅ lock
                 key=invoice_key,
                 label_visibility="collapsed",
             )
-
-
 
 
 # =============================
@@ -2085,7 +2711,6 @@ def _clear_receive_form_state(order_id: int, provider: str) -> None:
         if k.startswith(prefix):
             del st.session_state[k]
 
-
 def save_all_received_for_provider(*, ctx: OrderContext, provider: str) -> Tuple[bool, str]:
     prov = norm_provider(provider)
     order = ctx.order
@@ -2093,12 +2718,49 @@ def save_all_received_for_provider(*, ctx: OrderContext, provider: str) -> Tuple
     if not lines:
         return False, "No lines for provider"
 
+    # ------------------------------------------------------------
+    # ✅ Invoice number REQUIRED: take it from the UI (session_state)
+    # ------------------------------------------------------------
+    inv_key = f"recv_inv_{int(order.id)}_{prov}"
+    invoice_number_ui = (st.session_state.get(inv_key) or "").strip()
+
+    if not invoice_number_ui:
+        return False, "Invoice number is required before saving."
+
     any_invoice_discrepancy = False
     any_operational_missing = False
 
-    receipt = ctx.receipts_by_provider.get(prov)
-    invoice_number = _s(getattr(receipt, "invoice_number", None)) if receipt else None
+    # ------------------------------------------------------------
+    # ✅ Persist invoice number into ProviderReceipt (DB)
+    # so tickets/followups always get the correct invoice_number
+    # ------------------------------------------------------------
+    with get_session() as s:
+        receipt = s.exec(
+            select(ProviderReceipt).where(
+                ProviderReceipt.order_id == int(order.id),
+                ProviderReceipt.provider_name == prov,
+            )
+        ).first()
 
+        if not receipt:
+            receipt = ProviderReceipt(
+                venue_id=int(order.venue_id),
+                order_id=int(order.id),
+                provider_name=prov,
+                created_at=_now(),
+            )
+
+        receipt.invoice_number = invoice_number_ui
+        receipt.updated_at = _now()
+        s.add(receipt)
+        s.commit()
+
+    # Also reflect in-memory ctx (so same run uses the new value)
+    invoice_number = invoice_number_ui
+
+    # ------------------------------------------------------------
+    # Existing loop (unchanged except invoice_number now guaranteed)
+    # ------------------------------------------------------------
     for ln in lines:
         if getattr(ln, "id", None) is None:
             continue
@@ -2144,7 +2806,7 @@ def save_all_received_for_provider(*, ctx: OrderContext, provider: str) -> Tuple
             issue_qty=issue_qty,
             invoice_listed=invoice_listed,
             venue_qty=venue_qty,
-            invoice_number=invoice_number,
+            invoice_number=invoice_number,  # ✅ now always present
             unit=unit,
             product_name=name,
         )
@@ -2194,19 +2856,23 @@ def save_all_received_for_provider(*, ctx: OrderContext, provider: str) -> Tuple
 
     return True, "Saved"
 
-
 # =============================
 # Supplier resolution + verify
 # =============================
 
-def request_supplier_resolution(venue_id: int, order_id: int, provider: str) -> Tuple[bool, str]:
-    """Send email to supplier with tracking link."""
+def request_supplier_resolution(venue_id: int, order_id: int, provider: str, venue_comment: str = "") -> Tuple[bool, str]:
+    """Send email to supplier with tracking link + item list + venue footer."""
     prov = norm_provider(provider)
+
+    templates = _load_venue_templates(int(venue_id), 0)
+    lang = _s(getattr(templates, "email_lang", "en")) or "en"
+
     with get_session() as s:
         p = s.exec(select(Provider).where(Provider.venue_id == int(venue_id), Provider.name == prov)).first()
         if not p:
             p = s.exec(select(Provider).where(Provider.venue_id == int(venue_id), Provider.name == provider)).first()
-        emails = []
+
+        emails: List[str] = []
         if p and getattr(p, "order_email", None):
             emails = [x.strip() for x in (p.order_email or "").split("|") if x.strip()]
         if not emails and p and getattr(p, "emails", None):
@@ -2214,9 +2880,84 @@ def request_supplier_resolution(venue_id: int, order_id: int, provider: str) -> 
         if not emails:
             return False, "No supplier email configured."
 
+        # Pull open supplier-action tickets for this provider/order
+        tickets = list(
+            s.exec(
+                select(SeguimientoTicket).where(
+                    SeguimientoTicket.order_id == int(order_id),
+                    SeguimientoTicket.provider_name == prov,
+                    SeguimientoTicket.kind.in_(["invoice_discrepancy", "damaged", "wrong_item"]),
+                    SeguimientoTicket.state.in_(["open", "open_internal"]),
+                )
+            ).all()
+        )
+
+        # Map order_line_id -> Product description (best effort)
+        line_ids = [int(t.order_line_id) for t in tickets if getattr(t, "order_line_id", None) is not None]
+        lines_by_id: Dict[int, OrderLine] = {}
+        if line_ids:
+            rows = list(s.exec(select(OrderLine).where(OrderLine.id.in_(line_ids))).all())
+            lines_by_id = {int(r.id): r for r in rows if getattr(r, "id", None) is not None}
+
+        prod_ids = []
+        for ln in lines_by_id.values():
+            pid = getattr(ln, "product_id", None)
+            if pid is not None:
+                prod_ids.append(int(pid))
+
+        products_by_id: Dict[int, Product] = {}
+        if prod_ids:
+            prows = list(
+                s.exec(select(Product).where(Product.venue_id == int(venue_id), Product.id.in_(list(set(prod_ids))))).all()
+            )
+            products_by_id = {int(pp.id): pp for pp in prows if getattr(pp, "id", None) is not None}
+
+    # Supplier link
     link = build_seguimiento_url(order_id=int(order_id), provider_name=prov, role=ROLE_SUPPLIER, page_path="seguimiento")
-    subject = f"Action required — Invoice discrepancy ({prov})"
-    body = f"Please open the link and choose a resolution (credit note or re-delivery):\n\n{link}\n"
+
+    # Build item rows (name — description — qty)
+    items: List[Dict[str, Any]] = []
+    invoice_refs: List[str] = []
+
+    for t in tickets:
+        name = _s(getattr(t, "product_name", "")) or "Product"
+        unit = _s(getattr(t, "unit", "")) or "unit"
+        qty = float(getattr(t, "qty_invoiced", 0.0) or 0.0)
+
+        inv = _s(getattr(t, "invoice_number", ""))  # might be empty
+        if inv:
+            invoice_refs.append(inv)
+
+        desc = ""
+        lid = getattr(t, "order_line_id", None)
+        if lid is not None:
+            ln = lines_by_id.get(int(lid))
+            pid = getattr(ln, "product_id", None) if ln else None
+            prod = products_by_id.get(int(pid)) if pid is not None else None
+            desc = _s(getattr(prod, "description", "")) if prod else ""
+
+        items.append({"name": name, "description": desc, "qty": qty, "unit": unit})
+
+    # Prefer a single invoice ref if all same; otherwise omit from subject and keep body list only
+    invoice_ref = ""
+    uniq = sorted({x for x in invoice_refs if x})
+    if len(uniq) == 1:
+        invoice_ref = uniq[0]
+
+    subject, body = build_resolution_email_full(
+        venue_ctx=templates,
+        order_id=int(order_id),
+        provider_name=prov,
+        supplier_link=link,
+        items=items,
+        invoice_ref=invoice_ref,
+        lang=lang,
+    )
+
+    # Optional venue message for supplier
+    vc = _s(venue_comment)
+    if vc:
+        body = (body.rstrip() + "\n\nVenue message:\n" + vc + "\n").rstrip() + "\n"
 
     try:
         send_smtp_email(to=emails, subject=subject, text_body=body)
@@ -2230,7 +2971,7 @@ def request_supplier_resolution(venue_id: int, order_id: int, provider: str) -> 
         to_state="WAITING_SUPPLIER_ACTION",
         actor_role="venue",
         actor="venue",
-        note="Requested supplier decision via link.",
+        note=("Requested supplier decision via link." + (f" Venue message: {_s(venue_comment)}" if _s(venue_comment) else "")),
     )
 
     return True, link
@@ -2279,63 +3020,254 @@ def supplier_decision_from_venue(ctx: OrderContext, provider: str, decision: str
 
     return "ok"
 
+# def _derive_workflow_state_from_open_resolutions(open_rows: list[ProviderResolution]) -> str:
+#     """
+#     Keep your existing workflow states, but derive them from what's still OPEN.
+#     Priority: supplementary > credit_note > reject
+#     """
+#     types = {(_s(r.resolution_type).strip().lower()) for r in (open_rows or [])}
 
-def venue_verify_and_close(*, ctx: OrderContext, provider: str, mode: str) -> str:
+#     if "supplementary_delivery" in types:
+#         return "SUPPLEMENTARY_DELIVERY_SENT"
+
+#     if "credit_note" in types:
+#         # if any open credit_note has invoice, treat as ISSUED else PENDING
+#         has_invoice = any(_s(getattr(r, "credit_note_invoice", None)).strip() for r in open_rows if _s(getattr(r, "resolution_type", "")).lower() == "credit_note")
+#         return "SUPPLIER_CREDIT_NOTE_ISSUED" if has_invoice else "SUPPLIER_CREDIT_NOTE_PENDING"
+
+#     if "reject" in types:
+#         return "SUPPLIER_REJECTED"
+
+#     return "CLOSED"
+
+
+def venue_verify_and_close(*, ctx: OrderContext, provider: str, mode: str, credit_note_invoice: Optional[str] = None) -> str:
+    """
+    Close ONE resolution track (credit note OR re-delivery OR reject) for a provider,
+    without forcing the provider workflow to CLOSED unless nothing else remains open.
+    """
     prov = norm_provider(provider)
     mode = (mode or "").strip().lower()
     if mode not in {"credit_note", "supplementary", "reject"}:
         return "Invalid mode"
 
-    order = ctx.order
+    # map UI modes -> stored types
+    rtype = (
+        "credit_note"
+        if mode == "credit_note"
+        else ("supplementary_delivery" if mode == "supplementary" else "reject")
+    )
 
-    # Resolve discrepancy-related tickets
+    order = ctx.order
+    now = _now()
+    actor = _s(st.session_state.get("user_email") or st.session_state.get("actor") or "venue")
+
+    # Resolve discrepancy-related tickets BUT ONLY those matching this mode
     resolution_state = (
-        "resolved_credit_note_verified" if mode == "credit_note"
+        "resolved_credit_note_verified"
+        if mode == "credit_note"
         else ("resolved_supplementary_received" if mode == "supplementary" else "resolved_reject_accepted")
     )
+
+    # Helper: which ticket resolution strings map to re-delivery
+    _RD = {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}
+
     with get_session() as s:
+        # -----------------------
+        # 1) Close relevant tickets
+        # -----------------------
         tickets = list(
             s.exec(
                 select(SeguimientoTicket).where(
                     SeguimientoTicket.order_id == int(order.id),
                     SeguimientoTicket.provider_name == prov,
-                    SeguimientoTicket.kind.in_(["invoice_discrepancy", "damaged", "wrong_item"]),
+                    SeguimientoTicket.kind.in_(
+                        ["invoice_discrepancy", "damaged", "wrong_item", "operational_missing"]
+                    ),
                 )
             ).all()
         )
-        for t in tickets:
-            if t.state in {"open", "SUPPLIER_ACTION_DONE"}:
-                t.state = resolution_state
-                t.resolved_at = _now()
-                t.resolution_note = (t.resolution_note or "") + f"\n[VENUE] Verified {mode}."
-                t.updated_at = _now()
-                s.add(t)
 
-        # also mark receipt as received/verified if model has fields
+        for t in tickets:
+            if _s(getattr(t, "state", "")).strip() not in {"open", "SUPPLIER_ACTION_DONE"}:
+                continue
+
+            meta = _parse_ticket_resolution_note(_s(getattr(t, "resolution_note", None)))
+            t_res = _s(meta.get("resolution")).strip().lower()
+
+            # match ticket resolution to what we're closing
+            if rtype == "credit_note" and t_res != "credit_note":
+                continue
+            if rtype == "supplementary_delivery" and t_res not in _RD:
+                continue
+            if rtype == "reject" and t_res != "reject":
+                continue
+
+            t.state = resolution_state
+            t.resolved_at = now
+
+            # If this is a credit-note closure, persist the CN number into the *first line*
+            # so previews + parsing can pick it up later (even if supplier didn't provide it).
+            cn_in = _s(credit_note_invoice).strip() if mode == "credit_note" else ""
+            if cn_in:
+                note0 = _s(getattr(t, "resolution_note", None))
+                lines = note0.splitlines() if note0 else []
+                first = lines[0] if lines else ""
+                # strip any leading tag like [SUPPLIER] / [VENUE]
+                first_clean = re.sub(r"^\s*\[[A-Z_]+\]\s*", "", first).strip()
+                if not first_clean:
+                    first_clean = "credit_note"
+                # ensure resolution is "credit_note" for this track
+                if "credit_note" not in first_clean.lower():
+                    first_clean = "credit_note"
+                # upsert credit_note_invoice=...
+                if re.search(r"(?i)credit_note_invoice\s*=", first_clean):
+                    first_clean = re.sub(r"(?i)(credit_note_invoice\s*=\s*)([^|]+)", r"\1" + cn_in, first_clean)
+                else:
+                    first_clean = first_clean + " | " + f"credit_note_invoice={cn_in}"
+                if lines:
+                    lines[0] = first_clean
+                else:
+                    lines = [first_clean]
+                t.resolution_note = "\n".join(lines)
+
+            # Append audit line
+            extra = f" Credit note: {cn_in}." if cn_in else ""
+            t.resolution_note = (t.resolution_note or "") + f"\n[VENUE] Verified {mode}." + extra
+            t.updated_at = now
+            s.add(t)
+
+        # -----------------------
+        # 2) Close the ProviderResolution row (this type only)
+        # -----------------------
+        pr = s.exec(
+            select(ProviderResolution).where(
+                ProviderResolution.order_id == int(order.id),
+                ProviderResolution.provider_name == prov,
+                ProviderResolution.resolution_type == rtype,
+            )
+        ).first()
+
+        # If it doesn't exist (older orders), create it then close it (safe fallback)
+        if not pr:
+            pr = ProviderResolution(
+                venue_id=int(order.venue_id),
+                order_id=int(order.id),
+                provider_name=prov,
+                resolution_type=rtype,
+                status="open",
+                opened_at=now,
+                opened_by=actor,
+                created_at=now,
+                updated_at=now,
+                updated_by=actor,
+            )
+
+        # -----------------------
+        # 2b) Credit note number (venue can enter if supplier didn't)
+        # -----------------------
+        # -----------------------
+        # 2b) Credit note number is required (venue can enter if supplier didn't)
+        # -----------------------
+        if mode == "credit_note":
+            cn_in = _s(credit_note_invoice).strip()
+            if not cn_in:
+                return "Credit note number is required to close."
+        pr.status = "closed"
+        pr.closed_at = now
+        pr.closed_by = actor
+        pr.updated_at = now
+        pr.updated_by = actor
+        s.add(pr)
+
+        # -----------------------
+        # 3) Update ProviderReceipt (optional but useful)
+        # -----------------------
         receipt = s.exec(
             select(ProviderReceipt).where(
                 ProviderReceipt.order_id == int(order.id),
                 ProviderReceipt.provider_name == prov,
             )
         ).first()
+
         if receipt:
+            # keep your existing logic: once you verify something, consider provider "received"
             receipt.received = True
-            receipt.received_at = _now()
-            receipt.received_by = "venue"
-            receipt.updated_at = _now()
-            receipt.updated_by = "venue"
+            receipt.received_at = now
+            receipt.received_by = actor
+            receipt.updated_at = now
+            receipt.updated_by = actor
+            s.add(receipt)
+        # -----------------------
+        # 4) Determine next workflow state based on REMAINING OPEN TICKETS
+        # (not ProviderResolution rows, which may be missing/incomplete)
+        # -----------------------
+        remaining = list(
+            s.exec(
+                select(SeguimientoTicket).where(
+                    SeguimientoTicket.order_id == int(order.id),
+                    SeguimientoTicket.provider_name == prov,
+                    SeguimientoTicket.kind.in_(
+                        ["invoice_discrepancy", "damaged", "wrong_item", "operational_missing"]
+                    ),
+                )
+            ).all()
+        )
+
+        remaining_types: set[str] = set()
+        has_cn_invoice = False
+
+        _RD = {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}
+
+        for t2 in remaining:
+            if _s(getattr(t2, "state", "")).strip() not in {"open", "SUPPLIER_ACTION_DONE"}:
+                continue
+
+            meta2 = _parse_ticket_resolution_note(_s(getattr(t2, "resolution_note", None)))
+            r2 = _s(meta2.get("resolution")).strip().lower()
+
+            if r2 == "credit_note":
+                remaining_types.add("credit_note")
+                if _s(meta2.get("credit_note_invoice")).strip():
+                    has_cn_invoice = True
+            elif r2 in _RD:
+                remaining_types.add("supplementary_delivery")
+            elif r2 == "reject":
+                remaining_types.add("reject")
+
+        # Mirror priority: supplementary > credit_note > reject
+        if "supplementary_delivery" in remaining_types:
+            next_state = "SUPPLEMENTARY_DELIVERY_SENT"
+        elif "credit_note" in remaining_types:
+            next_state = "SUPPLIER_CREDIT_NOTE_ISSUED" if has_cn_invoice else "SUPPLIER_CREDIT_NOTE_PENDING"
+        elif "reject" in remaining_types:
+            next_state = "SUPPLIER_REJECTED"
+        else:
+            next_state = "CLOSED"
+
+        # -----------------------
+        # 5) If fully done, set overall closure markers on receipt
+        # -----------------------
+        if next_state == "CLOSED" and receipt:
+            receipt.all_resolutions_closed_at = now
+            receipt.all_resolutions_closed_by = actor
+            receipt.updated_at = now
+            receipt.updated_by = actor
             s.add(receipt)
 
         s.commit()
 
+    # -----------------------
+    # 6) Persist provider workflow state for Track Order UI
+    # -----------------------
     _set_workflow_state(
         venue_id=int(order.venue_id),
         order_id=int(order.id),
         provider=prov,
-        to_state="CLOSED",
+        to_state=next_state,
         actor_role="venue",
-        actor="venue",
-        note=f"Venue verified supplier resolution ({mode}) and closed.",
+        actor=actor,
+        note=f"Venue verified {mode}. Remaining open resolutions: {next_state}.",
     )
 
     return "ok"
@@ -2398,95 +3330,95 @@ def _close_ticket(*, ticket_id: int, new_state: str, note: str, actor: str = "ve
         s.commit()
 
 
-def _get_or_create_draft_order(*, venue_id: int, actor: str = "venue") -> int:
-    """Return a draft order id for the venue (creates one if missing)."""
-    vid = int(venue_id)
-    with get_session() as s:
-        # best-effort: find latest draft
-        q = (
-            select(Order)
-            .where(Order.venue_id == vid)
-            .where((Order.status == "draft") | (Order.status == "borrador"))
-            .order_by(Order.created_at.desc())
-        )
-        o = s.exec(q).first()
-        if o and getattr(o, "id", None) is not None:
-            return int(o.id)
+# def _get_or_create_draft_order(*, venue_id: int, actor: str = "venue") -> int:
+#     """Return a draft order id for the venue (creates one if missing)."""
+#     vid = int(venue_id)
+#     with get_session() as s:
+#         # best-effort: find latest draft
+#         q = (
+#             select(Order)
+#             .where(Order.venue_id == vid)
+#             .where((Order.status == "draft") | (Order.status == "borrador"))
+#             .order_by(Order.created_at.desc())
+#         )
+#         o = s.exec(q).first()
+#         if o and getattr(o, "id", None) is not None:
+#             return int(o.id)
 
-        # create new draft
-        o = Order(
-            venue_id=vid,
-            status="draft",
-            title="Borrador",
-            created_at=_now(),
-            created_by=actor,
-        )
-        s.add(o)
-        s.commit()
-        s.refresh(o)
-        return int(o.id)
-
-
-def _create_new_draft_order(*, venue_id: int, actor: str, title: str) -> int:
-    vid = int(venue_id)
-    with get_session() as s:
-        o = Order(
-            venue_id=vid,
-            status="draft",
-            title=title or "Nuevo pedido",
-            created_at=_now(),
-            created_by=actor,
-        )
-        s.add(o)
-        s.commit()
-        s.refresh(o)
-        return int(o.id)
+#         # create new draft
+#         o = Order(
+#             venue_id=vid,
+#             status="draft",
+#             title="Borrador",
+#             created_at=_now(),
+#             created_by=actor,
+#         )
+#         s.add(o)
+#         s.commit()
+#         s.refresh(o)
+#         return int(o.id)
 
 
-def _add_line_to_order(
-    *, venue_id: int, order_id: int, product_id: int | None,
-    provider: str, name: str, qty: float, unit: str, actor: str = "venue",
-    chip: str = ""
-) -> None:
-    with get_session() as s:
-        chip_txt = f" [{chip}]" if chip else ""
-        ln = OrderLine(
-            venue_id=int(venue_id),
-            order_id=int(order_id),
-            product_id=int(product_id) if product_id else None,
-            provider=_s(provider) or None,
-            spoken_name=(_s(name) + chip_txt).strip() or None,
-            quantity=float(qty or 0.0),
-            unit=_s(unit) or None,
-            updated_at=_now(),
-            updated_by=actor,
-        )
-        s.add(ln)
-        s.commit()
+# def _create_new_draft_order(*, venue_id: int, actor: str, title: str) -> int:
+#     vid = int(venue_id)
+#     with get_session() as s:
+#         o = Order(
+#             venue_id=vid,
+#             status="draft",
+#             title=title or "Nuevo pedido",
+#             created_at=_now(),
+#             created_by=actor,
+#         )
+#         s.add(o)
+#         s.commit()
+#         s.refresh(o)
+#         return int(o.id)
+
+
+# def _add_line_to_order(
+#     *, venue_id: int, order_id: int, product_id: int | None,
+#     provider: str, name: str, qty: float, unit: str, actor: str = "venue",
+#     chip: str = ""
+# ) -> None:
+#     with get_session() as s:
+#         chip_txt = f" [{chip}]" if chip else ""
+#         ln = OrderLine(
+#             venue_id=int(venue_id),
+#             order_id=int(order_id),
+#             product_id=int(product_id) if product_id else None,
+#             provider=_s(provider) or None,
+#             spoken_name=(_s(name) + chip_txt).strip() or None,
+#             quantity=float(qty or 0.0),
+#             unit=_s(unit) or None,
+#             updated_at=_now(),
+#             updated_by=actor,
+#         )
+#         s.add(ln)
+#         s.commit()
 
 
 
-def _search_similar_products(*, venue_id: int, query_name: str, limit: int = 50) -> list[Product]:
-    """Best-effort similarity search by name (simple contains tokens)."""
-    qn = (_s(query_name) or "").strip().lower()
-    if not qn:
-        return []
-    tokens = [t for t in re.split(r"\W+", qn) if len(t) >= 3][:4]
-    if not tokens:
-        tokens = [qn[:6]]
-    with get_session() as s:
-        # Start broad: venue products
-        ps = list(s.exec(select(Product).where(Product.venue_id == int(venue_id))).all())
-    def score(p: Product) -> float:
-        nm = (_s(getattr(p, 'name', ''))).lower()
-        if not nm:
-            return 0.0
-        hits = sum(1 for t in tokens if t in nm)
-        return hits / max(1, len(tokens))
-    ranked = [(score(p), p) for p in ps]
-    ranked = [rp for rp in ranked if rp[0] > 0]
-    ranked.sort(key=lambda x: x[0], reverse=True)
-    return [p for _, p in ranked[:limit]]
+# def _search_similar_products(*, venue_id: int, query_name: str, limit: int = 50) -> list[Product]:
+#     """Best-effort similarity search by name (simple contains tokens)."""
+#     qn = (_s(query_name) or "").strip().lower()
+#     if not qn:
+#         return []
+#     tokens = [t for t in re.split(r"\W+", qn) if len(t) >= 3][:4]
+#     if not tokens:
+#         tokens = [qn[:6]]
+#     with get_session() as s:
+#         # Start broad: venue products
+#         ps = list(s.exec(select(Product).where(Product.venue_id == int(venue_id))).all())
+#     def score(p: Product) -> float:
+#         nm = (_s(getattr(p, 'name', ''))).lower()
+#         if not nm:
+#             return 0.0
+#         hits = sum(1 for t in tokens if t in nm)
+#         return hits / max(1, len(tokens))
+#     ranked = [(score(p), p) for p in ps]
+#     ranked = [rp for rp in ranked if rp[0] > 0]
+#     ranked.sort(key=lambda x: x[0], reverse=True)
+#     return [p for _, p in ranked[:limit]]
 
 
 # =============================
@@ -2495,6 +3427,12 @@ def _search_similar_products(*, venue_id: int, query_name: str, limit: int = 50)
 
 def _provider_open_tickets(ctx: OrderContext, provider: str) -> List[SeguimientoTicket]:
     prov = norm_provider(provider)
+
+    # ✅ NEW: if workflow is CLOSED, don't show anything in Incidences
+    wf = ctx.workflows_by_provider.get(prov)
+    if wf and _s(getattr(wf, "state", "")).upper() == "CLOSED":
+        return []
+
     out = []
     for t in ctx.tickets_by_provider.get(prov, []) or []:
         if getattr(t, "resolved_at", None) is not None:
@@ -2504,6 +3442,7 @@ def _provider_open_tickets(ctx: OrderContext, provider: str) -> List[Seguimiento
         # open or waiting verification
         out.append(t)
     return out
+
 
 
 def _parse_supplier_solution_meta(note: str) -> Dict[str, Any]:
@@ -2601,7 +3540,39 @@ def _parse_supplier_solution_meta(note: str) -> Dict[str, Any]:
 
     return out
 
+def _normalize_solution_meta(sol: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize supplier solution metadata (defensive / backward-compatible).
 
+        Why:
+        - Some venues were entering 'supplementary_delivery' / 're_delivery' into the *ref* field
+            while choosing 'credit_note' (because the UI had only a free text input).
+            That makes the workflow look like credit note even though the intent is re-delivery.
+        - We also want to support 'mixed' item lists where some items are CN and others are re-delivery,
+            based on per-item 'reason' markers.
+
+        This function only normalizes fields for rendering; DB remains unchanged.
+        """
+        sol = dict(sol or {})
+        res = _s(sol.get("resolution")).strip().lower()
+        ref = _s(sol.get("ref")).strip().lower()
+        cn_no = _s(sol.get("credit_note_invoice")).strip()
+
+        # normalize aliases
+        if res in {"creditnote", "credit-note"}:
+            res = "credit_note"
+        if res in {"redelivery", "re-delivery", "re_delivery"}:
+            res = "re_delivery"
+
+        # Back-compat heuristic: decision-type accidentally entered in "ref"
+        if res == "credit_note" and (not cn_no) and ref in {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}:
+            res = "re_delivery" if "re" in ref else "supplementary_delivery"
+
+        sol["resolution"] = res
+        return sol
+
+def _is_redelivery_item(it: Dict[str, Any]) -> bool:
+    r = _s(it.get("reason")).strip().lower()
+    return r in {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery", "supplementary", "redelivery_item"}
 
 # =========================================================
 # Ticket-level supplier resolution parsing (source of truth)
@@ -2622,8 +3593,9 @@ def _parse_ticket_resolution_note(note: str) -> Dict[str, Any]:
     if not txt:
         return {"resolution": "", "credit_note_invoice": "", "eta": "", "invoice": ""}
 
-    if txt.startswith("[SUPPLIER]"):
-        txt = txt[len("[SUPPLIER]"):].strip()
+    m_tag = re.match(r'^\s*\[[A-Z_]+\]\s*(.*)$', txt)
+    if m_tag:
+        txt = (m_tag.group(1) or '').strip()
 
     # allow either " | " or newlines (comment is stored after newline)
     first_line = txt.splitlines()[0].strip()
@@ -2658,6 +3630,35 @@ def _render_incidences_cards(
     actor = "venue"
     open_any = False
     
+    
+    # --- Fuse header card + expander (same UX as Receive) ---
+    st.markdown(
+        """
+        <style>
+        .voi-card.voi-card--header{
+            margin-bottom: 0.35rem;
+            border-bottom-left-radius: 0 !important;
+            border-bottom-right-radius: 0 !important;
+        }
+        div[data-testid="stExpander"]{
+            border: 1px solid rgba(49, 51, 63, 0.12);
+            border-top: none;
+            border-bottom-left-radius: 12px;
+            border-bottom-right-radius: 12px;
+            padding: 0.25rem 0.25rem 0.5rem 0.25rem;
+            margin-top: -10px;
+            background: #fff;
+        }
+        div[data-testid="stExpander"] summary{
+            padding: 0.25rem 0.5rem;
+            font-weight: 600;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    
 
     def _invoice_date_for_provider(provn: str) -> datetime:
         """Best-effort invoice date for display (Greece reality: CN may arrive later).
@@ -2691,46 +3692,12 @@ def _render_incidences_cards(
         return k.replace("_", " ") or "Correction"
 
     
-    def _normalize_solution_meta(sol: Dict[str, Any]) -> Dict[str, Any]:
-            """Normalize supplier solution metadata (defensive / backward-compatible).
-
-            Why:
-            - Some venues were entering 'supplementary_delivery' / 're_delivery' into the *ref* field
-              while choosing 'credit_note' (because the UI had only a free text input).
-              That makes the workflow look like credit note even though the intent is re-delivery.
-            - We also want to support 'mixed' item lists where some items are CN and others are re-delivery,
-              based on per-item 'reason' markers.
-
-            This function only normalizes fields for rendering; DB remains unchanged.
-            """
-            sol = dict(sol or {})
-            res = _s(sol.get("resolution")).strip().lower()
-            ref = _s(sol.get("ref")).strip().lower()
-            cn_no = _s(sol.get("credit_note_invoice")).strip()
-
-            # normalize aliases
-            if res in {"creditnote", "credit-note"}:
-                res = "credit_note"
-            if res in {"redelivery", "re-delivery", "re_delivery"}:
-                res = "re_delivery"
-
-            # Back-compat heuristic: decision-type accidentally entered in "ref"
-            if res == "credit_note" and (not cn_no) and ref in {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}:
-                res = "re_delivery" if "re" in ref else "supplementary_delivery"
-
-            sol["resolution"] = res
-            return sol
-
-    def _is_redelivery_item(it: Dict[str, Any]) -> bool:
-        r = _s(it.get("reason")).strip().lower()
-        return r in {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery", "supplementary", "redelivery_item"}
-
     def _credit_note_preview(prov: str, provn: str, open_t: List[SeguimientoTicket], sol: Dict[str, Any]) -> None:
         """Render an *expected* credit note (preview) based on tickets AND supplier note items.
 
         Key rule:
         - If supplier note has explicit items, we only show the items that are meant for credit note
-            (i.e., not flagged as re-delivery items).
+        (i.e., not flagged as re-delivery items).
         """
         wf = ctx.workflows_by_provider.get(provn)
         sol = _normalize_solution_meta(sol)
@@ -2778,7 +3745,7 @@ def _render_incidences_cards(
 
         rows: List[Dict[str, Any]] = []
         total_net = 0.0
-        total_vat = 0.0
+        total_vat = 0.0  
 
         line_by_id_local: Dict[int, OrderLine] = {
             int(getattr(ln, "id", 0) or 0): ln
@@ -2787,7 +3754,6 @@ def _render_incidences_cards(
         }
 
         for t in credit_candidates:
-            
             lid = int(getattr(t, "order_line_id", 0) or 0)
             ln = line_by_id_local.get(lid)
 
@@ -2835,9 +3801,12 @@ def _render_incidences_cards(
             disc_pct = float(pricing.get("discount_pct", 0.0) or 0.0)
 
             net_amount = qty * net_unit
+
+      
+            # VAT is 0 unless include_iva=True
             vat_pct = _iva_pct_for_pid(ctx.products_by_id, pid, 21.0) if include_iva else 0.0
             vat_eur = net_amount * (vat_pct / 100.0) if include_iva else 0.0
-            total = net_amount + vat_eur
+            total = net_amount + vat_eur  # net-only when include_iva=False
 
             total_net += net_amount
             total_vat += vat_eur
@@ -2850,8 +3819,8 @@ def _render_incidences_cards(
                     "Net €/unit": float(net_unit),
                     "Disc%": float(disc_pct) if disc_pct > 0 else 0.0,
                     "Net amount": float(net_amount),
-                    "VAT%": float(vat_pct) if include_iva else 0.0,
-                    "VAT €": float(vat_eur) if include_iva else 0.0,
+                    "VAT%": float(vat_pct),
+                    "VAT €": float(vat_eur),
                     "Total": float(total),
                     "Reason": _credit_reason(_s(getattr(t, "kind", None))),
                 }
@@ -2882,21 +3851,87 @@ def _render_incidences_cards(
         )
 
         if rows:
-            df = pd.DataFrame(rows)
-            cols = ["Product", "Qty", "Unit", "Net €/unit", "Disc%", "Net amount"]
-            if include_iva:
-                cols += ["VAT%", "VAT €", "Total"]
-            cols += ["Reason"]
-            df = df[[c for c in cols if c in df.columns]]
-            st.dataframe(df, use_container_width=True, hide_index=True)
+            rows_html = ""
 
-            if include_iva:
-                st.markdown(
-                    f"**Total credit (net):** {total_net:,.2f} · **VAT:** {total_vat:,.2f} · **Total credit:** {(total_net + total_vat):,.2f}"
+            for r in rows:
+                nm = html.escape(_s(r.get("Product", "")))
+                qty = float(r.get("Qty", 0) or 0)
+                unit = html.escape(_s(r.get("Unit", "")))
+                reason = html.escape(_s(r.get("Reason", "")))
+
+                netu = float(r.get("Net €/unit", 0.0) or 0.0)
+                disc = float(r.get("Disc%", 0.0) or 0.0)
+                net_amount = float(r.get("Net amount", 0.0) or 0.0)
+
+                vat_eur = float(r.get("VAT €", 0.0) or 0.0)
+                vat_cell = f"€{vat_eur:,.2f}" if include_iva else "—"
+
+                total = float(r.get("Total", net_amount) or net_amount)
+
+                rows_html += (
+                    "<tr>"
+                    f"<td class='name'>{nm}</td>"
+                    f"<td class='num'>{qty:g} {unit}</td>"
+                    f"<td class='reason'>{reason}</td>"
+                    f"<td class='num'>€{netu:,.2f}</td>"
+                    f"<td class='num'>{disc:g}%</td>"
+                    f"<td class='num'>€{net_amount:,.2f}</td>"
+                    f"<td class='num'>{vat_cell}</td>"  # ✅ ALWAYS show IVA column, but dash when disabled
+                    f"<td class='num'><b>€{total:,.2f}</b></td>"
+                    "</tr>"
                 )
-            else:
-                st.markdown(f"**Total credit (net):** {total_net:,.2f}")
-            st.caption("Preview only: based on catalog + discount rules. Supplier credit note is the official document.")
+
+            footer_net = f"€{total_net:,.2f}"
+            footer_vat = f"€{total_vat:,.2f}" if include_iva else "—"
+            footer_total = f"€{(total_net + total_vat):,.2f}" if include_iva else footer_net
+
+            receipt = ctx.receipts_by_provider.get(provn)
+            inv_no = _s(getattr(receipt, "invoice_number", None)) or "—"
+            inv_dt = _invoice_date_for_provider(provn)
+            cn_no = _s(sol.get("credit_note_invoice")) or "—"
+
+            head_left = (
+                "Credit note (expected)"
+                f" · Ref invoice Nº {html.escape(inv_no)}"
+                f" · {html.escape(_fmt_dt(inv_dt))}"
+            )
+            head_right = f"Est. total: {footer_total}"
+
+            cn_html = (
+                "<div class='inv-wrap'>"
+                "<div class='inv-head'>"
+                f"<div class='inv-head-left'>{head_left}</div>"
+                f"<div class='inv-head-right'>{head_right}</div>"
+                "</div>"
+                "<table class='inv-table'>"
+                "<thead><tr>"
+                "<th>Product</th>"
+                "<th class='num'>Credited</th>"
+                "<th>Reason</th>"
+                "<th class='num'>Net €/unit</th>"
+                "<th class='num'>Disc%</th>"
+                "<th class='num'>Net</th>"
+                "<th class='num'>IVA</th>"  # ✅ ALWAYS show IVA column
+                "<th class='num'>Total</th>"
+                "</tr></thead>"
+                f"<tbody>{rows_html}</tbody>"
+                "<tfoot><tr>"
+                "<td class='muted'>TOTAL</td>"
+                "<td class='num'></td>"
+                "<td></td>"
+                "<td class='num'></td>"
+                "<td class='num'></td>"
+                f"<td class='num'>{footer_net}</td>"
+                f"<td class='num'>{footer_vat}</td>"
+                f"<td class='num'>{footer_total}</td>"
+                "</tr></tfoot>"
+                "</table>"
+                f"<div class='voi-muted' style='margin-top:.35rem'>Credit note number: <b>{html.escape(cn_no)}</b></div>"
+                "</div>"
+            )
+
+            st.markdown(cn_html, unsafe_allow_html=True)
+
 
     def _redelivery_preview(
         ctx: OrderContext,
@@ -2907,9 +3942,11 @@ def _render_incidences_cards(
     ) -> None:
         """Render an *expected* re-delivery preview.
 
-        Source of truth preference:
-        1) If tickets contain per-line supplier decisions (resolution_note), the caller should pass only those tickets.
-        2) Otherwise we fall back to workflow note items/resolution.
+        Production behavior:
+        - If supplier set different delivery windows per product (ETA per ticket), show them grouped by ETA.
+        - Prefer ticket truth (resolution_note) when available.
+        - Fall back to workflow note items if tickets don't contain resolution_note data.
+        - Sort ETA groups by parsed date+time (robust).
         """
         sol = _normalize_solution_meta(sol or {})
         resolution = _s(sol.get("resolution", "")).strip().lower()
@@ -2920,8 +3957,6 @@ def _render_incidences_cards(
         is_rd = resolution in {"supplementary_delivery", "re_delivery"}
 
         if not has_rd_items and not is_rd:
-            # If caller passed ticket subset, still allow rendering (mixed-mode)
-            # by checking ticket-level resolution_note.
             any_ticket_rd = False
             for t in (open_t or []):
                 meta = _parse_ticket_resolution_note(_s(getattr(t, "resolution_note", None)))
@@ -2932,18 +3967,6 @@ def _render_incidences_cards(
             if not any_ticket_rd:
                 return
 
-        # Pull shared eta/invoice from first redelivery ticket if available
-        eta = _s(sol.get("eta"))
-        inv_ref = ""
-        for t in (open_t or []):
-            meta = _parse_ticket_resolution_note(_s(getattr(t, "resolution_note", None)))
-            r = _s(meta.get("resolution")).strip().lower()
-            if r in {"supplementary_delivery", "re_delivery"}:
-                if not eta:
-                    eta = _s(meta.get("eta"))
-                inv_ref = _s(meta.get("invoice"))
-                break
-
         # Provider details (best-effort)
         p = ctx.providers_by_name.get(provn) or ctx.providers_by_name.get(norm_provider(prov))
         emails: List[str] = []
@@ -2952,35 +3975,151 @@ def _render_incidences_cards(
         if p and getattr(p, "emails", None):
             emails += [x.strip() for x in (p.emails or "").split("|") if x.strip()]
         emails = list(dict.fromkeys([e for e in emails if e]))  # de-dupe keep order
-
         phone = _s(getattr(p, "phone", None)) if p else ""
         address = _s(getattr(p, "address", None)) if p else ""
 
+        # -----------------------------
+        # ETA parsing for robust sorting
+        # -----------------------------
+        def _parse_eta_sort_key(eta_raw: str):
+            """
+            Returns a tuple suitable for sorting:
+            (bucket_rank, dt, start_minutes, original)
+            bucket_rank:
+            0 => parsed successfully
+            1 => date parsed but no time
+            9 => unknown ('—' or empty) or unparseable (goes last)
+            """
+            import re
+            from datetime import datetime
+
+            eta = (eta_raw or "").strip()
+            if not eta or eta == "—":
+                return (9, datetime.max, 24 * 60 + 1, eta_raw)
+
+            # Normalize separators
+            s = eta.replace("T", " ").strip()
+
+            # Try ISO date first: YYYY-MM-DD ...
+            m_iso = re.search(r"(\d{4})-(\d{2})-(\d{2})", s)
+            dt = None
+
+            if m_iso:
+                y, mo, d = int(m_iso.group(1)), int(m_iso.group(2)), int(m_iso.group(3))
+                try:
+                    dt = datetime(y, mo, d)
+                except Exception:
+                    dt = None
+            else:
+                # Try EU date: DD/MM/YYYY ...
+                m_eu = re.search(r"(\d{1,2})/(\d{1,2})/(\d{4})", s)
+                if m_eu:
+                    d, mo, y = int(m_eu.group(1)), int(m_eu.group(2)), int(m_eu.group(3))
+                    try:
+                        dt = datetime(y, mo, d)
+                    except Exception:
+                        dt = None
+
+            if not dt:
+                return (9, datetime.max, 24 * 60 + 1, eta_raw)
+
+            # Extract start time from patterns like "08:00-14:00" or "8:00 - 14:00"
+            m_time = re.search(r"\b(\d{1,2}):(\d{2})\s*-\s*(\d{1,2}):(\d{2})\b", s)
+            if m_time:
+                hh, mm = int(m_time.group(1)), int(m_time.group(2))
+                if 0 <= hh <= 23 and 0 <= mm <= 59:
+                    return (0, dt, hh * 60 + mm, eta_raw)
+
+            # If there is a single time (rare): "2026-01-29 08:00"
+            m_single = re.search(r"\b(\d{1,2}):(\d{2})\b", s)
+            if m_single:
+                hh, mm = int(m_single.group(1)), int(m_single.group(2))
+                if 0 <= hh <= 23 and 0 <= mm <= 59:
+                    return (0, dt, hh * 60 + mm, eta_raw)
+
+            # Date known, time unknown
+            return (1, dt, 24 * 60, eta_raw)
+
+        # -----------------------------
+        # Case A: workflow items exist (legacy / fallback)
+        # -----------------------------
+        redel_items: List[Dict[str, Any]] = []
+        if items:
+            redel_items = [it for it in items if isinstance(it, dict) and _is_redelivery_item(it)]
+
+        # -----------------------------
+        # Case B: ticket truth (preferred)
+        # Group tickets by ETA (per-product schedule)
+        # -----------------------------
+        by_eta: Dict[str, Dict[str, Any]] = {}  # eta -> {"tickets":[...], "invoice":"..."}
+        if not redel_items:
+            for t in (open_t or []):
+                meta = _parse_ticket_resolution_note(_s(getattr(t, "resolution_note", None)))
+                r = _s(meta.get("resolution")).strip().lower()
+
+                if r not in {"supplementary_delivery", "re_delivery"}:
+                    continue
+
+                eta = _s(meta.get("eta")).strip() or "—"
+                inv = _s(meta.get("invoice")).strip() or ""
+
+                if eta not in by_eta:
+                    by_eta[eta] = {"tickets": [], "invoice": inv}
+                else:
+                    if not by_eta[eta].get("invoice") and inv:
+                        by_eta[eta]["invoice"] = inv
+
+                by_eta[eta]["tickets"].append(t)
+
+        # Header ETA summary
+        header_eta = ""
+        if redel_items:
+            header_eta = _s(sol.get("eta")).strip()
+        else:
+            if len(by_eta) == 1:
+                header_eta = next(iter(by_eta.keys()))
+                if header_eta == "—":
+                    header_eta = ""
+            elif len(by_eta) > 1:
+                header_eta = "Multiple deliveries"
+
+        # Render header card
         st.markdown(
             "<div class='voi-card' style='border-color:#bfdbfe;background:#eff6ff'>"
             "<div class='voi-title'>🚚 Expected re-delivery (preview)</div>"
             f"<div class='voi-muted'>Supplier: <b>{html.escape(prov)}</b></div>"
-            + (f"<div class='voi-muted'>Expected: <b>{html.escape(eta)}</b></div>" if eta else "")
-            + (f"<div class='voi-muted'>Reference invoice: <b>{html.escape(inv_ref)}</b></div>" if inv_ref else "")
+            + (f"<div class='voi-muted'>Expected: <b>{html.escape(header_eta)}</b></div>" if header_eta else "")
             + "</div>",
             unsafe_allow_html=True,
         )
 
+        # Supplier details
         if emails or phone or address:
             st.markdown("**Supplier details**")
             if emails:
-                st.markdown(f"- **Email:** `{emails[0]}`" + (f" (+{len(emails)-1} more)" if len(emails) > 1 else ""))
+                st.markdown(
+                    f"- **Email:** `{emails[0]}`" + (f" (+{len(emails)-1} more)" if len(emails) > 1 else "")
+                )
             if phone:
                 st.markdown(f"- **Phone:** `{phone}`")
             if address:
                 st.markdown(f"- **Address:** `{address}`")
 
-        # Items: prefer explicit workflow-note items (flagged as redelivery), else list from tickets.
-        redel_items: List[Dict[str, Any]] = []
-        if items:
-            redel_items = [it for it in items if isinstance(it, dict) and _is_redelivery_item(it)]
-
+        # -----------------------------
+        # Render content
+        # -----------------------------
         if redel_items:
+            # Legacy workflow-based list (single window)
+            eta = _s(sol.get("eta")).strip()
+            inv_ref = _s(sol.get("invoice")).strip()
+
+            if eta or inv_ref:
+                st.markdown("**Delivery window:**")
+                if eta:
+                    st.markdown(f"- **Expected:** {eta}")
+                if inv_ref:
+                    st.markdown(f"- **Reference invoice:** {inv_ref}")
+
             st.markdown("**Products/quantities being re-delivered:**")
             for it in redel_items:
                 nm = _s(it.get("name"))
@@ -2988,32 +4127,62 @@ def _render_incidences_cards(
                 unit = _s(it.get("unit"))
                 why = (_s(it.get("reason"))).replace("_", " ")
                 st.markdown(f"- **{nm}** · {qty} {unit} · {why}")
-        else:
+            return
+
+        # Ticket-based grouped schedule
+        st.markdown("**Re-delivery plan:**")
+
+        # ✅ Robust sort: parse date + start time; unknown goes last
+        eta_keys_sorted = sorted(by_eta.keys(), key=_parse_eta_sort_key)
+
+        for eta in eta_keys_sorted:
+            bucket = by_eta.get(eta) or {}
+            inv_ref = _s(bucket.get("invoice") or "").strip()
+            tickets_for_eta: List[SeguimientoTicket] = bucket.get("tickets") or []
+
+            if eta and eta != "—":
+                st.markdown(f"### 🚚 Delivery window: **{eta}**")
+            else:
+                st.markdown("### 🚚 Delivery window: **—**")
+
+            if inv_ref:
+                st.caption(f"Reference invoice: {inv_ref}")
+
             st.markdown("**Products/quantities being re-delivered:**")
-            for t in (open_t or []):
-                meta = _parse_ticket_resolution_note(_s(getattr(t, "resolution_note", None)))
-                r = _s(meta.get("resolution")).strip().lower()
-                if r not in {"supplementary_delivery", "re_delivery"} and (has_rd_items or is_rd):
-                    # If caller didn't pass subset, keep only rd-labeled tickets
-                    continue
+            for t in tickets_for_eta:
                 lid = int(getattr(t, "order_line_id", 0) or 0)
+
+                # best-effort line lookup
                 ln = None
                 try:
-                    ln = next((x for x in (ctx.lines_by_provider.get(provn, []) or []) if int(getattr(x, "id", 0) or 0) == lid), None)
+                    ln = next(
+                        (
+                            x
+                            for x in (ctx.lines_by_provider.get(provn, []) or [])
+                            if int(getattr(x, "id", 0) or 0) == lid
+                        ),
+                        None,
+                    )
                 except Exception:
                     ln = None
 
                 nm = _s(getattr(t, "product_name", None)) or (_line_name(ln, ctx.products_by_id) if ln else "Product")
                 unit = _s(getattr(t, "unit", None)) or (_line_unit(ln, ctx.products_by_id) if ln else "unit")
+
                 qty = _safe_float(getattr(t, "qty_invoiced", None), 0.0)
                 if qty <= 0:
                     qty = _safe_float(getattr(t, "qty_expected", None), 0.0)
+
                 why = (_s(getattr(t, "kind", None)) or "re_delivery").replace("_", " ")
                 st.markdown(f"- **{nm}** · {qty:g} {unit} · {why}")
 
 
+
     for prov in providers:
         provn = norm_provider(prov)
+        # ✅ do not render incidences for CLOSED workflows
+        if _provider_closed(ctx, provn):
+            continue
         open_t = _provider_open_tickets(ctx, prov)
         if not open_t:
             continue
@@ -3046,457 +4215,685 @@ def _render_incidences_cards(
         inv_no = _s(getattr(receipt, "invoice_number", None))
         inv_pill = f"<span class='pill'>🧾 {inv_no}</span>" if inv_no else ""
 
-        st.markdown(
-            f"<div class='voi-card'>"
-            f"<div class='voi-title'>{prov}{inv_pill}</div>"
-            f"<div class='voi-muted'>Workflow: {_badge(badge_txt, badge_kind)}</div>"
-            f"</div>",
-            unsafe_allow_html=True,
+        # --- header meta (same as Receive) ---
+        from collections import Counter
+
+
+        # ---------------------------------------------------------
+        # Header meta (same as Receive) + Sent + Supplier answered
+        # ---------------------------------------------------------
+        oid = int(getattr(order, "id", 0) or 0)
+
+        created_at = getattr(order, "created_at", None)
+        created_txt = created_at.strftime("%d %b %Y, %H:%M") if created_at else "—"
+
+        creator_raw = getattr(order, "created_by", None) or getattr(order, "updated_by", None) or ""
+        creator_raw = (creator_raw or "").strip()
+        if creator_raw and "@" in creator_raw:
+            short = creator_raw.split("@", 1)[0].replace(".", " ").replace("_", " ").strip()
+            creator_txt = short.title() if short else creator_raw
+        else:
+            creator_txt = creator_raw or "Unknown user"
+
+        receipt = ctx.receipts_by_provider.get(provn)
+        inv_no = _s(getattr(receipt, "invoice_number", None)) or "—"
+
+        # ---------------------------------------------------------
+        # 📤 Sent to supplier (WAITING_SUPPLIER_ACTION)
+        # ---------------------------------------------------------
+        wf = (getattr(ctx, "workflows_by_provider", {}) or {}).get(provn)
+        sent_part = ""
+        if (state or "").upper() == "WAITING_SUPPLIER_ACTION":
+            sent_at = getattr(wf, "updated_at", None) if wf else None
+            if sent_at:
+                sent_part = (
+                    " &nbsp;·&nbsp; 📤 Sent: "
+                    + html.escape(sent_at.strftime("%d %b %Y, %H:%M"))
+                )
+
+        # ---------------------------------------------------------
+        # ✅ Supplier answered summary
+        # ---------------------------------------------------------
+        answered_part = ""
+        sol_counts = Counter()
+        answered_at = None
+
+        tickets = list(ctx.tickets_by_provider.get(provn, []) or [])
+        supplier_done = []
+
+        for t in tickets:
+            if (_s(getattr(t, "state", "")).lower() == "supplier_action_done"):
+                supplier_done.append(t)
+
+                note = _s(getattr(t, "resolution_note", "")).lower()
+                if "supplementary_delivery" in note:
+                    sol_counts["supplementary_delivery"] += 1
+                elif "credit_note_pending" in note:
+                    sol_counts["credit_note_pending"] += 1
+                elif "credit_note" in note:
+                    sol_counts["credit_note"] += 1
+                elif "reject" in note:
+                    sol_counts["reject"] += 1
+
+        if supplier_done:
+            answered_at = max(
+                dt for dt in (getattr(t, "updated_at", None) for t in supplier_done) if dt
+            )
+
+            chips = []
+            if sol_counts["credit_note"]:
+                chips.append(f"🧾 {sol_counts['credit_note']}")
+            if sol_counts["credit_note_pending"]:
+                chips.append(f"⏳ {sol_counts['credit_note_pending']}")
+            if sol_counts["supplementary_delivery"]:
+                chips.append(f"🚚 {sol_counts['supplementary_delivery']}")
+            if sol_counts["reject"]:
+                chips.append(f"⛔ {sol_counts['reject']}")
+
+            answered_part = (
+                " &nbsp;·&nbsp; ✅ Answered: "
+                + html.escape(answered_at.strftime("%d %b %Y, %H:%M"))
+            )
+            if chips:
+                answered_part += " &nbsp;·&nbsp; " + " &nbsp;·&nbsp; ".join(
+                    html.escape(c) for c in chips
+                )
+
+        # ---------------------------------------------------------
+        # Header HTML
+        # ---------------------------------------------------------
+        header_html = (
+            "<div class='voi-card voi-card--header' style='background:#f7f9fc; border-left:4px solid #ff4d4d;'>"
+            "<div style='display:flex; justify-content:space-between; align-items:center; gap:8px;'>"
+            "<div style='min-width:0'>"
+            f"<div class='voi-title' style='margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;'>{html.escape(prov)}</div>"
+            "<div class='voi-muted' style='white-space:nowrap; overflow:hidden; text-overflow:ellipsis;'>"
+            f"🧾 {html.escape(inv_no)}"
+            f"&nbsp;·&nbsp; 🗓️ {html.escape(created_txt)}"
+            f"&nbsp;·&nbsp; 👤 {html.escape(creator_txt)}"
+            f"{sent_part}{answered_part}"
+            "</div>"
+            "</div>"
+            "<div class='voi-badges' style='display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end;'>"
+            f"{_badge(badge_txt, badge_kind)}"
+            "<span class='voi-badge bad'>Incidences</span>"
+            "</div>"
+            "</div>"
+            "</div>"
         )
 
-        # Build quick lookups for prettier line rendering
-        prov_lines = ctx.lines_by_provider.get(provn, []) or []
-        line_by_id: Dict[int, OrderLine] = {}
-        for ln in prov_lines:
-            lid = int(getattr(ln, "id", 0) or 0)
-            if lid:
-                line_by_id[lid] = ln
+        st.markdown(header_html, unsafe_allow_html=True)
 
-        
-        # --- Supplier solution ---
-        # Workflow note can represent a *mixed* outcome (some items credit note, others re-delivery).
-        # Tickets store the per-line truth in `resolution_note`. Prefer that when present.
-        sol_wf = _normalize_solution_meta(_parse_supplier_solution_meta(_s(getattr(wf, "note", None)) if wf else ""))
-        
-        # ---------------------------------------------------------
-        # Auto-lock issue lines when supplier already acted
-        # (so lines don't show again after refresh / revisit)
-        # ---------------------------------------------------------
-        state_u = (state or "").upper()
-        wf_res = (sol_wf.get("resolution") or "").strip().lower()
 
-        supplier_acted_states = {
-            "SUPPLIER_CREDIT_NOTE_ISSUED",
-            "SUPPLEMENTARY_DELIVERY_SENT",
-            "SUPPLIER_REJECTED",
-            "CLOSED",
-        }
 
-        # If supplier decision exists (or we are past decision stage), lock the UI
-        if (state_u in supplier_acted_states) or (wf_res in {"credit_note", "supplementary_delivery", "re_delivery"}):
-            st.session_state[decisions_key] = True
 
-                
-        
-        
-        
-        sol = sol_wf  # keep `sol` name for downstream chips/matching code
+        # ✅ Supplier comment (from supplier confirmation)
+        _render_commentline(label="💬 Supplier message", text=_supplier_comment_for_provider(ctx, provn))
 
-        ticket_meta_by_id: Dict[int, Dict[str, Any]] = {}
-        credit_t: List[SeguimientoTicket] = []
-        redel_t: List[SeguimientoTicket] = []
-        undecided_t: List[SeguimientoTicket] = []
+        expanded = bool(st.session_state.get("inc_global_expand_all", False))
+        with st.expander("Details", expanded=expanded):
 
-        for t in open_t:
-            tid_local = int(getattr(t, "id", 0) or 0)
-            meta = _parse_ticket_resolution_note(_s(getattr(t, "resolution_note", None)))
-            ticket_meta_by_id[tid_local] = meta
+            # Build quick lookups for prettier line rendering
+            prov_lines = ctx.lines_by_provider.get(provn, []) or []
+            line_by_id: Dict[int, OrderLine] = {}
+            for ln in prov_lines:
+                lid = int(getattr(ln, "id", 0) or 0)
+                if lid:
+                    line_by_id[lid] = ln
 
-            r = (_s(meta.get("resolution"))).strip().lower()
-            if r == "credit_note":
-                credit_t.append(t)
-            elif r in {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}:
-                redel_t.append(t)
-            else:
-                undecided_t.append(t)
+            # --- Supplier solution ---
+            # Workflow note can represent a *mixed* outcome (some items credit note, others re-delivery).
+            # Tickets store the per-line truth in `resolution_note`. Prefer that when present.
+            sol_wf = _normalize_solution_meta(
+                _parse_supplier_solution_meta(_s(getattr(wf, "note", None)) if wf else "")
+            )
 
-        # --- Expected previews ---
-        if credit_t or redel_t:
-            if credit_t:
-                # Prefer per-ticket CN number when available
-                cn_no = ""
-                for t in credit_t:
-                    meta = _parse_ticket_resolution_note(_s(getattr(t, "resolution_note", None)))
-                    if _s(meta.get("credit_note_invoice")):
-                        cn_no = _s(meta.get("credit_note_invoice"))
-                        break
-                sol_cn = dict(sol_wf)
-                sol_cn["resolution"] = "credit_note"
-                if cn_no:
-                    sol_cn["credit_note_invoice"] = cn_no
-                _credit_note_preview(prov, provn, credit_t, sol_cn)
+            # ---------------------------------------------------------
+            # Auto-lock issue lines when supplier already acted
+            # (so lines don't show again after refresh / revisit)
+            # ---------------------------------------------------------
+            state_u = (state or "").upper()
+            wf_res = (sol_wf.get("resolution") or "").strip().lower()
 
-            if redel_t:
-                # Prefer eta/invoice from first redelivery ticket
-                meta0 = _parse_ticket_resolution_note(_s(getattr(redel_t[0], "resolution_note", None)))
-                sol_rd = dict(sol_wf)
-                sol_rd["resolution"] = (_s(meta0.get("resolution")) or "re_delivery").strip().lower()
-                if _s(meta0.get("eta")):
-                    sol_rd["eta"] = _s(meta0.get("eta"))
-                if _s(meta0.get("invoice")):
-                    sol_rd["invoice"] = _s(meta0.get("invoice"))
-                _redelivery_preview(ctx, prov, provn, redel_t, sol_rd)
+            supplier_acted_states = {
+                "SUPPLIER_CREDIT_NOTE_ISSUED",
+                "SUPPLEMENTARY_DELIVERY_SENT",
+                "SUPPLIER_REJECTED",
+                "CLOSED",
+            }
 
-        else:
-            # Fallback: no per-ticket decisions recorded yet → use workflow note items/resolution.
+            sol = sol_wf  # keep `sol` name for downstream chips/matching code
+
+            ticket_meta_by_id: Dict[int, Dict[str, Any]] = {}
+            credit_t: List[SeguimientoTicket] = []
+            redel_t: List[SeguimientoTicket] = []
+            undecided_t: List[SeguimientoTicket] = []
+
+            # ✅ NEW: per-line single source of truth for Solution column in tables
+            resolution_by_line_id: Dict[int, str] = {}
+
+            # --- Classify tickets + build per-line resolution map ---
+            for t in open_t:
+                tid_local = int(getattr(t, "id", 0) or 0)
+                meta = _parse_ticket_resolution_note(_s(getattr(t, "resolution_note", None)))
+                ticket_meta_by_id[tid_local] = meta
+
+                r = (_s(meta.get("resolution"))).strip().lower()
+
+                # ✅ fill map: order_line_id -> resolution
+                lid = int(getattr(t, "order_line_id", 0) or 0)
+                if lid and r:
+                    resolution_by_line_id[lid] = r
+
+                # buckets for UI
+                if r == "credit_note":
+                    credit_t.append(t)
+                elif r in {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}:
+                    redel_t.append(t)
+                else:
+                    undecided_t.append(t)
+
+            # # ✅ Production lock rule:
+            # ✅ Production lock rule:
+            # lock if workflow indicates supplier acted OR workflow resolution exists OR any ticket has a resolution
+            supplier_acted = (state_u in supplier_acted_states) or (
+                wf_res in {"credit_note", "supplementary_delivery", "re_delivery"}
+            )
+            if (not supplier_acted) and any(resolution_by_line_id.values()):
+                supplier_acted = True
+
+            if supplier_acted:
+                st.session_state[decisions_key] = True
+
+            # ---------------------------------------------------------
+            # ✅ NEW: decide tabs based on BOTH ticket truth + workflow truth
+            # (this fixes urgent orders missing tabs/buttons)
+            # ---------------------------------------------------------
             res = (sol_wf.get("resolution") or "").strip().lower()
-            items = sol_wf.get("items") or []
-            has_rd_items = any(isinstance(it, dict) and _is_redelivery_item(it) for it in items)
-            has_cn_items = any(isinstance(it, dict) and (not _is_redelivery_item(it)) for it in items)
+            wf_items = sol_wf.get("items") or []
+            has_rd_items = any(isinstance(it, dict) and _is_redelivery_item(it) for it in wf_items)
+            has_cn_items = any(isinstance(it, dict) and (not _is_redelivery_item(it)) for it in wf_items)
 
-            if has_cn_items:
+            # ticket-based buckets (your existing)
+            has_credit_pending = len(credit_t) > 0
+            has_redel_pending = len(redel_t) > 0
+
+            # ✅ expand using workflow/meta truth too
+            has_credit_pending = has_credit_pending or (res == "credit_note") or has_cn_items
+            has_redel_pending  = has_redel_pending  or (res in {"supplementary_delivery", "re_delivery"}) or has_rd_items
+
+            # ✅ Always show invoice tab when we have open tickets (incidence context exists)
+            show_tabs = bool(open_t)
+
+            if show_tabs:
+                labels = ["Invoice / expected lines"]
+                if has_credit_pending:
+                    labels.append("🧾 Expected credit note")
+                if has_redel_pending:
+                    labels.append("🚚 Expected re-delivery")
+
+                tabs = st.tabs(labels)
+
+                # --- Tab 0: invoice / expected lines ---
+                with tabs[0]:
+                    _render_expected_lines(
+                        ctx,
+                        prov,
+                        show_prices=True,
+                        include_iva=True,
+                        supplier_resolution_by_line_id=resolution_by_line_id,
+                    )
+
+                tab_idx = 1
+
+                # --- Credit note tab (now shown also when workflow says CN/items exist) ---
+                if has_credit_pending:
+                    with tabs[tab_idx]:
+                        cn_no = ""
+
+                        # 1) Prefer ticket meta CN number (if present)
+                        for t in credit_t:
+                            meta = ticket_meta_by_id.get(int(getattr(t, "id", 0) or 0)) or {}
+                            if _s(meta.get("credit_note_invoice")):
+                                cn_no = _s(meta.get("credit_note_invoice"))
+                                break
+
+                        # 2) Fallback: workflow meta CN number (if supplier put it there)
+                        if not cn_no:
+                            cn_no = _s(sol_wf.get("credit_note_invoice") or sol_wf.get("credit_note_number") or "")
+
+                        cn_input_key = f"inc_cn_no_{order.id}_{provn}"
+                        cn_val = st.text_input(
+                            "Credit note number",
+                            value=cn_no,
+                            placeholder="e.g. CN-123 / ΠΙΣ-45",
+                            key=cn_input_key,
+                        )
+
+                        sol_cn = dict(sol_wf)
+                        sol_cn["resolution"] = "credit_note"
+                        if _s(cn_val).strip():
+                            sol_cn["credit_note_invoice"] = _s(cn_val).strip()
+
+                        # ✅ IMPORTANT: if we don't have credit_t (urgent edge case),
+                        # pass open_t so preview can still use workflow items/kinds
+                        _credit_note_preview(
+                            prov,
+                            provn,
+                            credit_t if len(credit_t) > 0 else open_t,
+                            sol_cn,
+                        )
+
+                        st.divider()
+
+                        c1, c2 = st.columns([1.2, 1.0], vertical_alignment="center")
+                        with c1:
+                            st.caption("Required to close (supplier may leave it blank; venue fills it here).")
+                        with c2:
+                            if st.button(
+                                "✅ Verify credit note & close",
+                                use_container_width=True,
+                                disabled=(not _s(cn_val).strip()),
+                                key=f"inc_verify_cn_{order.id}_{provn}",
+                            ):
+                                res_close = venue_verify_and_close(
+                                    ctx=ctx,
+                                    provider=provn,
+                                    mode="credit_note",
+                                    credit_note_invoice=_s(cn_val).strip(),
+                                )
+                                if res_close == "ok":
+                                    st.success("Credit note closed")
+                                    st.rerun()
+                                else:
+                                    st.error(res_close)
+
+                    tab_idx += 1
+
+                # --- Re-delivery tab (now shown also when workflow says RD/items exist) ---
+                if has_redel_pending:
+                    with tabs[tab_idx]:
+                        sol_rd = dict(sol_wf)
+                        sol_rd["resolution"] = "re_delivery"
+
+                        # ✅ IMPORTANT: if we don't have redel_t (urgent edge case),
+                        # pass open_t so preview can still use workflow items/resolution_note
+                        _redelivery_preview(
+                            ctx,
+                            prov,
+                            provn,
+                            redel_t if len(redel_t) > 0 else open_t,
+                            sol_rd,
+                        )
+
+                        st.divider()
+
+                        if st.button(
+                            "✅ Verify delivery & close",
+                            use_container_width=True,
+                            key=f"inc_verify_rd_{order.id}_{provn}",
+                        ):
+                            res_close = venue_verify_and_close(ctx=ctx, provider=provn, mode="supplementary")
+                            if res_close == "ok":
+                                st.success("Re-delivery closed")
+                                st.rerun()
+                            else:
+                                st.error(res_close)
+
+            else:
+                # This should rarely happen now, but keep safe fallback
                 _credit_note_preview(prov, provn, open_t, sol_wf)
-            if has_rd_items:
                 _redelivery_preview(ctx, prov, provn, open_t, sol_wf)
 
-            if not items:
-                if res == "credit_note":
-                    _credit_note_preview(prov, provn, open_t, sol_wf)
-                elif res in {"supplementary_delivery", "re_delivery"}:
-                    _redelivery_preview(ctx, prov, provn, open_t, sol_wf)
-                else:
-                    _credit_note_preview(prov, provn, open_t, sol_wf)
 
+            # Best-effort match supplier note items by product name
+            sol_items: List[Dict[str, Any]] = list((sol.get("items") or []) if isinstance(sol, dict) else [])
+            sol_by_name: Dict[str, Dict[str, Any]] = {}
+            for itx in sol_items:
+                nm = _s(itx.get("name")).lower()
+                if nm:
+                    sol_by_name[nm] = itx
 
-# Best-effort match supplier note items by product name
-        sol_items: List[Dict[str, Any]] = list((sol.get("items") or []) if isinstance(sol, dict) else [])
-        sol_by_name: Dict[str, Dict[str, Any]] = {}
-        for itx in sol_items:
-            nm = _s(itx.get("name")).lower()
-            if nm:
-                sol_by_name[nm] = itx
-
-        def _match_sol_item(ticket: SeguimientoTicket) -> Optional[Dict[str, Any]]:
-            nm = _s(getattr(ticket, "product_name", None)).lower()
-            if nm and nm in sol_by_name:
-                return sol_by_name[nm]
-            for k2, v2 in sol_by_name.items():
-                if nm and (nm in k2 or k2 in nm):
-                    return v2
-            return None
+            def _match_sol_item(ticket: SeguimientoTicket) -> Optional[Dict[str, Any]]:
+                nm = _s(getattr(ticket, "product_name", None)).lower()
+                if nm and nm in sol_by_name:
+                    return sol_by_name[nm]
+                for k2, v2 in sol_by_name.items():
+                    if nm and (nm in k2 or k2 in nm):
+                        return v2
+                return None
 
 
 
+            # ---------------------------------------------------------
+            # Helper: apply inline reorder decisions for this provider
+            # ---------------------------------------------------------
+            def _apply_inline_reorders_for_provider(*, close_non_urgent_op_missing: bool = False) -> None:
+                for tt in open_t:
+                    kind = (_s(getattr(tt, "kind", ""))).lower()
+                    if kind not in {"operational_missing", "invoice_discrepancy", "damaged", "wrong_item"}:
+                        continue
 
-        # ---------------------------------------------------------
-        # Helper: apply inline reorder decisions for this provider
-        # ---------------------------------------------------------
-        def _apply_inline_reorders_for_provider(*, close_non_urgent_op_missing: bool = False) -> None:
-            for tt in open_t:
-                kind = (_s(getattr(tt, "kind", ""))).lower()
-                if kind not in {"operational_missing", "invoice_discrepancy", "damaged", "wrong_item"}:
-                    continue
+                    tid = int(getattr(tt, "id", 0) or 0)
+                    key_base = f"inc_{oid}_{provn}_{tid}"
+                    reorder_key = key_base + "_reorder"
+                    done_key = key_base + "_reorder_done"
 
-                tid = int(getattr(tt, "id", 0) or 0)
-                key_base = f"inc_{oid}_{provn}_{tid}"
-                reorder_key = key_base + "_reorder"
-                done_key = key_base + "_reorder_done"
+                    toggled = bool(st.session_state.get(reorder_key, False))
 
-                toggled = bool(st.session_state.get(reorder_key, False))
+                    # ✅ operational_missing + NOT urgent => auto-close as "not re-ordered"
+                    if kind == "operational_missing" and (not toggled) and close_non_urgent_op_missing:
+                        if st.session_state.get(done_key, False):
+                            continue
 
-                # ✅ operational_missing + NOT urgent => auto-close as "not re-ordered"
-                if kind == "operational_missing" and (not toggled) and close_non_urgent_op_missing:
+                        _close_ticket(
+                            ticket_id=tid,
+                            new_state="resolved_not_reordered",
+                            note="Operational missing: not reordered (urgent toggle OFF).",
+                            actor=_s(st.session_state.get("user_email") or st.session_state.get("actor") or "venue"),
+                        )
+                        st.session_state[done_key] = True
+                        continue
+
+                    # Existing behavior: only act if toggle is ON
+                    if not toggled:
+                        continue
+
                     if st.session_state.get(done_key, False):
                         continue
 
-                    _close_ticket(
-                        ticket_id=tid,
-                        new_state="resolved_not_reordered",
-                        note="Operational missing: not reordered (urgent toggle OFF).",
-                        actor=_s(st.session_state.get("user_email") or st.session_state.get("actor") or "venue"),
-                    )
-                    st.session_state[done_key] = True
-                    continue
+                    lid = int(getattr(tt, "order_line_id", 0) or 0)
+                    ln = line_by_id.get(lid)
 
-                # Existing behavior: only act if toggle is ON
-                if not toggled:
-                    continue
+                    rq = 0.0
 
-                if st.session_state.get(done_key, False):
-                    continue
-
-                lid = int(getattr(tt, "order_line_id", 0) or 0)
-                ln = line_by_id.get(lid)
-
-                rq = 0.0
-
-                # ✅ For operational_missing, qty_invoiced is where you stored the missing qty (issue_qty)
-                if kind == "operational_missing":
-                    rq = _safe_float(getattr(tt, "qty_invoiced", None), 0.0)
-
-                # Existing: for invoice discrepancy / damaged, also use qty_invoiced
-                elif kind in {"invoice_discrepancy", "damaged"}:
-                    rq = _safe_float(getattr(tt, "qty_invoiced", None), 0.0)
-
-                # Fallbacks (only if rq is still 0)
-                if rq <= 0:
-                    rq = _safe_float(getattr(tt, "qty_expected", None), 0.0)
-
-                if rq <= 0 and ln is not None:
-                    fu = ctx.followups_by_key.get((provn, int(getattr(ln, "id", 0) or 0)))
-                    rq = _derive_expected_qty(ln, fu)
-
-                if rq <= 0:
-                    rq = 1.0
-
-
-                try:
-                    _upsert_urgent_reorder_request(
-                        ticket_id=tid,
-                        provider_name=provn,
-                        product_name=_line_name(ln, ctx.products_by_id) if ln else _s(getattr(tt, "product_name", "")),
-                        qty=float(rq),
-                        unit=_line_unit(ln, ctx.products_by_id) if ln else (_s(getattr(tt, "unit", "")) or "unit"),
-                        actor=_s(st.session_state.get("user_email") or st.session_state.get("actor") or "venue"),
-                    )
-                except Exception:
-                    pass
-
-                st.session_state[done_key] = True
-
-        # ---------------------------------------------------------
-        # action panel  ✅ (THIS is what you were missing)
-        # ---------------------------------------------------------
-        a1, a2, a3 = st.columns([1.05, 1.05, 1.2], vertical_alignment="center")
-        supplier_link = build_seguimiento_url(
-            order_id=int(order.id),
-            provider_name=provn,
-            role=ROLE_SUPPLIER,
-            page_path="seguimiento",
-        )
-
-        if state.upper() in {"SUPPLIER_CREDIT_NOTE_ISSUED", "SUPPLEMENTARY_DELIVERY_SENT"}:
-            label = "✅ Verify credit note & close" if state.upper() == "SUPPLIER_CREDIT_NOTE_ISSUED" else "✅ Verify delivery & close"
-            mode = "credit_note" if state.upper() == "SUPPLIER_CREDIT_NOTE_ISSUED" else "supplementary"
-            if a1.button(label, use_container_width=True, key=f"inc_verify_{order.id}_{provn}"):
-                res = venue_verify_and_close(ctx=ctx, provider=provn, mode=mode)
-                if res == "ok":
-                    st.success("Closed")
-                    st.rerun()
-                else:
-                    st.error(res)
-
-        elif state.upper() == "SUPPLIER_REJECTED":
-            st.warning("Supplier rejected the claim (typically used for *Wrong item* / *Damaged* disputes).")
-            if a1.button("✅ Accept reject & close", use_container_width=True, key=f"inc_rej_{order.id}_{provn}"):
-                res = venue_verify_and_close(ctx=ctx, provider=provn, mode="reject")
-                if res == "ok":
-                    st.success("Closed")
-                    st.rerun()
-                else:
-                    st.error(res)
-
-        # ✅ RESTORED: send incidences to supplier + create urgent requests
-        elif state.upper() == "INVOICE_DISCREPANCY":
-            if a1.button("💾 Save & request decision", use_container_width=True, key=f"inc_req_{order.id}_{provn}"):
-                _apply_inline_reorders_for_provider(close_non_urgent_op_missing=True)
-
-                ok, msg = request_supplier_resolution(int(order.venue_id), int(order.id), provn)
-                if ok:
-                    st.session_state[decisions_key] = True   # ✅ NEW: lock UI
-                    st.success("Link sent")
-                    st.link_button("Open supplier link", msg, use_container_width=True)
-                    st.rerun()
-                else:
-                    st.error(msg)
-
-
-        elif state.upper() == "OPERATIONAL_MISSING_PRODUCT":
-            if a1.button("💾 Save & request decision", use_container_width=True, key=f"inc_op_save_{order.id}_{provn}"):
-                _apply_inline_reorders_for_provider(close_non_urgent_op_missing=True)
-
-                ctx2 = _load_order_context(int(ctx.order.venue_id), int(ctx.order.id))
-                if len(_provider_open_tickets(ctx2, provn)) == 0:
-                    _set_workflow_state(
-                        venue_id=int(order.venue_id),
-                        order_id=int(order.id),
-                        provider=provn,
-                        to_state="CLOSED",
-                        actor_role="venue",
-                        actor="venue",
-                        note="Operational missing: non-urgent items ignored (not reordered).",
-                    )
-
-                st.session_state[decisions_key] = True   # ✅ NEW: lock UI
-                st.success("Saved ✓")
-                st.rerun()
-
-        elif state.upper() == "WAITING_SUPPLIER_ACTION":
-            ref = st.text_input("Reference", key=f"dec_ref_{order.id}_{provn}")
-            comment = st.text_input("Comment", key=f"dec_c_{order.id}_{provn}")
-            if a1.button("📝 Credit note", use_container_width=True, key=f"dec_cn_{order.id}_{provn}"):
-                res = supplier_decision_from_venue(ctx=ctx, provider=provn, decision="credit_note", ref=ref, comment=comment)
-                if res == "ok":
-                    st.success("Recorded")
-                    st.rerun()
-                else:
-                    st.error(res)
-            if a2.button("🚚 Re-delivery", use_container_width=True, key=f"dec_rd_{order.id}_{provn}"):
-                res = supplier_decision_from_venue(ctx=ctx, provider=provn, decision="re_delivery", ref=ref, comment=comment)
-                if res == "ok":
-                    st.success("Recorded")
-                    st.rerun()
-                else:
-                    st.error(res)
-            a3.link_button("🔗 Supplier link", supplier_link, use_container_width=True)
-
-        elif state.upper() == "SUPPLIER_CREDIT_NOTE_PENDING":
-            st.warning("⏳ Supplier chose credit note, but the credit note number is still missing.")
-            st.caption("Ask the supplier to open the link again and add the credit note number.")
-            a3.link_button("🔗 Supplier link", supplier_link, use_container_width=True)
-
-
-        
-        # ---------------------------------------------------------
-        # Render issue lines (pretty + per-line reorder control)
-        # Only show while venue is still working on incidences
-        # ---------------------------------------------------------
-        editable_states = {
-            "INVOICE_DISCREPANCY",
-            "OPERATIONAL_MISSING_PRODUCT",
-            "WAITING_SUPPLIER_ACTION",
-            "SUPPLIER_CREDIT_NOTE_PENDING",
-        }
-        
-        show_issue_lines = ((state_u in editable_states) and (not st.session_state.get(decisions_key, False)))
-
-        if show_issue_lines:
-            for t in open_t:
-                tid = int(getattr(t, "id", 0) or 0)
-                lid = int(getattr(t, "order_line_id", 0) or 0)
-                ln = line_by_id.get(lid)
-
-                pname_raw = _line_name(ln, ctx.products_by_id) if ln else _s(getattr(t, "product_name", ""))
-                pdesc_raw = _line_desc(ln, ctx.products_by_id) if ln else ""
-                unit_raw = _s(getattr(t, "unit", None)) or (_line_unit(ln, ctx.products_by_id) if ln else "unit")
-
-                pname = html.escape(pname_raw or "")
-                pdesc = html.escape(pdesc_raw or "")
-                unit = html.escape(unit_raw or "")
-
-                expected_qty = _safe_float(getattr(t, "qty_expected", None), 0.0)
-                if expected_qty <= 0 and ln is not None:
-                    fu = ctx.followups_by_key.get((provn, int(getattr(ln, "id", 0) or 0)))
-                    expected_qty = _derive_expected_qty(ln, fu)
-
-                sol_mode = (_s(sol.get("resolution")) if isinstance(sol, dict) else "").strip().lower()
-                sol_item = _match_sol_item(t)
-
-                sol_qty = None
-                if sol_item is not None:
-                    try:
-                        sol_qty = float(sol_item.get("qty"))
-                    except Exception:
-                        sol_qty = None
-
-                kind = (_s(getattr(t, "kind", ""))).lower()
-                if sol_qty is None:
-                    if kind in {"invoice_discrepancy", "damaged"}:
-                        sol_qty = _safe_float(getattr(t, "qty_invoiced", None), 0.0)
-                    else:
-                        sol_qty = max(0.0, expected_qty - _safe_float(getattr(t, "qty_received", None), 0.0))
-
-                kind_txt_raw = (_s(getattr(t, "kind", "")) or "issue").replace("_", " ")
-                kind_txt = html.escape(kind_txt_raw)
-
-                sol_chip = ""
-                if sol_mode in {"credit_note", "creditnote"}:
-                    cn = _s(sol.get("credit_note_invoice")) if isinstance(sol, dict) else ""
-                    cn = html.escape(cn or "")
-                    cn_txt = f" · #{cn}" if cn else ""
-                    sol_chip = f"<span class='pill pill--warn'>📝 CN{cn_txt}: {sol_qty:g} {unit}</span>"
-
-                elif sol_mode in {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}:
-                    eta = _s(sol.get("eta")) if isinstance(sol, dict) else ""
-                    eta = html.escape(eta or "")
-                    eta_txt = f" · {eta}" if eta else ""
-                    sol_chip = f"<span class='pill pill--ok'>🚚 Re-delivery{eta_txt}: {sol_qty:g} {unit}</span>"
-
+                    # ✅ For operational_missing, qty_invoiced is where you stored the missing qty (issue_qty)
                     if kind == "operational_missing":
-                        old_inv = html.escape(_s(getattr(t, "invoice_no", "")) or "")
-                        new_inv = html.escape(_s(sol.get("new_invoice")) if isinstance(sol, dict) else "")
-                        if old_inv:
-                            sol_chip += f" <span class='pill'>missing from invoice #{old_inv}</span>"
-                        if new_inv:
-                            sol_chip += f" <span class='pill pill--info'>new invoice #{new_inv}</span>"
+                        rq = _safe_float(getattr(tt, "qty_invoiced", None), 0.0)
 
-                # Issue qty pill
-                if kind == "operational_missing":
-                    inc_qty = _safe_float(getattr(t, "qty_invoiced", None), 0.0)
-                    if inc_qty <= 0:
-                        inc_qty = max(0.0, float(expected_qty or 0.0) - _safe_float(getattr(t, "qty_received", None), 0.0))
-                else:
-                    inc_qty = float(sol_qty or 0.0)
-                    if inc_qty <= 0:
-                        inc_qty = _safe_float(getattr(t, "qty_invoiced", None), 0.0)
-                    if inc_qty <= 0:
-                        inc_qty = _safe_float(getattr(t, "qty_expected", None), 0.0)
-                    if inc_qty <= 0:
-                        inc_qty = float(expected_qty or 0.0)
+                    # Existing: for invoice discrepancy / damaged, also use qty_invoiced
+                    elif kind in {"invoice_discrepancy", "damaged"}:
+                        rq = _safe_float(getattr(tt, "qty_invoiced", None), 0.0)
 
-                issue_cls = {
-                    "operational_missing": "info",
-                    "invoice_discrepancy": "warn",
-                    "damaged": "bad",
-                    "wrong_item": "bad",
-                }.get(kind, "warn")
-                inc_chip = f"<span class='pill pill--{issue_cls}'>Issue: {inc_qty:g} {unit}</span>"
+                    # Fallbacks (only if rq is still 0)
+                    if rq <= 0:
+                        rq = _safe_float(getattr(tt, "qty_expected", None), 0.0)
 
-                key_base = f"inc_{oid}_{provn}_{tid}"
+                    if rq <= 0 and ln is not None:
+                        fu = ctx.followups_by_key.get((provn, int(getattr(ln, "id", 0) or 0)))
+                        rq = _derive_expected_qty(ln, fu)
 
-                left, right = st.columns([0.84, 0.16], vertical_alignment="center")
+                    if rq <= 0:
+                        rq = 1.0
 
-                kind_cls = {
-                    "operational_missing": "info",
-                    "invoice_discrepancy": "warn",
-                    "damaged": "bad",
-                    "wrong_item": "bad",
-                }.get(kind, "")
-                kind_chip = (
-                    f"<span class='pill pill--{kind_cls}'>{kind_txt}</span>"
-                    if kind_cls
-                    else f"<span class='pill'>{kind_txt}</span>"
-                )
 
-                with left:
-                    st.markdown(
-                        (
-                            "<div class='line'>"
-                            "  <div class='top'>"
-                            "    <div>"
-                            f"      <div class='name'>{pname}</div>"
-                            f"      {('<div class=' + 'desc' + '>' + pdesc + '</div>') if pdesc else ''}"
-                            "    </div>"
-                            "    <div class='pillrow'>"
-                            f"      <span class='pill'>Expected: {expected_qty:g} {unit}</span>"
-                            f"      {inc_chip}"
-                            f"      {kind_chip}"
-                            f"      {sol_chip}"
-                            "    </div>"
-                            "  </div>"
-                            "</div>"
-                        ),
-                        unsafe_allow_html=True,
+                    try:
+                        _upsert_urgent_reorder_request(
+                            ticket_id=tid,
+                            provider_name=provn,
+                            product_name=_line_name(ln, ctx.products_by_id) if ln else _s(getattr(tt, "product_name", "")),
+                            qty=float(rq),
+                            unit=_line_unit(ln, ctx.products_by_id) if ln else (_s(getattr(tt, "unit", "")) or "unit"),
+                            actor=_s(st.session_state.get("user_email") or st.session_state.get("actor") or "venue"),
+                        )
+
+                        # ✅ NEW: if it’s operational_missing and we created the urgent request,
+                        # close the incidence so it disappears from "Open incidences"
+                        if kind == "operational_missing":
+                            _close_ticket(
+                                ticket_id=tid,
+                                new_state="urgent_requested",
+                                note="Urgent request created; moved to Urgent tab.",
+                                actor=_s(st.session_state.get("user_email") or st.session_state.get("actor") or "venue"),
+                            )
+
+                    except Exception:
+                        pass
+
+                    st.session_state[done_key] = True
+
+            # ---------------------------------------------------------
+            # action panel  ✅ (THIS is what you were missing)
+            # # ---------------------------------------------------------
+   
+            a1, a2, a3 = st.columns([1.05, 1.05, 1.2], vertical_alignment="center")
+
+            supplier_link = build_seguimiento_url(
+                order_id=int(order.id),
+                provider_name=provn,
+                role=ROLE_SUPPLIER,
+                page_path="seguimiento",
+            )
+
+            state_u = (state or "").upper()
+
+            # States where venue is still working / can request supplier decision
+            requestable_states = {
+                "INVOICE_DISCREPANCY",
+                "OPERATIONAL_MISSING_PRODUCT",
+                "WAITING_SUPPLIER_ACTION",
+                "SUPPLIER_CREDIT_NOTE_PENDING",
+            }
+
+            # If supplier already acted (or we already requested decision), lock the UI
+            locked = bool(st.session_state.get(decisions_key, False))
+
+
+            # -----------------------------
+            # State-specific actions
+            # -----------------------------
+            if state_u == "SUPPLIER_REJECTED":
+                st.warning("Supplier rejected the claim (typically used for *Wrong item* / *Damaged* disputes).")
+                if a1.button("✅ Accept reject & close", use_container_width=True, key=f"inc_rej_{order.id}_{provn}"):
+                    res = venue_verify_and_close(ctx=ctx, provider=provn, mode="reject")
+                    if res == "ok":
+                        st.success("Closed")
+                        st.rerun()
+                    else:
+                        st.error(res)
+
+            elif state_u in {"INVOICE_DISCREPANCY", "OPERATIONAL_MISSING_PRODUCT", "WAITING_SUPPLIER_ACTION"}:
+                # ✅ Show the Save button ONLY if not locked
+                # This prevents the button persisting after request.
+                if not locked:
+                    venue_msg = st.text_area(
+                        "Message to supplier (optional)",
+                        value="",
+                        placeholder="e.g. Please confirm ETA / credit note number. Any substitution acceptable?",
+                        key=f"venue_msg_{order.id}_{provn}",
+                        height=30,
                     )
 
-                with right:
-                    reorder_kinds = {"operational_missing", "invoice_discrepancy", "damaged", "wrong_item"}
-                    if kind in reorder_kinds:
-                        reorder_key = key_base + "_reorder"
-                        done_key = key_base + "_reorder_done"
+                    if a1.button("💾 Save & request decision", use_container_width=True, key=f"inc_req_{order.id}_{provn}"):
+                        # ✅ Lock immediately so next rerun hides the button (even if email is slow/edge cases)
+                        st.session_state[decisions_key] = True
 
-                        val = st.toggle("Order urgent", key=reorder_key, value=False)
+                        _apply_inline_reorders_for_provider(close_non_urgent_op_missing=True)
 
-                        # If user turns the toggle OFF again, allow future processing
-                        if not val:
-                            st.session_state.pop(done_key, None)
+                        # OP missing has the extra auto-close logic
+                        if state_u == "OPERATIONAL_MISSING_PRODUCT":
+                            ctx2 = _load_order_context(int(ctx.order.venue_id), int(ctx.order.id))
+                            if len(_provider_open_tickets(ctx2, provn)) == 0:
+                                _set_workflow_state(
+                                    venue_id=int(order.venue_id),
+                                    order_id=int(order.id),
+                                    provider=provn,
+                                    to_state="CLOSED",
+                                    actor_role="venue",
+                                    actor="venue",
+                                    note="Operational missing: non-urgent items ignored (not reordered).",
+                                )
+                                st.success("Saved ✓")
+                                st.rerun()
+
+                        # Default path: request supplier resolution link
+                        ok, msg = request_supplier_resolution(int(order.venue_id), int(order.id), provn, venue_comment=venue_msg)
+                        if ok:
+                            st.success("Link sent")
+                            st.link_button("Open supplier link", msg, use_container_width=True)
+                            st.rerun()
+                        else:
+                            # If sending failed, unlock so user can try again
+                            st.session_state[decisions_key] = False
+                            st.error(msg)
+
+
+
+            elif state_u == "SUPPLIER_CREDIT_NOTE_PENDING":
+                st.warning("⏳ Supplier chose credit note, but the credit note number is still missing.")
+                st.caption("Ask the supplier to open the link again and add the credit note number.")
+
+
+            # ---------------------------------------------------------
+            # Render issue lines (pretty + per-line reorder control)
+            # Only show while venue is still working on incidences
+            # ---------------------------------------------------------
+            editable_states = {
+                "INVOICE_DISCREPANCY",
+                "OPERATIONAL_MISSING_PRODUCT",
+                "WAITING_SUPPLIER_ACTION",
+                "SUPPLIER_CREDIT_NOTE_PENDING",
+            }
+            
+            show_issue_lines = ((state_u in editable_states) and (not st.session_state.get(decisions_key, False)))
+
+            if show_issue_lines:
+                for t in open_t:
+                    tid = int(getattr(t, "id", 0) or 0)
+                    lid = int(getattr(t, "order_line_id", 0) or 0)
+                    ln = line_by_id.get(lid)
+
+                    pname_raw = _line_name(ln, ctx.products_by_id) if ln else _s(getattr(t, "product_name", ""))
+                    pdesc_raw = _line_desc(ln, ctx.products_by_id) if ln else ""
+                    unit_raw = _s(getattr(t, "unit", None)) or (_line_unit(ln, ctx.products_by_id) if ln else "unit")
+
+                    pname = html.escape(pname_raw or "")
+                    pdesc = html.escape(pdesc_raw or "")
+                    unit = html.escape(unit_raw or "")
+
+                    expected_qty = _safe_float(getattr(t, "qty_expected", None), 0.0)
+                    if expected_qty <= 0 and ln is not None:
+                        fu = ctx.followups_by_key.get((provn, int(getattr(ln, "id", 0) or 0)))
+                        expected_qty = _derive_expected_qty(ln, fu)
+
+                    sol_mode = (_s(sol.get("resolution")) if isinstance(sol, dict) else "").strip().lower()
+                    sol_item = _match_sol_item(t)
+
+                    sol_qty = None
+                    if sol_item is not None:
+                        try:
+                            sol_qty = float(sol_item.get("qty"))
+                        except Exception:
+                            sol_qty = None
+
+                    kind = (_s(getattr(t, "kind", ""))).lower()
+                    if sol_qty is None:
+                        if kind in {"invoice_discrepancy", "damaged"}:
+                            sol_qty = _safe_float(getattr(t, "qty_invoiced", None), 0.0)
+                        else:
+                            sol_qty = max(0.0, expected_qty - _safe_float(getattr(t, "qty_received", None), 0.0))
+
+                    kind_txt_raw = (_s(getattr(t, "kind", "")) or "issue").replace("_", " ")
+                    kind_txt = html.escape(kind_txt_raw)
+
+                    sol_chip = ""
+                    if sol_mode in {"credit_note", "creditnote"}:
+                        cn = _s(sol.get("credit_note_invoice")) if isinstance(sol, dict) else ""
+                        cn = html.escape(cn or "")
+                        cn_txt = f" · #{cn}" if cn else ""
+                        sol_chip = f"<span class='pill pill--warn'>📝 CN{cn_txt}: {sol_qty:g} {unit}</span>"
+
+                    elif sol_mode in {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}:
+                        eta = _s(sol.get("eta")) if isinstance(sol, dict) else ""
+                        eta = html.escape(eta or "")
+                        eta_txt = f" · {eta}" if eta else ""
+                        sol_chip = f"<span class='pill pill--ok'>🚚 Re-delivery{eta_txt}: {sol_qty:g} {unit}</span>"
+
+                        if kind == "operational_missing":
+                            old_inv = html.escape(_s(getattr(t, "invoice_no", "")) or "")
+                            new_inv = html.escape(_s(sol.get("new_invoice")) if isinstance(sol, dict) else "")
+                            if old_inv:
+                                sol_chip += f" <span class='pill'>missing from invoice #{old_inv}</span>"
+                            if new_inv:
+                                sol_chip += f" <span class='pill pill--info'>new invoice #{new_inv}</span>"
+
+                    # Issue qty pill
+                    if kind == "operational_missing":
+                        inc_qty = _safe_float(getattr(t, "qty_invoiced", None), 0.0)
+                        if inc_qty <= 0:
+                            inc_qty = max(0.0, float(expected_qty or 0.0) - _safe_float(getattr(t, "qty_received", None), 0.0))
                     else:
-                        st.markdown("")
-        else:
-             st.success("✔ Decisions requested.")            
+                        inc_qty = float(sol_qty or 0.0)
+                        if inc_qty <= 0:
+                            inc_qty = _safe_float(getattr(t, "qty_invoiced", None), 0.0)
+                        if inc_qty <= 0:
+                            inc_qty = _safe_float(getattr(t, "qty_expected", None), 0.0)
+                        if inc_qty <= 0:
+                            inc_qty = float(expected_qty or 0.0)
 
-    if not open_any:
-        st.success("✅ No incidences requiring action.")
+                    issue_cls = {
+                        "operational_missing": "info",
+                        "invoice_discrepancy": "warn",
+                        "damaged": "bad",
+                        "wrong_item": "bad",
+                    }.get(kind, "warn")
+                    inc_chip = f"<span class='pill pill--{issue_cls}'>Issue: {inc_qty:g} {unit}</span>"
+
+                    key_base = f"inc_{oid}_{provn}_{tid}"
+
+                    left, right = st.columns([0.84, 0.16], vertical_alignment="center")
+
+                    kind_cls = {
+                        "operational_missing": "info",
+                        "invoice_discrepancy": "warn",
+                        "damaged": "bad",
+                        "wrong_item": "bad",
+                    }.get(kind, "")
+                    kind_chip = (
+                        f"<span class='pill pill--{kind_cls}'>{kind_txt}</span>"
+                        if kind_cls
+                        else f"<span class='pill'>{kind_txt}</span>"
+                    )
+
+                    with left:
+                        st.markdown(
+                            (
+                                "<div class='line'>"
+                                "  <div class='top'>"
+                                "    <div>"
+                                f"      <div class='name'>{pname}</div>"
+                                f"      {('<div class=' + 'desc' + '>' + pdesc + '</div>') if pdesc else ''}"
+                                "    </div>"
+                                "    <div class='pillrow'>"
+                                f"      <span class='pill'>Expected: {expected_qty:g} {unit}</span>"
+                                f"      {inc_chip}"
+                                f"      {kind_chip}"
+                                f"      {sol_chip}"
+                                "    </div>"
+                                "  </div>"
+                                "</div>"
+                            ),
+                            unsafe_allow_html=True,
+                        )
+
+                    with right:
+                        reorder_kinds = {"operational_missing", "invoice_discrepancy", "damaged", "wrong_item"}
+                        if kind in reorder_kinds:
+                            reorder_key = key_base + "_reorder"
+                            done_key = key_base + "_reorder_done"
+
+                            val = st.toggle("Order urgent", key=reorder_key, value=False)
+
+                            # If user turns the toggle OFF again, allow future processing
+                            if not val:
+                                st.session_state.pop(done_key, None)
+                        else:
+                            st.markdown("")
+            # else:
+            #     st.success("✔ Decisions requested.")            
+
+        if not open_any:
+            st.success("✅ No incidences requiring action.")
 
 
 # =============================
@@ -3589,185 +4986,330 @@ def _provider_resolution_summary(ctx: OrderContext, provider: str) -> Dict[str, 
     return {"mode": "closed", "solution": sol, "verified_at": None}
 
 
-def _render_history_tab(venue_id: int, *, deep_provider: Optional[str] = None):
-    orders = _get_history_orders(int(venue_id))
-    if not orders:
-        st.info("No closed supplier history yet.")
-        return
 
-    def _order_label_with_invoices(o: Order) -> str:
-        base = f"#{int(o.id)}" if getattr(o, "id", None) is not None else "#—"
-        when = getattr(o, "created_at", None)
-        when_s = when.strftime("%Y-%m-%d %H:%M") if when else ""
-
-        # build invoice summary per provider (only if exists)
-        try:
-            ctx = _load_order_context(int(venue_id), int(o.id))
-            parts = []
-            for prov, rec in (ctx.receipts_by_provider or {}).items():
-                inv = _s(getattr(rec, "invoice_number", None))
-                if inv:
-                    parts.append(f"{prov}·{inv}")
-            inv_txt = (" | ".join(parts)) if parts else ""
-        except Exception:
-            inv_txt = ""
-
-        head = f"{base} — {when_s}" if when_s else base
-        return head + (f" — {inv_txt}" if inv_txt else "")
-
-    selected_id = st.selectbox(
-        "Order",
-        options=[int(o.id) for o in orders if o.id is not None],
-        format_func=lambda oid: _order_label_with_invoices(next(o for o in orders if int(o.id) == int(oid))),
-        key=f"hist_sel_{int(venue_id)}",
-    )
-
-    ctx = _load_order_context(int(venue_id), int(selected_id))
-    providers = sorted(ctx.lines_by_provider.keys(), key=lambda x: x.lower())
-    
-    # ✅ Only keep providers that are 📧 Enviado (ProviderSendStatus.sent == True)
-    with get_session() as s:
-        rows = list(
-            s.exec(
-                select(ProviderSendStatus).where(ProviderSendStatus.order_id == int(ctx.order.id))
-            ).all()
-        )
-
-    sent_providers = {
-        norm_provider(r.provider_name)
-        for r in rows
-        if bool(getattr(r, "sent", False))
-    }
-
-    providers = [p for p in providers if norm_provider(p) in sent_providers]
-
-    # Deep-link: provider (best-effort)
-    if deep_provider:
-        target = norm_provider(deep_provider)
-        providers_norm = [norm_provider(p) for p in providers]
-        if target in providers_norm:
-            idx = providers_norm.index(target)
-            idx_key = f"recv_current_provider_idx_{int(selected_id)}"
-            sel_key = f"recv_provider_sel_{int(selected_id)}"
-            st.session_state[idx_key] = idx
-            st.session_state[sel_key] = providers[idx]
-
-    # -----------------------------
-    # Deep-link: provider (best-effort)
-    # -----------------------------
-    if deep_provider:
-        target = norm_provider(deep_provider)
-        providers_norm = [norm_provider(p) for p in providers]
-        if target in providers_norm:
-            idx = providers_norm.index(target)
-            st.session_state[f"recv_current_provider_idx_{int(selected_id)}"] = idx
-            st.session_state[f"recv_provider_sel_{int(selected_id)}"] = providers[idx]
-
-    
-    if not providers:
-        st.info("No sent suppliers (📧 Enviado) for this order yet.")
-        return
-
-    
-    closed_providers = [p for p in providers if _provider_closed(ctx, p)]
-    if not closed_providers:
-        st.info("This order has no closed suppliers yet.")
-        return
-
-    st.markdown("### Closed suppliers")
-
-    for prov in closed_providers:
-        provn = norm_provider(prov)
-        receipt = ctx.receipts_by_provider.get(provn)
-        inv_no = _s(getattr(receipt, "invoice_number", None)) or "—"
-
-        summ = _provider_resolution_summary(ctx, provn)
-        mode = summ.get("mode")
-        sol = summ.get("solution") or {}
-
-        verified_at = summ.get("verified_at")
-
-        if mode == "credit_note":
-            title = f"{prov} · 🧾 Invoice: {inv_no} · Credit note"
-            badge = _badge("Credit note", "warn")
-        elif mode == "ok_redelivery":
-            eta = _s(sol.get("eta"))
-            eta_txt = f" · ETA: {eta}" if eta else ""
-            when_txt = f" · Verified: {verified_at.strftime('%Y-%m-%d %H:%M')}" if isinstance(verified_at, datetime) else ""
-            title = f"{prov} · 🧾 Invoice: {inv_no} · OK (Re-delivery)" + eta_txt + when_txt
-            badge = _badge("OK", "ok") + " " + _badge("Re-delivery", "info")
-        elif mode in {"ok_internal", "ok"}:
-            when_txt = f" · Verified: {verified_at.strftime('%Y-%m-%d %H:%M')}" if isinstance(verified_at, datetime) else ""
-            title = f"{prov} · 🧾 Invoice: {inv_no} · OK" + when_txt
-            badge = _badge("OK", "ok")
-        else:
-            title = f"{prov} · 🧾 Invoice: {inv_no} · Closed"
-            badge = _badge("Closed", "info")
-
-        st.markdown(
-            f"<div class='voi-card'>"
-            f"<div class='voi-title'>{title}</div>"
-            f"<div class='voi-muted'>{badge}</div>"
-            f"</div>",
-            unsafe_allow_html=True,
-        )
-
-        # Show the full order analytically for this supplier
-        lines = ctx.lines_by_provider.get(provn, []) or []
-        rows: List[Dict[str, Any]] = []
-        for ln in lines:
-            lid = int(getattr(ln, "id", 0) or 0)
-            fu = ctx.followups_by_key.get((provn, lid))
-            ordered = _safe_float(getattr(ln, "quantity", 0.0), 0.0)
-            expected = _derive_expected_qty(ln, fu)
-            received = _safe_float(getattr(fu, "venue_qty", expected) if fu else expected, expected)
-
-            # when supplementary delivery verified, treat as normal (no issue)
-            issue_qty = (
-                _safe_float(getattr(fu, "qty_invoiced", 0.0) if fu else 0.0, 0.0)
-                if mode in {"credit_note", "ok_redelivery"}
-                else 0.0
-            )
-
-            rows.append(
-                {
-                    "Product": _line_name(ln, ctx.products_by_id),
-                    "Unit": _line_unit(ln, ctx.products_by_id),
-                    "Ordered": float(ordered),
-                    "Expected": float(expected),
-                    "Received": float(received),
-                    "Issue qty": float(issue_qty),
-                }
-            )
-
-        if rows:
-            st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
-
-        # Credit note details (products, CN number, related invoice)
-        if mode == "credit_note":
-            cn = _s(sol.get("credit_note_invoice")) or "—"
-            st.markdown(f"**Credit note number:** `{cn}`")
-            st.markdown(f"**Related invoice number:** `{inv_no}`")
-
-            items = sol.get("items") or []
-            if items:
-                st.markdown("**Products in credit note:**")
-                for it in items:
-                    nm = _s(it.get("name"))
-                    qty = _s(it.get("qty"))
-                    why = _s(it.get("why"))
-                    why_txt = why.replace("_", " ") if why else ""
-                    st.markdown(f"- **{nm}** · {qty}" + (f" · {why_txt}" if why_txt else ""))
-
-        with st.expander("🕒 Timeline / audit trail", expanded=False):
-            _render_timeline(ctx, provn)
-            
-            
-            
 
 # =============================
 # Main dashboard
 # =============================
+# =============================
+# Global dashboards (no implicit order)
+# =============================
+
+def _list_pending_receive_items(venue_id: int) -> List[Dict[str, Any]]:
+    """Flat list of (order, provider) that still needs Receive action."""
+    DONE_STATES = {
+        "RECEIVED",
+        "INVOICE_DISCREPANCY",
+        "OPERATIONAL_MISSING_PRODUCT",
+        "WAITING_SUPPLIER_ACTION",
+        "SUPPLIER_CREDIT_NOTE_ISSUED",
+        "SUPPLIER_CREDIT_NOTE_PENDING",
+        "SUPPLEMENTARY_DELIVERY_SENT",
+        "SUPPLIER_REJECTED",
+        "CLOSED",
+    }
+
+    orders = _get_active_orders(int(venue_id))
+    if not orders:
+        return []
+
+    order_ids = [int(o.id) for o in orders if getattr(o, "id", None) is not None]
+    if not order_ids:
+        return []
+
+    with get_session() as s:
+        send_rows = list(
+            s.exec(select(ProviderSendStatus).where(ProviderSendStatus.order_id.in_(order_ids))).all()
+        )
+        sent_pairs: set[tuple[int, str]] = set()
+        for r in send_rows:
+            if (
+                bool(getattr(r, "sent", False))
+                or bool(getattr(r, "sent_email", False))
+                or bool(getattr(r, "sent_whatsapp", False))
+            ):
+                sent_pairs.add((int(r.order_id), norm_provider(getattr(r, "provider_name", "") or "")))
+
+        wf_rows = list(s.exec(select(OrderWorkflow).where(OrderWorkflow.order_id.in_(order_ids))).all())
+        wf_by_pair = {(int(w.order_id), norm_provider(w.provider_name)): w for w in wf_rows}
+
+        rc_rows = list(s.exec(select(ProviderReceipt).where(ProviderReceipt.order_id.in_(order_ids))).all())
+        rc_by_pair = {(int(r.order_id), norm_provider(r.provider_name)): r for r in rc_rows}
+
+    out: List[Dict[str, Any]] = []
+    for o in orders:
+        oid = int(getattr(o, "id", 0) or 0)
+        if not oid:
+            continue
+
+        provs = sorted([p for (oo, p) in sent_pairs if oo == oid and p], key=lambda x: x.lower())
+        for provn in provs:
+            wf = wf_by_pair.get((oid, provn))
+            state = (_s(getattr(wf, "state", None)) or "ORDER_SENT").upper()
+            if state in DONE_STATES:
+                continue
+
+            rec = rc_by_pair.get((oid, provn))
+            inv = _s(getattr(rec, "invoice_number", None))
+            out.append(
+                {
+                    "order": o,
+                    "order_id": oid,
+                    "provider_norm": provn,
+                    "provider_display": provn,
+                    "invoice_number": inv,
+                    "state": state,
+                }
+            )
+
+    out.sort(key=lambda r: (-int(r["order_id"]), (r["provider_display"] or "").lower()))
+    return out
+
+def _render_receive_provider_panel(ctx: OrderContext, provider: str) -> None:
+    
+    st.markdown(
+        """
+        <style>
+        /* Fuse header card + expander */
+        .voi-card.voi-card--header{
+            margin-bottom: 0.35rem;
+            border-bottom-left-radius: 0 !important;
+            border-bottom-right-radius: 0 !important;
+        }
+
+        /* Style the expander container to look like the same card */
+        div[data-testid="stExpander"]{
+            border: 1px solid rgba(49, 51, 63, 0.12);
+            border-top: none;
+            border-bottom-left-radius: 12px;
+            border-bottom-right-radius: 12px;
+            padding: 0.25rem 0.25rem 0.5rem 0.25rem;
+            margin-top: -10px; /* pulls it up under the card */
+            background: #fff;
+        }
+
+        /* Make expander header more compact */
+        div[data-testid="stExpander"] summary{
+            padding: 0.25rem 0.5rem;
+            font-weight: 600;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+    
+    
+    current_provider = provider
+    prov_key = norm_provider(current_provider)
+
+    wf = ctx.workflows_by_provider.get(prov_key)
+    state = _s(getattr(wf, "state", None)) if wf else "ORDER_SENT"
+    badge_txt, badge_kind = _state_badge(state)
+
+    receipt = ctx.receipts_by_provider.get(prov_key)
+
+    inv_key = f"recv_inv_{int(ctx.order.id)}_{prov_key}"
+    db_inv = _s(getattr(receipt, "invoice_number", None))
+
+    # Session-state sync (only when empty)
+    if inv_key not in st.session_state:
+        st.session_state[inv_key] = db_inv
+    else:
+        if (not (st.session_state[inv_key] or "").strip()) and db_inv:
+            st.session_state[inv_key] = db_inv
+
+    invoice_locked = (state or "").upper() == "CLOSED"
+
+    inv_badge_txt, inv_badge_kind = _invoice_set_badge(receipt)
+    if invoice_locked:
+        inv_badge_txt, inv_badge_kind = "Verified (locked)", "ok"
+
+    # --- Header metadata (invoice #, created_at, created_by) ---
+    order = getattr(ctx, "order", None)
+    created_at = getattr(order, "created_at", None)
+    created_txt = created_at.strftime("%d %b %Y, %H:%M") if created_at else "—"
+
+    creator_raw = getattr(order, "created_by", None) or getattr(order, "updated_by", None) or ""
+    creator_raw = (creator_raw or "").strip()
+    if creator_raw and "@" in creator_raw:
+        short = creator_raw.split("@", 1)[0].replace(".", " ").replace("_", " ").strip()
+        creator_txt = short.title() if short else creator_raw
+    else:
+        creator_txt = creator_raw or "Unknown user"
+
+    # Prefer what user typed (session) > DB value > dash
+    header_inv = (st.session_state.get(inv_key) or db_inv or "—").strip() or "—"
+
+    # ---------- Compact header (now with meta line) ----------
+    # ---------- Compact header (with meta line) ----------
+    st.markdown(
+        f"""
+        <div class="voi-card voi-card--header"
+            style="background:#f7f9fc; border-left:4px solid #4c78ff;">
+        <div style="display:flex; justify-content:space-between; align-items:center; gap:8px;">
+            <div style="min-width:0">
+            <div class="voi-title"
+                style="margin:0; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                {current_provider}
+            </div>
+            <div class="voi-muted" style="white-space:nowrap; overflow:hidden; text-overflow:ellipsis;">
+                🧾 {header_inv} &nbsp;·&nbsp; 🗓️ {created_txt} &nbsp;·&nbsp; 👤 {creator_txt}
+            </div>
+            </div>
+            <div style="display:flex; gap:6px; flex-wrap:wrap; justify-content:flex-end;">
+            {_badge(badge_txt, badge_kind)}
+            {_badge(inv_badge_txt, inv_badge_kind)}
+            </div>
+        </div>
+        </div>
+        """,
+        unsafe_allow_html=True,
+    )
+    # ✅ Supplier comment (from supplier confirmation)
+    _render_commentline(label="💬 Supplier message", text=_supplier_comment_for_provider(ctx, prov_key))
+
+    with st.expander("Details"):
+        # ---------- Work area ----------
+        _render_expected_lines(
+            ctx,
+            current_provider,
+            show_prices=True,
+            include_iva=True,
+        )
+        _render_receive_form(ctx, current_provider)
+                    
+
+
+        # ---------- Action row (invoice + expected popover + save) ----------
+        c1, c2 = st.columns(2, vertical_alignment="center")
+
+        with c1:
+            inv_val = st.text_input(
+                "Invoice #",
+                key=inv_key,
+                placeholder="Invoice # (required)",
+                disabled=invoice_locked,
+                label_visibility="collapsed",
+            )
+
+            inv_required_missing = (not invoice_locked) and (not (inv_val or "").strip())
+
+
+
+        with c2:
+            save_all = st.button(
+                "💾 Save",
+                type="primary",
+                use_container_width=True,
+                disabled=invoice_locked or inv_required_missing,
+                key=f"btn_save_all_{int(ctx.order.id)}_{prov_key}",
+            )
+
+            # if inv_required_missing:
+            #     st.caption("⚠️ Invoice number is required to save.")
+
+
+        if save_all:
+            ok, msg = save_all_received_for_provider(ctx=ctx, provider=current_provider)
+            if ok:
+                st.success("Saved ✓")
+                st.rerun()
+            else:
+                st.error(msg)
+
+        st.markdown("<div class='voi-hr'></div>", unsafe_allow_html=True)
+
+def _list_open_incidences_items(venue_id: int) -> List[Dict[str, Any]]:
+    """Flat list of (order, provider) that has at least one open SeguimientoTicket."""
+    orders = _get_active_orders(int(venue_id))
+    if not orders:
+        return []
+
+    order_ids = [int(o.id) for o in orders if getattr(o, "id", None) is not None]
+    if not order_ids:
+        return []
+
+    with get_session() as s:
+        send_rows = list(
+            s.exec(select(ProviderSendStatus).where(ProviderSendStatus.order_id.in_(order_ids))).all()
+        )
+        sent_pairs: set[tuple[int, str]] = set()
+        for r in send_rows:
+            if (
+                bool(getattr(r, "sent", False))
+                or bool(getattr(r, "sent_email", False))
+                or bool(getattr(r, "sent_whatsapp", False))
+            ):
+                sent_pairs.add((int(r.order_id), norm_provider(getattr(r, "provider_name", "") or "")))
+
+    out: List[Dict[str, Any]] = []
+    for o in orders:
+        oid = int(getattr(o, "id", 0) or 0)
+        if not oid:
+            continue
+
+        ctx = _load_order_context(int(venue_id), oid)
+
+        providers = sorted(ctx.lines_by_provider.keys(), key=lambda x: x.lower())
+        # only providers actually sent
+        providers = [p for p in providers if (oid, norm_provider(p)) in sent_pairs]
+
+        for prov in providers:
+            
+            if _provider_closed(ctx, prov):
+                continue
+            open_t = _provider_open_tickets(ctx, prov)
+            if not open_t:
+                continue
+            receipt = ctx.receipts_by_provider.get(norm_provider(prov))
+            inv = _s(getattr(receipt, "invoice_number", None))
+            out.append(
+                {
+                    "order": o,
+                    "order_id": oid,
+                    "provider": prov,
+                    "invoice_number": inv,
+                    "open_count": int(len(open_t)),
+                }
+            )
+
+    out.sort(key=lambda r: (-int(r["open_count"]), -int(r["order_id"]), (r["provider"] or "").lower()))
+    return out
+
+
+# def _list_open_urgent_requests_grouped() -> Dict[int, List[UrgentReorderRequest]]:
+#     """Group pending urgent requests by the *source order id* (via incidence SeguimientoTicket)."""
+#     reqs = _list_open_urgent_requests()
+#     if not reqs:
+#         return {}
+
+#     inc_ids = sorted({int(getattr(r, "incidence_id", 0) or 0) for r in reqs if int(getattr(r, "incidence_id", 0) or 0)})
+#     if not inc_ids:
+#         return {}
+
+#     with get_session() as s:
+#         tickets = list(s.exec(select(SeguimientoTicket).where(SeguimientoTicket.id.in_(inc_ids))).all())
+#     ticket_order_by_id = {int(t.id): int(getattr(t, "order_id", 0) or 0) for t in tickets if getattr(t, "id", None) is not None}
+
+#     grouped: Dict[int, List[UrgentReorderRequest]] = {}
+#     for r in reqs:
+#         inc = int(getattr(r, "incidence_id", 0) or 0)
+#         oid = int(ticket_order_by_id.get(inc, 0) or 0)
+#         if not oid:
+#             continue
+#         grouped.setdefault(oid, []).append(r)
+
+#     # newest requests first per group
+#     for oid in list(grouped.keys()):
+#         grouped[oid].sort(key=lambda x: getattr(x, "created_at", None) or _now(), reverse=True)
+
+#     return grouped
+
+
+# =============================
+# Main dashboard (global)
+# =============================
+
 def tracking_dashboard(
     venue_id: int,
     *,
@@ -3776,42 +5318,24 @@ def tracking_dashboard(
 ) -> None:
     _inject_css()
 
-    st.markdown("# Track order")
+    st.markdown("# Dashboard")
 
     orders = _get_active_orders(int(venue_id))
     if not orders:
         st.info("No orders yet.")
         return
-
-    def _order_label(o: Order) -> str:
-        base = f"#{int(o.id)}" if getattr(o, "id", None) is not None else "#—"
-        title = _s(getattr(o, "title", None))
-        when = getattr(o, "created_at", None)
-        when_s = when.strftime("%Y-%m-%d %H:%M") if when else ""
-        return f"{base} — {title}" if title else (f"{base} — {when_s}" if when_s else base)
-
+    
     order_ids = [int(o.id) for o in orders if o.id is not None]
-
-    default_idx = 0
-    if deep_order_id is not None and int(deep_order_id) in order_ids:
-        default_idx = order_ids.index(int(deep_order_id))
-
-    selected_id = st.selectbox(
-        "Order",
-        options=order_ids,
-        index=default_idx,
-        format_func=lambda oid: _order_label(next(o for o in orders if int(o.id) == int(oid))),
-    )
-
-    # URL sync: selected order (drop provider because it's order-specific)
-    cur_oid = qp_int("order_id")
-    if cur_oid != int(selected_id):
-        set_query_params(page="tracking", order_id=str(int(selected_id)))
-
+    selected_id = order_ids[0]   # or your deep link logic / expander selection
+    
     ctx = _load_order_context(int(venue_id), int(selected_id))
     providers = sorted(ctx.lines_by_provider.keys(), key=lambda x: x.lower())
-
-    # ✅ Only keep providers that are actually sent (email or whatsapp)
+    
+    
+    
+    #======================PANEL
+    
+     # ✅ Only keep providers that are actually sent (email or whatsapp)
     with get_session() as s:
         rows = list(
             s.exec(
@@ -3821,6 +5345,7 @@ def tracking_dashboard(
             ).all()
         )
 
+    
     sent_providers = {
         norm_provider(r.provider_name)
         for r in rows
@@ -3838,22 +5363,54 @@ def tracking_dashboard(
     if deep_provider:
         desired_norm = norm_provider(deep_provider)
         st.session_state[f"recv_desired_provider_{int(ctx.order.id)}"] = desired_norm
-
+        
     if not providers:
         st.info("No suppliers have been sent yet (📧 Email / WhatsApp).")
         return
 
-    # KPIs
-    open_total = sum(len(_provider_open_tickets(ctx, p)) for p in providers)
-    
-    def _wf_state(provider_name: str) -> str:
-        wf = ctx.workflows_by_provider.get(norm_provider(provider_name))
-        return _s(getattr(wf, "state", "")).upper()
 
-    # Providers that still require "Receive" action (same logic you use later)
-    def _needs_receive_for_provider(pname: str) -> bool:
-        s = _wf_state(pname)
-        if s in {
+    # -----------------------------
+    # KPIs (GLOBAL across all active orders)
+    # -----------------------------
+    
+        # -----------------------------
+    # KPIs (GLOBAL across all active orders) ✅ consistent
+    # -----------------------------
+    try:
+        orders_all = _get_active_orders(int(venue_id))
+        order_ids_all = [int(o.id) for o in orders_all if getattr(o, "id", None) is not None]
+
+        # Sent pairs across ALL active orders
+        sent_pairs_all: set[tuple[int, str]] = set()
+        with get_session() as s:
+            if order_ids_all:
+                send_rows = list(
+                    s.exec(
+                        select(ProviderSendStatus).where(
+                            ProviderSendStatus.order_id.in_(order_ids_all)
+                        )
+                    ).all()
+                )
+            else:
+                send_rows = []
+
+        for r in send_rows:
+            if (
+                bool(getattr(r, "sent", False))
+                or bool(getattr(r, "sent_email", False))
+                or bool(getattr(r, "sent_whatsapp", False))
+            ):
+                sent_pairs_all.add((int(r.order_id), norm_provider(getattr(r, "provider_name", "") or "")))
+
+        # 1) Providers (global): count sent provider-pairs (order_id, provider)
+        providers_global = len(sent_pairs_all)
+
+        # 2) Open incidences (global): sum of open tickets across all active orders
+        inc_items = _list_open_incidences_items(int(venue_id))
+        open_total = sum(int(it.get("open_count") or 0) for it in inc_items)
+
+        # 3) Pending products (global): lines pending "Receive" across all active orders/providers
+        DONE_STATES = {
             "RECEIVED",
             "INVOICE_DISCREPANCY",
             "OPERATIONAL_MISSING_PRODUCT",
@@ -3863,56 +5420,93 @@ def tracking_dashboard(
             "SUPPLEMENTARY_DELIVERY_SENT",
             "SUPPLIER_REJECTED",
             "CLOSED",
-        }:
-            return False
-        return True
+        }
 
-    # 1) Products pending to receive (count of lines not yet recorded by venue)
-    pending_products = 0
-    for p in providers:
-        if not _needs_receive_for_provider(p):
-            continue
-        provn = norm_provider(p)
-        for ln in (ctx.lines_by_provider.get(provn, []) or []):
-            lid = int(getattr(ln, "id", 0) or 0)
-            if not lid:
+        pending_products = 0
+        redeliveries_pending = 0
+        credit_notes_pending = 0
+
+        # Iterate orders (best-effort; acceptable because active orders are typically small)
+        for o in orders_all:
+            oid = int(getattr(o, "id", 0) or 0)
+            if not oid:
                 continue
 
-            # If venue already entered qty for that line, consider it "not pending"
-            fu = ctx.followups_by_key.get((provn, lid))
-            if fu is not None and getattr(fu, "venue_qty", None) is not None:
+            ctx_o = _load_order_context(int(venue_id), oid)
+
+            # providers for THIS order that were actually sent
+            provs_sent = sorted(
+                [p for (oo, p) in sent_pairs_all if oo == oid and p],
+                key=lambda x: x.lower(),
+            )
+            if not provs_sent:
                 continue
 
-            # Also respect legacy per-line received flag if used
-            if bool(getattr(ln, "received_ok", False)):
-                continue
+            # pending products (same logic as before, but per-order and summed)
+            for p in provs_sent:
+                wf = ctx_o.workflows_by_provider.get(norm_provider(p))
+                stt = _s(getattr(wf, "state", None)).upper() if wf else "ORDER_SENT"
+                if stt in DONE_STATES:
+                    continue
 
-            pending_products += 1
+                provn = norm_provider(p)
+                for ln in (ctx_o.lines_by_provider.get(provn, []) or []):
+                    lid = int(getattr(ln, "id", 0) or 0)
+                    if not lid:
+                        continue
+                    fu = ctx_o.followups_by_key.get((provn, lid))
+                    if fu is not None and getattr(fu, "venue_qty", None) is not None:
+                        continue
+                    if bool(getattr(ln, "received_ok", False)):
+                        continue
+                    pending_products += 1
 
-    # 2) Re-deliveries pending (provider-level)
-    redeliveries_pending = sum(1 for p in providers if _wf_state(p) == "SUPPLEMENTARY_DELIVERY_SENT")
+            # re-deliveries / credit notes pending (per provider-pair, based on ticket-level truth)
+            for p in provs_sent:
+                provn = norm_provider(p)
 
-    # 3) Credit notes pending (provider-level; includes "issued but not closed")
-    credit_notes_pending = sum(
-        1
-        for p in providers
-        if _wf_state(p) in {"SUPPLIER_CREDIT_NOTE_PENDING", "SUPPLIER_CREDIT_NOTE_ISSUED"}
-    )
+                if _provider_closed(ctx_o, provn):
+                    continue
 
-    # 4) Urgent: pending urgent requests + open urgent orders
-    urgent_requests_pending = 0
-    try:
-        urgent_requests_pending = len(_list_open_urgent_requests())
+                open_t = _provider_open_tickets(ctx_o, provn)
+                if not open_t:
+                    continue
+
+                has_credit_pending = False
+                has_redel_pending = False
+
+                for t in open_t:
+                    meta = _parse_ticket_resolution_note(_s(getattr(t, "resolution_note", None)))
+                    r = _s(meta.get("resolution")).strip().lower()
+                    if r == "credit_note":
+                        has_credit_pending = True
+                    elif r in {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}:
+                        has_redel_pending = True
+
+                if has_redel_pending:
+                    redeliveries_pending += 1
+                if has_credit_pending:
+                    credit_notes_pending += 1
+
+        # 4) Urgent: pending urgent requests
+        try:
+            urgent_requests_pending = len(_list_open_urgent_requests())
+        except Exception:
+            urgent_requests_pending = 0
+
     except Exception:
+        providers_global = 0
+        open_total = 0
+        pending_products = 0
+        redeliveries_pending = 0
+        credit_notes_pending = 0
         urgent_requests_pending = 0
-
-
 
     st.markdown(
         "<div class='voi-kpi'>"
-        f"<div class='k'><div class='t'>Providers</div><div class='v'>{len(providers)}</div></div>"
-        f"<div class='k'><div class='t'>Open incidences</div><div class='v'>{open_total}</div></div>"
+        # f"<div class='k'><div class='t'>Providers</div><div class='v'>{providers_global}</div></div>"
         f"<div class='k'><div class='t'>Pending products</div><div class='v'>{pending_products}</div></div>"
+        f"<div class='k'><div class='t'>Open incidences</div><div class='v'>{open_total}</div></div>"
         f"<div class='k'><div class='t'>Re-deliveries</div><div class='v'>{redeliveries_pending}</div></div>"
         f"<div class='k'><div class='t'>Credit notes</div><div class='v'>{credit_notes_pending}</div></div>"
         f"<div class='k'><div class='t'>Urgent requests</div><div class='v'>{urgent_requests_pending}</div></div>"
@@ -3920,210 +5514,126 @@ def tracking_dashboard(
         unsafe_allow_html=True,
     )
 
-
-    tab_labels = ["📦 Receive", "🚨 Incidences", "⚡ Urgent", "📚 History"]
-    tab_key = f"receive_orders_tab_{int(ctx.order.id)}"
+    tab_labels = ["📦 Receive", "🚨 Incidences", "⚡ Urgent"]
+    tab_key = f"tracking_global_tab_{int(venue_id)}"
     st.session_state.setdefault(tab_key, tab_labels[0])
     if st.session_state[tab_key] not in tab_labels:
         st.session_state[tab_key] = tab_labels[0]
 
     selected_tab = st.radio(
-        "Receive navigation",
+        "Tracking navigation",
         tab_labels,
         horizontal=True,
         key=tab_key,
         label_visibility="collapsed",
     )
-    
 
-
+    # -----------------------------
+    # 📦 Receive (global)
+    # -----------------------------
     if selected_tab == "📦 Receive":
-        if not providers:
-            st.info("No providers found for this order.")
-        else:
-            def _needs_receive_for_provider(pname: str) -> bool:
-                wf = ctx.workflows_by_provider.get(norm_provider(pname))
-                stt = _s(getattr(wf, "state", None)) if wf else "ORDER_SENT"
-                s = stt.upper()
-                if s in {
-                    "RECEIVED",
-                    "INVOICE_DISCREPANCY",
-                    "OPERATIONAL_MISSING_PRODUCT",
-                    "WAITING_SUPPLIER_ACTION",
-                    "SUPPLIER_CREDIT_NOTE_ISSUED",
-                    "SUPPLEMENTARY_DELIVERY_SENT",
-                    "CLOSED",
-                }:
-                    return False
+        tasks = _list_pending_receive_items(int(venue_id))
+        if not tasks:
+            st.success("✅ Nothing pending to receive right now.")
+            return
+
+        f1, f2 = st.columns([2.2, 1.0], vertical_alignment="center")
+        with f1:
+            q = st.text_input("Search provider / invoice / order", placeholder="e.g. makro, 2026-, #12").strip().lower()
+        with f2:
+            expand_all = st.toggle("Expand all", value=False)
+
+        def _matches(t: Dict[str, Any]) -> bool:
+            if not q:
                 return True
+            prov = (t.get("provider_display") or "").lower()
+            inv = (t.get("invoice_number") or "").lower()
+            oid = str(t.get("order_id") or "")
+            return (q in prov) or (q in inv) or (q in oid) or (q in f"#{oid}")
 
-            receive_providers = [p for p in providers if _needs_receive_for_provider(p)]
+        tasks2 = [t for t in tasks if _matches(t)]
+        if not tasks2:
+            st.info("No matches.")
+            return
 
-            # Apply deep-linked provider (once) if present in the Receive list
-            desired_key = f"recv_desired_provider_{int(ctx.order.id)}"
-            desired_norm = st.session_state.get(desired_key)
-            if desired_norm:
-                rnorms = [norm_provider(p) for p in receive_providers]
-                if desired_norm in rnorms:
-                    idx_key_tmp = f"recv_current_provider_idx_{int(ctx.order.id)}"
-                    sel_key_tmp = f"recv_provider_sel_{int(ctx.order.id)}"
-                    st.session_state[idx_key_tmp] = rnorms.index(desired_norm)
-                    st.session_state[sel_key_tmp] = receive_providers[rnorms.index(desired_norm)]
-                st.session_state.pop(desired_key, None)
+        def _pretty_actor(actor: str) -> str:
+            actor = (actor or "").strip()
+            if not actor:
+                return "Unknown user"
+            # If it's an email, show a nicer label (before @), but keep full email if you prefer
+            if "@" in actor:
+                short = actor.split("@", 1)[0].replace(".", " ").replace("_", " ").strip()
+                return short.title() if short else actor
+            return actor
 
-            if not receive_providers:
-                st.success("✅ All providers have been processed in Receive. Go to the Incidences tab for next actions.")
-            else:
-                idx_key = f"recv_current_provider_idx_{int(ctx.order.id)}"
-                st.session_state.setdefault(idx_key, 0)
-                idx = int(st.session_state.get(idx_key, 0))
-                idx = max(0, min(idx, len(receive_providers) - 1))
+        for t in tasks2:
+            oid = int(t["order_id"])
+            prov = t["provider_display"] or "—"
+            inv = t["invoice_number"] or "—"
+            order = t.get("order")  # this exists because _list_pending_receive_items adds it
 
-                current_provider = st.selectbox(
-                    "Provider",
-                    options=receive_providers,
-                    index=idx,
-                    key=f"recv_provider_sel_{int(ctx.order.id)}",
-                    format_func=lambda p: (
-                        f"#{int(ctx.order.id)} - {ctx.order.created_at.strftime('%Y-%m-%d %H:%M')} - {p}"
-                        + (
-                            f" - {_s(getattr(ctx.receipts_by_provider.get(norm_provider(p)), 'invoice_number', None))}"
-                            if _s(getattr(ctx.receipts_by_provider.get(norm_provider(p)), 'invoice_number', None))
-                            else ""
-                        )
-                    ),
-                )
+            created_at = getattr(order, "created_at", None)
+            created_txt = created_at.strftime("%d %b %Y, %H:%M") if created_at else "—"
 
-                st.session_state[idx_key] = receive_providers.index(current_provider)
+            # URL sync (optional)
+            if qp_int("order_id") != oid:
+                set_query_params(page="tracking", order_id=str(oid), provider=norm_provider(prov))
 
-                # URL sync: selected provider
-                cur_p = norm_provider(qp_str("provider", ""))
-                new_p = norm_provider(current_provider)
-                if new_p and cur_p != new_p:
-                    set_query_params(page="tracking", order_id=str(int(selected_id)), provider=new_p)
-
-                wf = ctx.workflows_by_provider.get(norm_provider(current_provider))
-                state = _s(getattr(wf, "state", None)) if wf else "ORDER_SENT"
-                badge_txt, badge_kind = _state_badge(state)
-
-                st.markdown(
-                    f"<div class='voi-card'><div class='voi-title'>{current_provider}</div>"
-                    f"<div class='voi-muted'>Workflow: {_badge(badge_txt, badge_kind)}</div></div>",
-                    unsafe_allow_html=True,
-                )
-
-                # ------------------
-                # Invoice number field (with lock + badge)
-                # ------------------
-                receipt = ctx.receipts_by_provider.get(norm_provider(current_provider))
-                inv_key = f"inv_input_{int(ctx.order.id)}_{norm_provider(current_provider)}"
-                db_inv = (receipt.invoice_number or "").strip() if receipt else ""
-
-                # ✅ Session-state sync (only when empty)
-                if inv_key not in st.session_state:
-                    st.session_state[inv_key] = db_inv
-                else:
-                    if (not (st.session_state[inv_key] or "").strip()) and db_inv:
-                        st.session_state[inv_key] = db_inv
-
-                invoice_locked = (state or "").upper() == "CLOSED"
-
-                btxt, bkind = _invoice_set_badge(receipt)
-                if invoice_locked:
-                    btxt = "Verified (locked)"
-                    bkind = "ok"
-
-                # --------- OUTSIDE st.form (Option B) ----------
-                # Optional view toggles (update immediately)
-                cP1, cP2 = st.columns([1.0, 1.0], vertical_alignment="center")
-                with cP1:
-                    show_prices = st.toggle(
-                        "Show expected prices",
-                        value=False,
-                        key=f"recv_show_prices_{int(ctx.order.id)}_{norm_provider(current_provider)}",
-                        help="Estimated from catalog price + discount rules. Not an official invoice.",
-                    )
-                with cP2:
-                    include_iva = st.toggle(
-                        "IVA",
-                        value=False,
-                        key=f"recv_show_iva_{int(ctx.order.id)}_{norm_provider(current_provider)}",
-                        disabled=not show_prices,
-                    )
-
-                # Invoice input + badge
-                c_inv1, c_inv2 = st.columns([2.0, 1.0], vertical_alignment="center")
-                with c_inv1:
-                    inv_val = st.text_input(
-                        "Invoice number",
-                        key=inv_key,
-                        placeholder="e.g. 2026-001234",
-                        disabled=invoice_locked,
-                    )
-                with c_inv2:
-                    st.markdown(_badge(btxt, bkind), unsafe_allow_html=True)
-
-                _render_expected_lines(ctx, current_provider, show_prices=show_prices, include_iva=include_iva)
-
-                st.markdown("<div class='voi-hr'></div>", unsafe_allow_html=True)
-
-                # IMPORTANT: _render_receive_form is now outside st.form,
-                # so its selectbox callbacks are allowed.
-                _render_receive_form(ctx, current_provider)
-
-                # Buttons (replace st.form_submit_button with st.button)
-                b1, b2, b3 = st.columns([1.0, 1.0, 1.0], vertical_alignment="center")
-                with b1:
-                    save_invoice = st.button(
-                        "Save invoice #",
-                        use_container_width=True,
-                        disabled=invoice_locked,
-                        key=f"btn_save_invoice_{int(ctx.order.id)}_{norm_provider(current_provider)}",
-                    )
-                with b2:
-                    save_all = st.button(
-                        "💾 Save all",
-                        type="primary",
-                        use_container_width=True,
-                        key=f"btn_save_all_{int(ctx.order.id)}_{norm_provider(current_provider)}",
-                    )
-                with b3:
-                    st.caption(" ")
-
-                # Handle clicks
-                if save_invoice:
-                    ok2, msg2 = upsert_provider_invoice_number(
-                        venue_id=int(ctx.order.venue_id),
-                        order_id=int(ctx.order.id),
-                        provider_name=current_provider,
-                        invoice_number=inv_val,
-                        actor_role="venue",
-                        actor="venue",
-                    )
-                    if ok2:
-                        st.success("Invoice saved")
-                        st.rerun()
-                    else:
-                        st.error(msg2)
-
-                if save_all:
-                    ok, msg = save_all_received_for_provider(ctx=ctx, provider=current_provider)
-                    if ok:
-                        st.success("Saved ✓")
-                        st.rerun()
-                    else:
-                        st.error(msg)
-
-                with st.expander("🕒 Timeline", expanded=False):
-                    _render_timeline(ctx, current_provider)
-
-
-    elif selected_tab == "🚨 Incidences":
-        
-        _render_incidences_cards(ctx, providers)
+            ctx = _load_order_context(int(venue_id), oid)
+            _render_receive_provider_panel(ctx, prov)
             
-    elif selected_tab == "⚡ Urgent":
+            st.empty()
+
+        return
+
+    # -----------------------------
+    # 🚨 Incidences (global)
+    # -----------------------------
+    if selected_tab == "🚨 Incidences":
+        items = _list_open_incidences_items(int(venue_id))
+        if not items:
+            st.success("✅ No open incidences.")
+            return
+
+        f1, f2 = st.columns([2.2, 1.0], vertical_alignment="center")
+        with f1:
+            q = st.text_input("Search provider / invoice / order", key="inc_global_search", placeholder="e.g. invoice, #34").strip().lower()
+        with f2:
+            expand_all = st.toggle("Expand all", value=False, key="inc_global_expand_all")
+
+        def _matches_inc(t: Dict[str, Any]) -> bool:
+            if not q:
+                return True
+            prov = (t.get("provider") or "").lower()
+            inv = (t.get("invoice_number") or "").lower()
+            oid = str(t.get("order_id") or "")
+            return (q in prov) or (q in inv) or (q in oid) or (q in f"#{oid}")
+
+        items2 = [t for t in items if _matches_inc(t)]
+        if not items2:
+            st.info("No matches.")
+            return
+
+        for t in items2:
+            oid = int(t["order_id"])
+            prov = _s(t.get("provider") or "—")
+            inv = _s(t.get("invoice_number") or "—")
+            n = int(t.get("open_count") or 0)
+            title = f"{prov} · 🧾 {inv} · #{oid} · {n} open"
+
+            # expanded = bool(expand_all) or (deep_order_id is not None and int(deep_order_id) == oid)
+            # with st.expander(title, expanded=expanded):
+            if qp_int("order_id") != oid:
+                set_query_params(page="tracking", order_id=str(oid), provider=norm_provider(prov))
+
+            ctx = _load_order_context(int(venue_id), oid)
+            _render_incidences_cards(ctx, [prov], show_prices=True, include_iva=True)
+
+        return
+
+    # -----------------------------
+    # ⚡ Urgent (global)
+    # -----------------------------
+    if selected_tab == "⚡ Urgent":
         _render_urgent_tab(ctx)
 
-    elif selected_tab == "📚 History":
-        _render_history_tab(int(venue_id), deep_provider=deep_provider)

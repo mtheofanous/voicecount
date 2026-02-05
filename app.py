@@ -1,23 +1,58 @@
-"""
-app.py — Streamlit entrypoint (clean router + URL deep links MVP)
-"""
-
-import streamlit as st
-st.set_page_config(page_title="Voi", page_icon="🧾", layout="centered")
-
-from core.init import init_db
+# -------------------------------
+# 1) Load ENV FIRST (before any app / DB imports)
+# -------------------------------
 from pathlib import Path
-from core.db import engine, get_session
-from domain.models import Product
+from dotenv import load_dotenv
+import warnings
+
+ENV_PATH = Path(__file__).resolve().parent / ".env"
+load_dotenv(dotenv_path=ENV_PATH, override=True)
+# import os
+# import streamlit as st
+# from core.config import get_database_url
+
+# print("ENV DATABASE_URL:", os.getenv("DATABASE_URL"))
+# print("SECRETS has DATABASE_URL:", ("DATABASE_URL" in st.secrets))
+# if "DATABASE_URL" in st.secrets:
+#     print("SECRETS DATABASE_URL:", st.secrets["DATABASE_URL"])
+
+# print("get_database_url():", get_database_url())
+
+
+
+
+# from core.config import get_database_url
+# print("FULL DATABASE_URL:", get_database_url())
+# # Optional but VERY useful while debugging
+# import os
+# print("DATABASE_URL host:",
+#       os.getenv("DATABASE_URL", "NOT SET").split("@")[-1].split("/")[0])
+
+# -------------------------------
+# 2) Streamlit config
+# -------------------------------
+import streamlit as st
+
+st.set_page_config(
+    page_title="Voi",
+    page_icon="🧾",
+    layout="centered",
+)
+
+
+
+# -------------------------------
+# 3) Now it is SAFE to import DB + app modules
+# -------------------------------
+from core.config import ensure_google_credentials_file
+from core.init import init_db
 
 from features.manage_orders.orders import orders_tab
 from features.manage_orders.receive_orders import *
 from features.create_order import new_order_tab
 from features.catalog import catalog_tab
-
-import os
-from dotenv import load_dotenv
-import warnings
+from features.manage_orders.reports import reports_page
+from features.manage_orders.history import _render_history_tab
 
 from features.auth_and_manage.auth_multi_tenant import (
     init_auth_db,
@@ -29,14 +64,15 @@ from features.auth_and_manage.auth_multi_tenant import (
     current_venues_for_user,
 )
 
-# ✅ URL helpers (matches your current core/url_nav.py)
+# URL helpers
 from core.url_nav import qp_int, qp_str, set_query_params
 
+# -------------------------------
+# 4) Warnings (cosmetic)
+# -------------------------------
 warnings.filterwarnings("ignore", message=".*use_container_width.*")
 warnings.filterwarnings("ignore", message=".*label.*got an empty value.*")
 
-ENV_PATH = Path(__file__).resolve().parent / ".env"
-load_dotenv(dotenv_path=ENV_PATH, override=True)
 
 
 def _go(page_key: str) -> None:
@@ -92,6 +128,7 @@ def home_page(pages: dict[str, str]) -> None:
 
 
 def main():
+    ensure_google_credentials_file()
     init_db()
     init_auth_db()
 
@@ -130,18 +167,22 @@ def main():
     # ---- Pages by role ----
     if venue_role in {"owner", "manager"}:
         PAGES = {
-            "home": "🏠 Home",
-            "manage_org": "🏢 Manage organization",
-            "catalog": "📦 Catálogo",
-            "new_order": "🆕 Nuevo pedido",
-            "orders": "📜 Pedidos",
-            "tracking": "📍 Track order",
-        }
+            
+                "home": "🏠 Inicio",
+                "manage_org": "🏢 Organización",
+                "catalog": "📦 Catálogo",
+                "new_order": "📝 Notas",
+                "orders": "📜 Pedidos",
+                "tracking": "📊 Dashboard",
+                "history":"📚 History",
+                "reports": "Reports"
+            }
     else:
         PAGES = {
-            "home": "🏠 Home",
-            "new_order": "🆕 Nuevo pedido",
+            "home": "🏠 Inicio",
+            "new_order": "📝 Notas",
             "orders": "📜 Pedidos",
+            "tracking": "📊 Dashboard",
         }
 
     allowed = set(PAGES.keys())
@@ -193,6 +234,15 @@ def main():
             deep_order_id=deep_order_id,
             deep_provider=deep_provider,
         )
+    
+
+    elif page == "history":
+        _render_history_tab(int(venue_id), deep_provider=deep_provider)
+        
+
+        
+    elif page =="reports":
+        reports_page(venue_id=int(venue_id), venue_role=venue_role)
 
     else:
         _go("home")

@@ -36,7 +36,7 @@ from domain.models import Product
 
 from core.normalization import normalize_text, match_keys
 from features.utils.asr_google import asr_google
-from features.utils.prefix_stripper import strip_prefix_phrases
+from features.utils.prefix_stripper import clean_fragment
 from core.normalization import normalize_text
 # Optional dependency: unidecode (not required, but sometimes useful in admin scripts)
 try:
@@ -110,40 +110,57 @@ def coalesce_unit(x: Any, prod_obj: Optional[Product] = None, default: str = "un
 # =============================================================================
 
 GREETINGS: Set[str] = {
-    # ES/EN
-    "hola", "hello", "hi", "hey", "buenosdias", "buenastardes", "buenasnoches",
-    # EL (accented and not)
-    "γεια", "γειά", "γεια σου", "καλημερα", "καλημέρα", "καλησπερα", "καλησπέρα",
-    "καληνυχτα", "καληνύχτα",
+# ES/EN
+"hola", "hello", "hi", "hey",
+"buenosdias", "buenastardes", "buenasnoches",
+"goodmorning", "goodafternoon", "goodevening",
+# EL (accented and not)
+"γεια", "γειά", "γεια σου",
+"καλημερα", "καλημέρα",
+"καλησπερα", "καλησπέρα",
+"καληνυχτα", "καληνύχτα",
+"καλημερα σας", "καλημέρα σας",
 }
 
 # Common "next item" separators. We split on punctuation and these phrases.
 NEXT_SEPARATORS: List[str] = [
-    # punctuation / formatting
-    ",", ";", "|", "/", " - ", " – ", " — ",
+    # punctuation / formatting (handled separately too, but ok to keep)
+    ",", ";", "|", "/",
+    " - ", " – ", " — ",
+    "...", "…",
 
-    # EN
-    " and then ", " after that ", " followed by ", " next ", " then ",
+
+    # EN phrases
+    " and then ", " after that ", " followed by ",
+    " next ", " then ",
     " also ", " plus ", " another ", " additionally ",
 
-    # ES
-    " y luego ", " y después ", " y despues ", " y también ", " y tambien ",
-    " y más ", " y mas ", " siguiente ", " siguientes ", " luego ",
-    " después ", " despues ", " también ", " tambien ", " además ", " ademas ",
+
+    # ES phrases
+    " y luego ", " y después ", " y despues ",
+    " y también ", " y tambien ",
+    " y más ", " y mas ",
+    " siguiente ", " siguientes ",
+    " luego ", " después ", " despues ",
+    " también ", " tambien ",
+    " además ", " ademas ",
     " más ", " mas ",
 
-    # EL
-    " και μετά ", " και μετα ", " στη συνέχεια ", " στη συνεχεια ",
-    " μετά από ", " μετα απο ", " ύστερα ", " υστερα ",
+
+    # EL phrases
+    " και μετά ", " και μετα ",
+    " στη συνέχεια ", " στη συνεχεια ",
+    " μετά από ", " μετα απο ",
+    " ύστερα ", " υστερα ",
     " κατόπιν ", " κατοποιν ",
-    " επίσης ", " επισης ", " και επίσης ", " και επισης ",
+    " επίσης ", " επισης ",
+    " και επίσης ", " και επισης ",
     " ακόμα ", " ακομα ",
 
-    # IMPORTANT: keep simple "και" split
-    " και ",
 
-    # ASR noise
-    " ... ", " … ",
+    # # IMPORTANT: keep simple "και" split (Greek "and")
+    # " και ",
+
 ]
 
 # Number words (EN/ES/EL) -> numeric values.
@@ -272,70 +289,181 @@ _QTY_TOKENS: Set[str] = _build_quantity_token_set(NUM_WORDS)
 # Sentence splitting into item fragments
 # =============================================================================
 
-_DECIMAL_TOKEN = "§DEC§"
 
+_DECIMAL_TOKEN = "§DEC§"          # existing (comma-style)
+_DECIMAL_DOT_TOKEN = "§DECDOT§"   # new (dot-style)
 
 def _protect_decimals(text: str) -> str:
-    """Protect decimals so we don't split '2,5' into '2' and '5'."""
+    """
+    Protect decimals so we don't split '2,5' or '2.5'.
+    Handles ASR spacing variants: '2 , 5', '2 .5', etc.
+    """
+    if not text:
+        return text
+
+    # Protect comma decimals: 2,5 / 2 ,5 / 2, 5 / 2 , 5
     text = re.sub(r"(\d)\s*,\s*(\d)", rf"\1{_DECIMAL_TOKEN}\2", text)
-    text = re.sub(r"(\d)\s*\.\s*(\d)", rf"\1{_DECIMAL_TOKEN}\2", text)
+
+    # Protect dot decimals: 2.5 / 2 .5 / 2. 5 / 2 . 5
+    text = re.sub(r"(\d)\s*\.\s*(\d)", rf"\1{_DECIMAL_DOT_TOKEN}\2", text)
+
     return text
 
 
-def _restore_decimals(text: str) -> str:
-    """Restore protected decimals (comma by default)."""
-    return text.replace(_DECIMAL_TOKEN, ",")
+def _restore_decimals(text: str, prefer_comma: bool = True) -> str:
+    """
+    Restore protected decimals.
+
+    - §DEC§     -> ','   (always)
+    - §DECDOT§ -> ',' if prefer_comma=True, else '.'
+
+    Your qty parsing already does:
+        float(qty_s.replace(",", "."))
+    so both are safe.
+    """
+    if not text:
+        return text
+
+    text = text.replace(_DECIMAL_TOKEN, ",")
+
+    if prefer_comma:
+        text = text.replace(_DECIMAL_DOT_TOKEN, ",")
+    else:
+        text = text.replace(_DECIMAL_DOT_TOKEN, ".")
+
+    return text
 
 
 def _build_separator_regex(next_separators: List[str]) -> re.Pattern:
     """
     Build one regex matching punctuation separators + phrase separators.
-    This is faster/cleaner than repeated str.replace loops.
+    Faster/cleaner than repeated replace loops.
+
+
+    Splits on:
+    - punctuation: , ; | /
+    - dashes surrounded by spaces: " - ", " – ", " — "
+    - phrase separators (from NEXT_SEPARATORS), matched flexibly on whitespace
     """
+    # Basic punctuation separators
     punct_pat = r"[,;|/]+"
+
+
+    # Dash separators with surrounding spaces (avoid splitting inside product codes)
     dash_pat = r"(?:\s[-–—]\s)"
 
+
+    # Phrase-based separators
     phrases: List[str] = []
     for sep in next_separators:
         s = (sep or "").strip()
         if not s:
             continue
-        # ignore punct separators already covered
-        if len(s) <= 2 and any(ch in s for ch in [",", ";", "|", "/", "-"]):
+
+
+    # ignore single-char punct separators already handled
+        if s in {",", ";", "|", "/"}:
             continue
+
+
+    # escape literal text, then later we relax spaces into \s+
         phrases.append(re.escape(s))
 
+
     if phrases:
-        phrase_pat = r"(?:\s+(?:" + "|".join(p.replace(r"\ ", r"\s+") for p in phrases) + r")\s+)"
+    # Turn escaped spaces into flexible whitespace
+    # Example: "y\ luego" -> "y\s+luego"
+        phrase_pat = r"(?:\s*(?:" + "|".join(p.replace(r"\ ", r"\s+") for p in phrases) + r")\s*)"
     else:
+    # matches nothing
         phrase_pat = r"(?!x)x"
 
-    return re.compile(rf"(?:{punct_pat}|{dash_pat}|{phrase_pat})", flags=re.IGNORECASE)
+
+    combined = rf"(?:{punct_pat}|{dash_pat}|{phrase_pat})"
+    return re.compile(combined, flags=re.IGNORECASE)
+
+
 
 
 _HALF_WORDS: Set[str] = {
+    # -----------------
     # EN
+    # -----------------
     "half", "a half",
+    "quarter", "a quarter",
+
+    # -----------------
     # ES
+    # -----------------
     "medio", "media",
-    # EL
-    "μισο", "μισό", "μιση", "μισή",
+    "cuarto", "cuarta",
+
+    # -----------------
+    # EL (accented + unaccented)
+    # -----------------
+    "μισο", "μισό",
+    "μιση", "μισή",
+    "τεταρτο", "τέταρτο",
 }
+
 
 
 def _looks_like_half_expression(fragment: str) -> bool:
     """
-    Detect patterns like:
+    Detect fractional quantity phrases so we don't split on and/y/και incorrectly.
+
+    Examples that should return True:
       - "two and a half"
+      - "2 and a half"
       - "dos y medio"
+      - "2 y medio"
       - "δυο και μισο"
-    so we don't split "and/y/και" incorrectly.
+      - "2 και μισό"
+      - "half kilo", "medio kilo", "μισό κιλό"
+      - "one and a quarter", "uno y cuarto", "ενα και τεταρτο"
+      - "1/2", "0.5", "2,5"
     """
     f = (fragment or "").strip().lower()
     if not f:
         return False
-    if (" and " in f or " y " in f or " και " in f) and any(hw in f for hw in _HALF_WORDS):
-        return bool(re.search(r"\d", f))
+
+    # quick reject: if there is no connector and no fraction word, it's not a half-expression
+    has_connector = (" and " in f) or (" y " in f) or (" και " in f)
+    has_fraction_word = any(hw in f for hw in _HALF_WORDS)  # you already have this set/list
+    has_fraction_symbol = bool(re.search(r"\b\d+\s*/\s*\d+\b", f))
+    has_decimal = bool(re.search(r"\b\d+[.,]\d+\b", f))
+
+    # If we already see a decimal or explicit fraction, treat as fractional quantity
+    if has_decimal or has_fraction_symbol:
+        return True
+
+    # If it contains half/quarter word but no connector, still likely a fractional qty (e.g., "medio kilo")
+    if has_fraction_word and not has_connector:
+        # ensure it's quantity-ish: either a number word or digit exists somewhere
+        if re.search(r"\b\d+\b", f):
+            return True
+        # number word presence: use your NUM_WORDS mapping
+        tokens = re.findall(r"[^\W_]+", f, flags=re.UNICODE)
+        if any(t in NUM_WORDS for t in tokens):
+            return True
+        return False
+
+    # If it has connector + fraction word, it's likely "X and a half" etc.
+    if has_connector and has_fraction_word:
+        # digit present?
+        if re.search(r"\b\d+\b", f):
+            return True
+
+        # number-word present?
+        tokens = re.findall(r"[^\W_]+", f, flags=re.UNICODE)
+        if any(t in NUM_WORDS for t in tokens):
+            return True
+
+        # special case: "a half" / "un medio" without explicit number (rare but happens)
+        # If it's basically "and a half" / "y medio" / "και μισό" -> treat as fractional phrase
+        if re.search(r"\b(and|y|και)\b.*\b(" + "|".join(map(re.escape, _HALF_WORDS)) + r")\b", f):
+            return True
+
     return False
 
 
@@ -440,24 +568,57 @@ def split_fragment_by_catalog_aliases(fragment: str, alias_to_products: Dict[str
     """
     If a fragment contains multiple product aliases, split it into multiple fragments.
     Example: "αλευρι σκληρο ανιθα" -> ["αλευρι σκληρο", "ανιθα"]
+
+    Guardrails:
+    - Don't split very short / generic fragments (single token like "tomate").
+    - Don't split if hits overlap or are basically the same "base" token.
     """
     f = normalize_text(fragment)
     if not f:
         return []
 
-    # Use alias keys as a phrase set (already normalized in your pipeline)
-    alias_phrases = set(alias_to_products.keys())
-
     tokens = f.split()
+
+    # ✅ Guardrail 1: generic / short queries should NOT be split
+    # (these need catalog expansion later, not early splitting)
+    if len(tokens) <= 2:
+        return [fragment.strip()]
+
+    alias_phrases = set(alias_to_products.keys())
     spans = _find_alias_spans(tokens, alias_phrases, max_len=4)
 
     # If 0 or 1 product hit, keep as-is
     if len(spans) <= 1:
         return [fragment.strip()]
 
-    # Convert spans into fragments: include any "glue" words before the first hit inside that hit
+    # ✅ Guardrail 2: require non-overlapping spans
+    # (overlaps often come from variants like "tomate" vs "tomate rama")
+    spans_sorted = sorted(spans, key=lambda x: (x[0], -(x[1] - x[0])))
+    non_overlapping = []
+    last_end = -1
+    for i, j, ph in spans_sorted:
+        if i >= last_end:
+            non_overlapping.append((i, j, ph))
+            last_end = j
+
+    # If after removing overlaps we are left with <=1, don't split
+    if len(non_overlapping) <= 1:
+        return [fragment.strip()]
+
+    # ✅ Guardrail 3: if all hits share the same first token, don't split
+    # e.g., "tomate rama tomate cherry" is arguably multiple, but most of the time
+    # "tomate ..." phrases are variants and should be handled by suggestions, not splitting.
+    first_tokens = set()
+    for i, j, _ph in non_overlapping:
+        if i < len(tokens):
+            first_tokens.add(tokens[i])
+
+    if len(first_tokens) == 1:
+        return [fragment.strip()]
+
+    # Convert spans into fragments
     out: List[str] = []
-    for (i, j, _ph) in spans:
+    for (i, j, _ph) in non_overlapping:
         piece = " ".join(tokens[i:j]).strip()
         if piece:
             out.append(piece)
@@ -469,7 +630,10 @@ def split_fragment_by_catalog_aliases(fragment: str, alias_to_products: Dict[str
         if x not in seen:
             seen.add(x)
             final.append(x)
+
     return final
+
+
 
 def tokenize_items(raw_text: str) -> List[str]:
     """
@@ -486,24 +650,29 @@ def tokenize_items(raw_text: str) -> List[str]:
     if not text:
         return []
 
-    # Strip leading intent once (e.g., "θέλω", "quiero", "i want")
-    text = strip_prefix_phrases(text, lang="auto")
+    # ✅ Strip global intent/polite once (handles "I want ...", "quiero ...", "θέλω ...")
+    text = clean_fragment(text, lang="auto")
     if not text:
         return []
 
     # Normalize greetings so they don't split into pieces
-    text = re.sub(r"\bbuenos\s+d[ií]as\b", "buenosdias", text)
-    text = re.sub(r"\bbuenas\s+tardes\b", "buenastardes", text)
-    text = re.sub(r"\bbuenas\s+noches\b", "buenasnoches", text)
-    text = re.sub(r"\bgood\s+morning\b", "goodmorning", text)
-    text = re.sub(r"\bgood\s+afternoon\b", "goodafternoon", text)
-    text = re.sub(r"\bgood\s+evening\b", "goodevening", text)
-    text = re.sub(r"\bκαλη\s*μερα\b", "καλημερα", text)
-    text = re.sub(r"\bκαλη\s*σπερα\b", "καλησπερα", text)
-    text = re.sub(r"\bκαλη\s*νυχτα\b", "καληνυχτα", text)
+    text = re.sub(r"\bbuenos\s+d[ií]as\b", "buenosdias", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bbuenas\s+tardes\b", "buenastardes", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bbuenas\s+noches\b", "buenasnoches", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bgood\s+morning\b", "goodmorning", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bgood\s+afternoon\b", "goodafternoon", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bgood\s+evening\b", "goodevening", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bκαλη\s*μερα\b", "καλημερα", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bκαλη\s*σπερα\b", "καλησπερα", text, flags=re.IGNORECASE)
+    text = re.sub(r"\bκαλη\s*νυχτα\b", "καληνυχτα", text, flags=re.IGNORECASE)
 
     # Protect decimals like 2,5 or 2.5
     text = _protect_decimals(text)
+
+    # Extra: normalize common separators from speech
+    # "and/y/και" between items should behave like separators in many ASR cases
+    # We only do this at top-level (later we still handle glued fragments)
+    text = re.sub(r"\s+(?:and|y|e|και|κι)\s+", " | ", text, flags=re.IGNORECASE)
 
     # Split on separators (punctuation + phrases)
     sep_re = _build_separator_regex(NEXT_SEPARATORS)
@@ -511,8 +680,8 @@ def tokenize_items(raw_text: str) -> List[str]:
     raw_parts = [p for p in raw_parts if p]
     raw_parts = [_restore_decimals(p) for p in raw_parts]
 
-    # Strip filler prefix for each fragment too (e.g., "επίσης θέλω ...")
-    raw_parts = [strip_prefix_phrases(p, lang="auto") for p in raw_parts]
+    # ✅ FIX: clean each fragment, not the full text
+    raw_parts = [clean_fragment(p, lang="auto") for p in raw_parts]
     raw_parts = [p for p in raw_parts if p]
 
     STOP_FRAGMENTS: Set[str] = {
@@ -552,32 +721,48 @@ def tokenize_items(raw_text: str) -> List[str]:
         return False
 
     def _is_noise_fragment(p: str) -> bool:
-        p2 = normalize_text(p)
+        p2 = normalize_text(p).strip()
         if not p2:
             return True
-        if p2 in GREETINGS or p2 in STOP_FRAGMENTS:
+        if p2 in GREETINGS or p2.lower() in STOP_FRAGMENTS:
             return True
-        # short fragments are often noise (keep digits-only if you want)
-        if len(p2) <= 2 and not re.fullmatch(r"\d{1,2}", p2):
+
+        # Avoid discarding legit short products like "tea", "ice", "ham"
+        # Only drop very short fragments if they have no letters (or are pure connector)
+        if len(p2) <= 2:
+            if re.fullmatch(r"\d{1,2}", p2):
+                return False
+            if re.search(r"[A-Za-zΑ-Ωα-ω]", p2):
+                return False
             return True
+
         # connector-only without digits
-        if p2 in {"y", "and", "και"} and not re.search(r"\d", p2):
+        if p2.lower() in {"y", "and", "και"} and not re.search(r"\d", p2):
             return True
         return False
 
-    def _split_if_two_quantities(p: str) -> List[str]:
+    def _split_glued_items(p: str) -> List[str]:
         """
-        If fragment contains 2+ numbers and a connector, it's likely 2 items glued together.
-        Split on connector.
+        Split if fragment likely contains multiple items.
+        Heuristics:
+          - 2+ numbers and connector
+          - explicit " | " inserted earlier
         """
         p2 = (p or "").strip()
         if not p2:
             return []
-        if len(re.findall(r"\d+(?:[.,]\d+)?", p2)) >= 2 and re.search(r"(?:\sκαι\s|\sy\s|\sand\s)", p2.lower()):
+
+        if " | " in p2:
+            return [x.strip() for x in p2.split("|") if x.strip()]
+
+        nums = re.findall(r"\d+(?:[.,]\d+)?", p2)
+        if len(nums) >= 2 and re.search(r"(?:\sκαι\s|\sy\s|\se\s|\sand\s)", p2.lower()):
             tmp = re.sub(r"\sκαι\s", " | ", p2, flags=re.IGNORECASE)
             tmp = re.sub(r"\sy\s", " | ", tmp, flags=re.IGNORECASE)
+            tmp = re.sub(r"\se\s", " | ", tmp, flags=re.IGNORECASE)
             tmp = re.sub(r"\sand\s", " | ", tmp, flags=re.IGNORECASE)
             return [x.strip() for x in tmp.split("|") if x.strip()]
+
         return [p2]
 
     parts: List[str] = []
@@ -585,17 +770,20 @@ def tokenize_items(raw_text: str) -> List[str]:
         if _is_question_like(p) or _is_noise_fragment(p):
             continue
 
-        expanded = _split_if_two_quantities(p)
-        for item in expanded:
+        for item in _split_glued_items(p):
+            if not item:
+                continue
+
+            item = clean_fragment(item, lang="auto")
             if not item:
                 continue
 
             # half-expression re-join heuristic
             if parts:
                 prev = parts[-1]
-                combined = f"{prev} {item}"
+                combined = f"{prev} {item}".strip()
                 if _looks_like_half_expression(combined):
-                    parts[-1] = combined.strip()
+                    parts[-1] = combined
                     continue
 
             parts.append(item)
@@ -604,24 +792,82 @@ def tokenize_items(raw_text: str) -> List[str]:
     parts = [re.sub(r"\s+", " ", (p or "").strip()) for p in parts]
     parts = [p for p in parts if p and p not in GREETINGS and p.lower() not in STOP_FRAGMENTS]
     return parts
-
-
 # =============================================================================
 # Parsing a single item fragment -> (name, qty, unit)
 # =============================================================================
 
+
 def _replace_number_words(text: str) -> str:
-    """Replace number words with digits, e.g., 'δυο' -> '2'."""
+    """
+    Replace number words with digits.
+    Handles fractional expressions like:
+      - "two and a half"      -> "2.5"
+      - "dos y medio"        -> "2.5"
+      - "δυο και μισο"       -> "2.5"
+      - "half kilo"          -> "0.5 kilo"
+      - "medio kilo"         -> "0.5 kilo"
+      - "μισό κιλό"          -> "0.5 κιλό"
+    """
     if not text:
         return text
+
+    t = text.lower()
+
+    # --------------------------------------------------
+    # 1) X + and/y/και + half/quarter  -> decimal
+    # --------------------------------------------------
+    FRACTION_CONNECTORS = r"(?:and|y|και)"
+    FRACTION_WORDS = {
+        # EN
+        "half": 0.5,
+        "quarter": 0.25,
+        # ES
+        "medio": 0.5, "media": 0.5,
+        "cuarto": 0.25, "cuarta": 0.25,
+        # EL
+        "μισο": 0.5, "μισό": 0.5,
+        "μιση": 0.5, "μισή": 0.5,
+        "τεταρτο": 0.25, "τέταρτο": 0.25,
+    }
+
+    def repl_fraction(m: re.Match) -> str:
+        base = m.group("base")
+        frac_word = m.group("frac")
+        base_val = NUM_WORDS.get(base, None)
+        frac_val = FRACTION_WORDS.get(frac_word, None)
+        if base_val is None or frac_val is None:
+            return m.group(0)
+        return str(float(base_val) + frac_val)
+
+    frac_words_pat = "|".join(map(re.escape, FRACTION_WORDS.keys()))
+    num_words_pat = "|".join(sorted(NUM_WORDS.keys(), key=len, reverse=True))
+
+    t = re.sub(
+        rf"\b(?P<base>{num_words_pat})\s+{FRACTION_CONNECTORS}\s+(?:a\s+)?(?P<frac>{frac_words_pat})\b",
+        repl_fraction,
+        t,
+        flags=re.IGNORECASE,
+    )
+
+    # --------------------------------------------------
+    # 2) standalone half / quarter  -> 0.5 / 0.25
+    # --------------------------------------------------
+    for w, v in FRACTION_WORDS.items():
+        t = re.sub(rf"\b{re.escape(w)}\b", str(v), t, flags=re.IGNORECASE)
+
+    # --------------------------------------------------
+    # 3) simple number word -> digit
+    # --------------------------------------------------
     choices = "|".join(sorted(NUM_WORDS.keys(), key=len, reverse=True))
     patt = re.compile(rf"\b({choices})\b", flags=re.IGNORECASE)
 
-    def repl(m: re.Match) -> str:
+    def repl_simple(m: re.Match) -> str:
         w = m.group(1).lower()
         return str(NUM_WORDS.get(w, w))
 
-    return patt.sub(repl, text)
+    t = patt.sub(repl_simple, t)
+
+    return t
 
 
 def parse_item(fragment: str) -> Optional[Tuple[str, float, Optional[str]]]:
@@ -632,32 +878,82 @@ def parse_item(fragment: str) -> Optional[Tuple[str, float, Optional[str]]]:
       - "3 cajas cerveza"   -> ("cerveza", 3, "cajas")
       - "cerveza 3"         -> ("cerveza", 3, None)
       - "γαλα"              -> ("γαλα", 1, None)
+      - "i want 3 cucumbers please" -> ("cucumbers", 3, None)
 
     Notes:
     - We preserve original script (Greek stays Greek).
     - Quantity defaults to 1 if missing or invalid.
     """
+    # Normalize early but keep script
     frag = normalize_text(fragment)
     if not frag:
         return None
 
-    # Remove intent/polite prefixes
-    frag = strip_prefix_phrases(frag, lang="auto")
+    # ✅ robust cleanup: strips intent prefixes AND polite suffixes (multi-lang auto)
+    # requires the updated prefix_stripper.py that defines clean_fragment()
+    frag = clean_fragment(frag, lang="auto")
+    if not frag:
+        return None
 
-    # Replace number words with digits
+    # Replace number words with digits (your existing function)
     frag = _replace_number_words(frag)
+    frag = normalize_text(frag).strip()
+    if not frag:
+        return None
 
-    # Drop leading connector remnants
-    frag = re.sub(r"^(?:και|κι|κ|επισης|επίσης|ακομα|ακόμα|y|and|also|plus)\s+", "", frag).strip()
+    # Common "x" multiplier noise: "3x tomates", "3 x tomates"
+    frag = re.sub(r"^\s*(\d+(?:[.,]\d+)?)\s*x\s+", r"\1 ", frag, flags=re.IGNORECASE).strip()
 
-    # If fragment is just greeting, ignore
+    # Drop leading connector remnants repeatedly (kitchen speech often starts with "and", "y", "και")
+    # We loop because people say: "and also 3 tomatoes"
+    LEAD_JUNK = r"(?:και|κι|κ|επισης|επίσης|ακομα|ακόμα|y|e|and|also|plus|ademas|además|tambien|también|luego|then|porfavor|por\s+favor)\b"
+    for _ in range(6):
+        new_frag = re.sub(rf"^\s*{LEAD_JUNK}\s+", "", frag, flags=re.IGNORECASE).strip()
+        if new_frag == frag:
+            break
+        frag = new_frag
+
+    if not frag:
+        return None
+
+    # If fragment is just greeting / filler, ignore
     only_letters = re.sub(r"[^\w\s]", " ", frag, flags=re.UNICODE).strip()
     only_letters = re.sub(r"[\d_]+", " ", only_letters).strip()
-    only_letters = re.sub(r"\s+", " ", only_letters)
+    only_letters = re.sub(r"\s+", " ", only_letters).strip()
     if only_letters in GREETINGS:
         return None
 
-    # qty-first: "3 kg tomates"
+    # Helper to sanitize name consistently
+    def _clean_name(s: str) -> str:
+        s = normalize_text(s or "")
+        s = re.sub(r"[^\w\s]", " ", s, flags=re.UNICODE).strip()
+        s = re.sub(r"\s+", " ", s).strip()
+        # remove ES prepositions/articles commonly spoken: "de la", "del", etc.
+        s = re.sub(r"^(?:de|del|la|el|los|las)\s+", "", s, flags=re.IGNORECASE).strip()
+        return s
+
+    # ---------------------------------------------------------
+    # 0) qty+unit glued: "3kg tomates", "2l leche"
+    # ---------------------------------------------------------
+    m0 = re.match(r"^\s*(\d+(?:[.,]\d+)?)\s*([A-Za-zΑ-Ωα-ω]+)\s+(.*)$", frag)
+    if m0:
+        qty_s, unit_candidate, rest = m0.group(1), m0.group(2), m0.group(3)
+        unit_candidate_norm = normalize_text(unit_candidate)
+        if unit_candidate_norm in UNITS:
+            name = _clean_name(rest)
+            try:
+                qty = float(qty_s.replace(",", "."))
+            except Exception:
+                qty = 1.0
+            if qty <= 0:
+                qty = 1.0
+            if len(name) < 2 or name in GREETINGS:
+                return None
+            return name, qty, unit_candidate_norm
+
+    # ---------------------------------------------------------
+    # 1) qty-first: "3 kg tomates" OR "3 tomates"
+    # ---------------------------------------------------------
     m = re.match(r"^\s*(\d+(?:[.,]\d+)?)\s+(.*)$", frag)
     if m:
         qty_s = m.group(1)
@@ -667,15 +963,13 @@ def parse_item(fragment: str) -> Optional[Tuple[str, float, Optional[str]]]:
         unit = None
         name_part = rest
 
-        if tokens and tokens[0] in UNITS:
-            unit = tokens[0]
-            name_part = " ".join(tokens[1:]).strip()
-            # remove ES prepositions/articles
-            name_part = re.sub(r"^(?:de|del|la|el|los|las)\s+", "", name_part).strip()
+        if tokens:
+            t0 = normalize_text(tokens[0])
+            if t0 in UNITS:
+                unit = t0
+                name_part = " ".join(tokens[1:]).strip()
 
-        name = normalize_text(name_part)
-        name = re.sub(r"[^\w\s]", " ", name, flags=re.UNICODE).strip()
-        name = re.sub(r"\s+", " ", name)
+        name = _clean_name(name_part)
 
         try:
             qty = float(qty_s.replace(",", "."))
@@ -688,17 +982,15 @@ def parse_item(fragment: str) -> Optional[Tuple[str, float, Optional[str]]]:
             return None
         return name, qty, unit
 
-    # qty-last: "tomates 3"
+    # ---------------------------------------------------------
+    # 2) qty-last: "tomates 3"
+    # ---------------------------------------------------------
     m2 = re.match(r"^(.*\D)\s+(\d+(?:[.,]\d+)?)\s*$", frag)
     if m2:
         name_part = m2.group(1).strip()
         qty_s = m2.group(2)
 
-        name_part = re.sub(r"^(?:de|del|la|el|los|las)\s+", "", name_part).strip()
-
-        name = normalize_text(name_part)
-        name = re.sub(r"[^\w\s]", " ", name, flags=re.UNICODE).strip()
-        name = re.sub(r"\s+", " ", name)
+        name = _clean_name(name_part)
 
         try:
             qty = float(qty_s.replace(",", "."))
@@ -711,11 +1003,12 @@ def parse_item(fragment: str) -> Optional[Tuple[str, float, Optional[str]]]:
             return None
         return name, qty, None
 
-    # name-only fallback
-    name_only = re.sub(r"[^\w\s]", " ", frag, flags=re.UNICODE).strip()
-    name_only = re.sub(r"\s+", " ", name_only)
+    # ---------------------------------------------------------
+    # 3) name-only fallback
+    # ---------------------------------------------------------
+    name_only = _clean_name(frag)
     if len(name_only) >= 2 and name_only not in GREETINGS:
-        return normalize_text(name_only), 1.0, None
+        return name_only, 1.0, None
 
     return None
 

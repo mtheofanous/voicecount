@@ -10,7 +10,7 @@ Next refactor step:
 
 from __future__ import annotations
 from sqlalchemy import UniqueConstraint
-from datetime import datetime
+from datetime import datetime, date
 from typing import Optional
 
 from sqlmodel import Field, SQLModel
@@ -44,6 +44,31 @@ class Product(SQLModel, table=True):
     # optional backwards compatibility with older code/DB that used default_qty
     default_qty: Optional[float] = Field(default=None)
 
+class VenueTranscriptionSettings(SQLModel, table=True):
+    """Per-venue transcription configuration.
+
+    Stored in main DB (same as Product/Order tables) so the UI can be controlled centrally from ADMIN3.
+    """
+    __tablename__ = "venue_transcription_settings"
+    __table_args__ = (
+        UniqueConstraint("venue_id", name="uq_venue_transcription_settings_venue_id"),
+        {"extend_existing": True},
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+    venue_id: int = Field(index=True)
+
+    # OpenAI Whisper API | Google Speech-to-Text | Faster-Whisper (local)
+    asr_backend: str = Field(default="OpenAI Whisper API")
+    # auto | es | el | en
+    lang_code: str = Field(default="auto")
+    samplerate: int = Field(default=16000)
+
+    # Optional: if you want to globally hide user controls in UI (kept for future use)
+    hide_user_controls: bool = Field(default=True)
+
+    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    updated_by: Optional[str] = Field(default=None, index=True)
 
 class Order(SQLModel, table=True):
     __table_args__ = {"extend_existing": True}
@@ -123,15 +148,16 @@ class OrderPresence(SQLModel, table=True):
 
 class ProviderReceipt(SQLModel, table=True):
     __tablename__ = "provider_receipt"
-    __table_args__ = {"extend_existing": True}
+    __table_args__ = (
+        UniqueConstraint("order_id", "provider_name", name="uq_provider_receipt"),
+        {"extend_existing": True},
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
 
     venue_id: int = Field(index=True)
     order_id: int = Field(index=True)
-
     provider_name: str = Field(index=True)
-
 
     # supplier declaration (from tracking link)
     supplier_declaration: Optional[str] = Field(default=None, index=True)  # full | partial | none
@@ -148,8 +174,12 @@ class ProviderReceipt(SQLModel, table=True):
     received: bool = Field(default=False, index=True)
     received_at: Optional[datetime] = Field(default=None, index=True)
     received_by: Optional[str] = Field(default=None, index=True)
-    note: Optional[str] = Field(default=None)
 
+    # ✅ recommended: overall closure marker (optional, but useful)
+    all_resolutions_closed_at: Optional[datetime] = Field(default=None, index=True)
+    all_resolutions_closed_by: Optional[str] = Field(default=None, index=True)
+
+    note: Optional[str] = Field(default=None)
 
     created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
     updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
@@ -447,3 +477,64 @@ class UrgentReorderRequest(SQLModel, table=True):
 
     created_at: datetime = Field(default_factory=datetime.utcnow)
     updated_at: datetime = Field(default_factory=datetime.utcnow)
+    
+    
+class ProviderResolution(SQLModel, table=True):
+    """
+    One row per resolution-track per provider per order.
+    This allows closing re-delivery independently from credit note.
+
+    resolution_type:
+    - "supplementary_delivery"
+    - "credit_note"
+    - "reject"
+
+    status:
+      - "expected"  (venue expects it / supplier agreed, not delivered/issued yet)
+      - "issued"    (supplier issued the doc / shipped the goods)
+      - "verified"  (venue/accounting verified)
+      - "closed"    (explicitly closed)
+      - "cancelled" (no longer needed / replaced by other solution)
+    """
+    __tablename__ = "provider_resolution"
+    __table_args__ = (
+        UniqueConstraint("order_id", "provider_name", "resolution_type", name="uq_provider_resolution"),
+        {"extend_existing": True},
+    )
+
+    id: Optional[int] = Field(default=None, primary_key=True)
+
+    venue_id: int = Field(index=True)
+    order_id: int = Field(index=True)
+    provider_name: str = Field(index=True)
+
+    resolution_type: str = Field(index=True) 
+    status: str = Field(default="expected", index=True)
+
+    # --- Common refs / notes ---
+    reference_number: Optional[str] = Field(default=None, index=True)  # credit note number OR delivery note ref
+    due_date: Optional[date] = Field(default=None, index=True)         # optional ETA or accounting due date
+    note: Optional[str] = Field(default=None)
+
+    # meta_json can hold items breakdown (optional), without creating extra tables
+    meta_json: Optional[str] = Field(default=None)
+
+    # --- audit timeline ---
+    expected_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    expected_by: Optional[str] = Field(default=None, index=True)       # venue/supplier actor id
+    expected_by_role: Optional[str] = Field(default=None, index=True)  # venue/supplier/system
+
+    issued_at: Optional[datetime] = Field(default=None, index=True)
+    issued_by: Optional[str] = Field(default=None, index=True)
+    issued_by_role: Optional[str] = Field(default=None, index=True)
+
+    verified_at: Optional[datetime] = Field(default=None, index=True)
+    verified_by: Optional[str] = Field(default=None, index=True)
+    verified_by_role: Optional[str] = Field(default=None, index=True)
+
+    closed_at: Optional[datetime] = Field(default=None, index=True)
+    closed_by: Optional[str] = Field(default=None, index=True)
+    closed_by_role: Optional[str] = Field(default=None, index=True)
+
+    updated_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    updated_by: Optional[str] = Field(default=None, index=True)

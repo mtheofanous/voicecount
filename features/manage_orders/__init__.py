@@ -6,7 +6,7 @@ Public API:
 - orders_tab: main entry point used by app.py
 """
 
-from .orders import orders_tab
+from .orders import *
 
 __all__ = [
     "orders_tab",

@@ -1,19 +1,21 @@
 # core/db.py
 from __future__ import annotations
 
+import streamlit as st
 from sqlmodel import Session, create_engine
-
 from core.config import get_database_url
 
 
-DATABASE_URL = get_database_url()
-
-engine = create_engine(
-    DATABASE_URL,
-    echo=False,
-    pool_pre_ping=True,  # good for cloud / dropped connections
-)
+@st.cache_resource
+def get_engine(db_url: str):
+    # db_url is part of the cache key, so if you change DATABASE_URL,
+    # Streamlit will build a new engine instead of reusing the old SQLite one.
+    return create_engine(
+        db_url,
+        echo=False,
+        pool_pre_ping=True,
+    )
 
 
 def get_session() -> Session:
-    return Session(engine)
+    return Session(get_engine(get_database_url()))

@@ -3,16 +3,18 @@ from __future__ import annotations
 import time
 import hashlib
 import re
-from typing import Dict, List, Optional, Any
+from typing import Dict, List, Optional, Any, Tuple
 
 import pandas as pd
 import streamlit as st
-from sqlmodel import Session, select, and_
+from sqlmodel import Session, select
 from datetime import datetime
-from domain.models import Product, Order, OrderLine
-from core.db import engine
+from sqlalchemy import desc, func, and_
+from domain.models import Product, Order, OrderLine, VenueTranscriptionSettings, ProviderSendStatus 
+from core.db import get_engine
 from core.config import get_database_url
 from features.utils.asr_google import asr_google
+
 
 from features.manage_orders.orders import current_actor
 from features.utils.voice_and_orders_utils import *
@@ -20,24 +22,23 @@ from features.utils.voice_and_orders_utils import *
 # ✅ single source of truth for normalization + unit synonyms
 from core.normalization import normalize_text, normalize_unit, UNIT_SYNONYMS
 
+# ✅ Router / deep links (matches app.py router)
+from core.url_nav import set_query_params
 
+
+# ---------------------------
+# DB session helper
+# ---------------------------
 def get_session() -> Session:
-    return Session(engine)
-
+    return Session(get_engine(get_database_url()))
 
 def unit_dropdown_options() -> List[str]:
-    """
-    Canonical unit options derived from UNIT_SYNONYMS.
-    Example output: ['box', 'g', 'kg', 'pack', 'unit']
-    """
+    """Canonical unit options derived from UNIT_SYNONYMS."""
     return sorted(set(UNIT_SYNONYMS.values()))
 
 
 def resolve_venue_id(passed_venue_id: Optional[int]) -> int:
-    """
-    Prefer session active venue (most accurate in your multi-venue UI),
-    but fall back to the function argument if needed.
-    """
+    """Prefer session active venue, fallback to passed venue_id."""
     sid = st.session_state.get("active_venue_id")
     if sid:
         return int(sid)
@@ -47,14 +48,66 @@ def resolve_venue_id(passed_venue_id: Optional[int]) -> int:
     st.stop()
     raise RuntimeError("Unreachable")
 
+def get_last_sent_pid_for_venue_among_opts(venue_id: int, opts: list[int]) -> int | None:
+    """🕒 Last product among opts that was included in an order that was SENT to its provider (per-provider send)."""
+    if not opts:
+        return None
 
+    with get_session() as s:
+        stmt = (
+            select(OrderLine.product_id)
+            .join(
+                ProviderSendStatus,
+                and_(
+                    ProviderSendStatus.order_id == OrderLine.order_id,
+                    ProviderSendStatus.venue_id == OrderLine.venue_id,
+                    ProviderSendStatus.provider_name == OrderLine.provider,
+                    ProviderSendStatus.sent == True,
+                ),
+            )
+            .where(OrderLine.venue_id == int(venue_id))
+            .where(OrderLine.product_id.in_(opts))
+            .order_by(desc(ProviderSendStatus.sent_at), desc(OrderLine.id))
+            .limit(1)
+        )
+        return s.exec(stmt).first()
+
+
+def get_most_frequent_sent_pid_for_venue_among_opts(venue_id: int, opts: list[int]) -> int | None:
+    """🔁 Most frequently SENT product among opts to its provider (per-provider send)."""
+    if not opts:
+        return None
+
+    with get_session() as s:
+        stmt = (
+            select(OrderLine.product_id, func.count().label("c"))
+            .join(
+                ProviderSendStatus,
+                and_(
+                    ProviderSendStatus.order_id == OrderLine.order_id,
+                    ProviderSendStatus.venue_id == OrderLine.venue_id,
+                    ProviderSendStatus.provider_name == OrderLine.provider,
+                    ProviderSendStatus.sent == True,
+                ),
+            )
+            .where(OrderLine.venue_id == int(venue_id))
+            .where(OrderLine.product_id.in_(opts))
+            .group_by(OrderLine.product_id)
+            .order_by(desc("c"), desc(OrderLine.product_id))
+            .limit(1)
+        )
+        row = s.exec(stmt).first()
+        return int(row[0]) if row else None
+# ---------------------------
+# Provider column enrichment
+# ---------------------------
 def add_provider_column(sess: Session, df: pd.DataFrame, *, venue_id: Optional[int] = None) -> pd.DataFrame:
     """
-    Adds/updates a 'provider' column based on matched_name -> Product.provider_name.
-    Accent/diacritics-insensitive via normalize_text.
+    Adds/updates a 'provider' column based on:
+      1) matched_product_id -> Product.provider_name
+      2) fallback: matched_name (normalized) -> provider_name
     """
     out = df.copy()
-
     if "provider" not in out.columns:
         out["provider"] = ""
 
@@ -64,22 +117,40 @@ def add_provider_column(sess: Session, df: pd.DataFrame, *, venue_id: Optional[i
 
     products = sess.exec(q).all()
 
-    # normalized name -> provider_name
-    name_to_provider: Dict[str, str] = {}
+    pid_to_provider: Dict[int, str] = {}
+    norm_name_to_provider: Dict[str, str] = {}
     for p in products:
+        pid = getattr(p, "id", None)
+        if pid is not None:
+            pid_to_provider[int(pid)] = (getattr(p, "provider_name", "") or "")
         k = normalize_text(getattr(p, "name", "") or "")
-        if not k:
-            continue
-        name_to_provider[k] = (getattr(p, "provider_name", "") or "")
+        if k:
+            norm_name_to_provider[k] = (getattr(p, "provider_name", "") or "")
 
-    if "matched_name" not in out.columns:
-        return out
+    def _provider(row: Any) -> str:
+        try:
+            pid = row.get("matched_product_id", None)
+        except Exception:
+            pid = None
 
-    def _provider(matched_name: Any) -> str:
-        k = normalize_text(matched_name)
-        return name_to_provider.get(k, "")
+        try:
+            if pid is not None and not pd.isna(pid):
+                pid_i = int(pid)
+                if pid_i in pid_to_provider:
+                    return pid_to_provider.get(pid_i, "") or ""
+        except Exception:
+            pass
 
-    out["provider"] = out["matched_name"].apply(_provider).astype("string")
+        try:
+            mn = row.get("matched_name", None)
+        except Exception:
+            mn = None
+        k = normalize_text(mn)
+        return norm_name_to_provider.get(k, "") or ""
+
+    if "matched_product_id" in out.columns or "matched_name" in out.columns:
+        out["provider"] = out.apply(_provider, axis=1).astype("string")
+
     return out
 
 
@@ -89,7 +160,6 @@ def apply_unit_choice(df: pd.DataFrame) -> pd.DataFrame:
     Produces a clean 'unit' column (canonical).
     """
     out = df.copy()
-
     if "unit" not in out.columns:
         out["unit"] = ""
     if "unit_custom" not in out.columns:
@@ -105,8 +175,10 @@ def apply_unit_choice(df: pd.DataFrame) -> pd.DataFrame:
     return out
 
 
+# ---------------------------
+# Alias utilities (your existing)
+# ---------------------------
 def _split_aliases_cell(cell: str) -> List[str]:
-    # Admin uses " | " join; be tolerant to commas/semicolons/newlines too.
     raw = str(cell or "").replace("\n", " ")
     parts: List[str] = []
     for chunk in raw.split("|"):
@@ -114,7 +186,6 @@ def _split_aliases_cell(cell: str) -> List[str]:
             v = normalize_text(sub)
             if v:
                 parts.append(v)
-    # stable dedupe
     seen = set()
     out: List[str] = []
     for a in parts:
@@ -125,30 +196,42 @@ def _split_aliases_cell(cell: str) -> List[str]:
 
 
 def build_alias_indexes(products: List[Product]) -> Dict[str, Any]:
-    """Build alias indexes from Product.aliases (ADMIN3 enrichment).
+    """
+    Build alias indexes from Product.aliases.
 
     Returns:
         {
-          'alias_to_products': dict(alias_norm -> [product_name...]),
-          'token_to_products': dict(token -> set(product_name...)),
+          'alias_to_pids': dict(alias_norm -> [product_id...]),
+          'token_to_pids': dict(token -> set(product_id...)),
+          'alias_to_products': dict(alias_norm -> [product_name...])  (used for fragment splitting)
         }
     """
+    alias_to_pids: Dict[str, List[int]] = {}
+    token_to_pids: Dict[str, set[int]] = {}
     alias_to_products: Dict[str, List[str]] = {}
-    token_to_products: Dict[str, set] = {}
 
     for p in products:
-        names_for_p = [p.name]
-        # include product name itself as an alias
+        pid_raw = getattr(p, "id", None)
+        if pid_raw is None:
+            continue
+        pid = int(pid_raw)
+
         aliases = _split_aliases_cell(getattr(p, "aliases", "") or "")
-        aliases.append(normalize_text(p.name))
-        # also include provider name tokens (optional)
+        aliases.append(normalize_text(getattr(p, "name", "") or ""))
+
         prov = normalize_text(getattr(p, "provider_name", "") or "")
         if prov:
             aliases.append(prov)
 
         for a in aliases:
+            a = normalize_text(a)
             if not a:
                 continue
+
+            alias_to_pids.setdefault(a, [])
+            if pid not in alias_to_pids[a]:
+                alias_to_pids[a].append(pid)
+
             alias_to_products.setdefault(a, [])
             if p.name not in alias_to_products[a]:
                 alias_to_products[a].append(p.name)
@@ -156,69 +239,64 @@ def build_alias_indexes(products: List[Product]) -> Dict[str, Any]:
             for tok in a.split():
                 if len(tok) < 2:
                     continue
-                token_to_products.setdefault(tok, set()).add(p.name)
+                token_to_pids.setdefault(tok, set()).add(pid)
 
-    return {"alias_to_products": alias_to_products, "token_to_products": token_to_products}
+    return {
+        "alias_to_pids": alias_to_pids,
+        "token_to_pids": token_to_pids,
+        "alias_to_products": alias_to_products,
+    }
 
 
 def alias_suggestions(
     query_norm: str,
     *,
-    alias_to_products: Dict[str, List[str]],
-    token_to_products: Dict[str, set],
+    alias_to_pids: Dict[str, List[int]],
+    token_to_pids: Dict[str, set[int]],
     limit: int = 20,
-) -> List[str]:
-    """Return candidate product *names* using alias indexes.
-
-    Ranking:
-      1) exact alias matches (all products linked to that alias)
-      2) token hits scored by overlap count
-    """
+) -> List[int]:
+    """Return candidate product IDs using alias indexes (ID-safe)."""
     q = normalize_text(query_norm)
     if not q:
         return []
 
-    # 1) exact alias
-    exact = alias_to_products.get(q, [])
+    exact = alias_to_pids.get(q, [])
     if exact:
         return exact[:limit]
 
-    # 2) token overlap
     toks = [t for t in q.split() if len(t) >= 2]
     if not toks:
         return []
 
-    scores: Dict[str, int] = {}
+    scores: Dict[int, int] = {}
     for t in toks:
-        for pname in token_to_products.get(t, set()):
-            scores[pname] = scores.get(pname, 0) + 1
+        for pid in token_to_pids.get(t, set()):
+            scores[pid] = scores.get(pid, 0) + 1
 
     if not scores:
         return []
 
-    ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0].lower()))
-    return [p for (p, _s) in ranked[:limit]]
+    ranked = sorted(scores.items(), key=lambda kv: (-kv[1], kv[0]))
+    return [pid for (pid, _s) in ranked[:limit]]
 
+
+# =========================================================
+# MAIN TAB
+# =========================================================
 
 def new_order_tab(venue_id: int, role: str | None = None) -> None:
     """
-    Voice + typed new order tab (WhatsApp style).
-    - Chat capture (typed + audio ASR)
-    - Parse into structured rows
-    - Edit rows (with Unit dropdown derived from UNIT_SYNONYMS)
-    - Save as new draft OR add to existing draft
-    - After save/add: resets this tab ("clean again")
+    1-screen mobile flow: Notas de faltantes → Pedido en preparación (draft)
+    - Timeline notes (voice + typed)
+    - Auto-parse in the same screen
+    - Fix ambiguities inline
+    - Save = add to active draft if exists, else create draft
     """
+
     # ---------------------------
-    # Venue + namespacing (prevents key collisions)
+    # Venue + namespacing
     # ---------------------------
     venue_id = resolve_venue_id(venue_id)
-
-    # # Debug (you can remove later)
-    # st.write("Nuevo pedido venue:", venue_id)
-    # st.write("DB URL:", get_database_url())
-    # st.write("Active venue:", st.session_state.get("active_venue_id"))
-
     NS = f"new_order_{venue_id}_"
 
     def K(name: str) -> str:
@@ -232,78 +310,289 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     # ---------------------------
     st.session_state.setdefault(S("transcript_area"), "")
     st.session_state.setdefault(S("last_audio_hash"), None)
-    st.session_state.setdefault(S("adding_to_draft_mode"), False)
     st.session_state.setdefault(S("audio_widget_key"), f"{NS}asr_audio_in_{int(time.time())}")
-    st.session_state.setdefault(S("order_chat"), [])  # list[dict]: {"role":"user"|"asr", "text": str}
-    st.session_state.setdefault(S("audiorecorder_key"), K("audiorecorder_v1"))
+    st.session_state.setdefault(S("audiorecorder_key"), f"{NS}audiorecorder_{int(time.time())}")
+    st.session_state.setdefault(S("order_chat"), [])  # [{"role":"user"|"asr","text":str,"ts":float}]
+    st.session_state.setdefault(S("auto_parse_pending"), False)
+    st.session_state.setdefault(S("resolved_picks"), {})  # item_key -> picked_product_id
+    # UI-only language override (session only; does NOT write DB)
+    st.session_state.setdefault(S("lang_code_ui"), None)
 
     # ---------------------------
     # Helpers
     # ---------------------------
-    def reset_new_order(used_component_recorder: bool) -> None:
+    def reset_notes_only(clear_resolved_picks: bool = False, *, do_rerun: bool = True) -> None:
+
+        """Clear the notes + parse output, keep venue context.
+        If clear_resolved_picks=True, also clears ambiguity memory.
+        """
         st.session_state[S("transcript_area")] = ""
         st.session_state[S("last_audio_hash")] = None
+        st.session_state[S("order_chat")] = []
+        st.session_state[S("auto_parse_pending")] = False
+
+        # Clear parse outputs
         st.session_state.pop(S("parsed_df"), None)
         st.session_state.pop(S("parse_candidates_df"), None)
         st.session_state.pop(S("finalize_parse_pending"), None)
-        st.session_state[S("adding_to_draft_mode")] = False
-        st.session_state[S("order_chat")] = []
-
         st.session_state.pop(K("parse_editor"), None)
-        st.session_state.pop(K("choose_draft_select"), None)
 
+        # Optional: clear ambiguity resolutions
+        if clear_resolved_picks:
+            st.session_state.pop(S("resolved_picks"), None)
+
+        # Clear UI language override too (so we return to venue defaults)
+        st.session_state.pop(S("lang_code_ui"), None)
+
+        # Reset audio widgets
         st.session_state[S("audio_widget_key")] = f"{NS}asr_audio_in_{int(time.time())}"
-        st.session_state[S("audiorecorder_key")] = f"{K('audiorecorder')}_{int(time.time())}"
+        st.session_state[S("audiorecorder_key")] = f"{NS}audiorecorder_{int(time.time())}"
 
-        st.rerun()
-
+        if do_rerun:
+            st.rerun()
 
     def bump_orders_refresh_token() -> None:
-        """Notify the Orders tab that DB data changed (draft updated/created).
-        Orders uses a per-venue refresh token key to clear edit buffers and reload DB truth.
-        """
         k = f"orders_refresh_token_{venue_id}"
         st.session_state[k] = int(st.session_state.get(k, 0)) + 1
 
+    def _rebuild_transcript_from_chat() -> None:
+        st.session_state[S("transcript_area")] = "\n".join(
+            (m.get("text") or "").strip()
+            for m in st.session_state[S("order_chat")]
+            if (m.get("text") or "").strip()
+        ).strip()
 
-    
+    def append_message(role_: str, text_: str) -> None:
+        text_ = (text_ or "").strip()
+        if not text_:
+            return
+
+        st.session_state[S("order_chat")].append({"role": role_, "text": text_, "ts": time.time()})
+        _rebuild_transcript_from_chat()
+
+        # auto-parse after every change
+        st.session_state[S("auto_parse_pending")] = True
+        st.session_state.pop(S("parsed_df"), None)
+        st.session_state.pop(S("parse_candidates_df"), None)
+        st.session_state.pop(S("finalize_parse_pending"), None)
+
+    # ---------------------------
+    # Draft targeting (shared key with orders.py)
+    # ---------------------------
+    ACTIVE_DRAFT_KEY = f"orders_active_order_id_{venue_id}"
+    active_draft_id = st.session_state.get(ACTIVE_DRAFT_KEY)
+    try:
+        active_draft_id = int(active_draft_id) if active_draft_id is not None else None
+    except Exception:
+        active_draft_id = None
+        
+        
+    # ✅ NEW: Validate that active_draft_id is actually a DRAFT in DB
+    if active_draft_id:
+        with get_session() as s:
+            o = s.exec(
+                select(Order).where(Order.venue_id == int(venue_id), Order.id == int(active_draft_id))
+            ).first()
+        o_status = (getattr(o, "status", "") or "").lower() if o else ""
+        if o_status != "draft":
+            # stale pointer → clear it so Notas creates/targets a real draft
+            st.session_state.pop(ACTIVE_DRAFT_KEY, None)
+            active_draft_id = None
+        
+
+    def _set_active_draft(order_id: int) -> None:
+        st.session_state[ACTIVE_DRAFT_KEY] = int(order_id)
+
+    def _go_orders(order_id: int) -> None:
+        # matches app.py router: ?page=orders&order_id=...&status=draft
+        st.session_state["page"] = "orders"
+        set_query_params(page="orders", order_id=int(order_id), status="draft")
+        st.rerun()
+
+    # ---------------------------
+    # Convert df -> order lines
+    # ---------------------------
+    def _df_to_orderline_rows(df: pd.DataFrame) -> list[dict[str, Any]]:
+        rows: list[dict[str, Any]] = []
+        if df is None or df.empty:
+            return rows
+
+        for _, r in df.iterrows():
+            pid = r.get("matched_product_id", None)
+            try:
+                if pid is None or pd.isna(pid):
+                    continue
+                pid_i = int(pid)
+            except Exception:
+                continue
+
+            try:
+                qty = float(r.get("quantity") or 0.0)
+            except Exception:
+                qty = 0.0
+            if qty <= 0:
+                continue
+
+            unit = str(r.get("unit") or "unit").strip().lower() or "unit"
+            rows.append({"product_id": pid_i, "quantity": qty, "unit": unit})
+        return rows
+
+    def _create_draft_and_insert_lines(*, venue_id: int, actor: str, df: pd.DataFrame) -> int:
+        rows = _df_to_orderline_rows(df)
+        if not rows:
+            return 0
+
+        with get_session() as s:
+            o = Order(
+                venue_id=int(venue_id),
+                status="draft",
+                created_at=datetime.utcnow(),
+                updated_at=datetime.utcnow(),
+                created_by=actor,
+                updated_by=actor,
+                title=None,
+                note=None,
+            )
+            s.add(o)
+            s.commit()
+            s.refresh(o)
+            order_id = int(o.id)
+
+            for it in rows:
+                pid = int(it["product_id"])
+                qty = float(it["quantity"])
+                unit = str(it["unit"])
+
+                prod = s.exec(
+                    select(Product).where(Product.venue_id == int(venue_id), Product.id == pid)
+                ).first()
+                provider_name = (getattr(prod, "provider_name", "") or "") if prod else ""
+
+                s.add(
+                    OrderLine(
+                        venue_id=int(venue_id),
+                        order_id=int(order_id),
+                        product_id=pid,
+                        quantity=qty,
+                        unit=unit,
+                        provider=provider_name or None,
+                        updated_at=datetime.utcnow(),
+                        updated_by=actor,
+                    )
+                )
+
+            o.updated_at = datetime.utcnow()
+            o.updated_by = actor
+            s.add(o)
+            s.commit()
+
+        return order_id
+
+    def _add_lines_to_existing_draft(*, venue_id: int, order_id: int, actor: str, df: pd.DataFrame) -> None:
+        rows = _df_to_orderline_rows(df)
+        if not rows:
+            return
+
+        with get_session() as s:
+            existing = s.exec(
+                select(OrderLine).where(
+                    OrderLine.venue_id == int(venue_id),
+                    OrderLine.order_id == int(order_id),
+                )
+            ).all()
+            by_pid = {int(getattr(ln, "product_id", 0) or 0): ln for ln in existing}
+
+            for it in rows:
+                pid = int(it["product_id"])
+                qty = float(it["quantity"])
+                unit = str(it["unit"])
+
+                prod = s.exec(
+                    select(Product).where(Product.venue_id == int(venue_id), Product.id == pid)
+                ).first()
+                provider_name = (getattr(prod, "provider_name", "") or "") if prod else ""
+
+                if pid in by_pid and by_pid[pid] is not None:
+                    ln = by_pid[pid]
+                    ln.quantity = float(getattr(ln, "quantity", 0.0) or 0.0) + qty
+                    ln.unit = unit or (getattr(ln, "unit", None) or "unit")
+                    if provider_name:
+                        ln.provider = provider_name
+                    ln.updated_at = datetime.utcnow()
+                    ln.updated_by = actor
+                    s.add(ln)
+                else:
+                    s.add(
+                        OrderLine(
+                            venue_id=int(venue_id),
+                            order_id=int(order_id),
+                            product_id=pid,
+                            quantity=qty,
+                            unit=unit,
+                            provider=provider_name or None,
+                            updated_at=datetime.utcnow(),
+                            updated_by=actor,
+                        )
+                    )
+
+            o = s.exec(select(Order).where(Order.id == int(order_id))).first()
+            if o:
+                o.updated_at = datetime.utcnow()
+                o.updated_by = actor
+                s.add(o)
+
+            s.commit()
+
+    # ---------------------------
+    # FINALIZE candidates → parsed df
+    # ---------------------------
     def finalize_candidates_to_df(
         candidates_df: pd.DataFrame,
         *,
-        name_to_product: Dict[str, Any],
+        products_by_id: dict[int, Product],
         venue_id: int,
     ) -> pd.DataFrame:
         """
         Aggregate parse candidates (sum quantities of same product), normalize units,
-        add provider column, and return final df ready for editor / saving.
+        add provider column and return final df ready for editor / saving.
         """
         df_in = candidates_df.copy()
 
-        merged: Dict[Any, Dict[str, Any]] = {}
+        merged: dict[object, dict[str, object]] = {}
         for _, r in df_in.iterrows():
+            pid = r.get("matched_product_id", None)
+            pid_i: int | None = None
+            try:
+                if pid is not None and not pd.isna(pid):
+                    pid_i = int(pid)
+            except Exception:
+                pid_i = None
+
             matched_name = safe_str(r.get("matched_name")).strip()
-            qty = float(r.get("quantity") or 0.0)
+            if pid_i is not None and pid_i in products_by_id:
+                matched_name = safe_str(getattr(products_by_id[pid_i], "name", "") or matched_name).strip()
+
+            qty = float(r.get("quantity") or 0.0) if r.get("quantity") is not None else 0.0
             unit_val = normalize_unit(r.get("unit")) or "unit"
             conf = float(r.get("confidence") or 0.0)
             spoken = safe_str(r.get("spoken_name")).strip()
             unit_custom = safe_str(r.get("unit_custom"))
 
-            if not matched_name and qty == 0.0 and not unit_val:
+            if (pid_i is None) and (not matched_name) and qty == 0.0 and not unit_val:
                 continue
 
-            prod_obj = name_to_product.get(matched_name) if matched_name else None
-            pid = prod_obj.id if prod_obj else None
-            key = ("pid", pid) if pid is not None else ("spoken", normalize_text(spoken))
+            key = ("pid", pid_i) if pid_i is not None else ("spoken", normalize_text(spoken))
 
             if key not in merged:
                 merged[key] = {
                     "spoken_name": spoken,
+                    "matched_product_id": pid_i,
                     "matched_name": matched_name or None,
                     "confidence": conf,
                     "quantity": qty,
                     "unit": unit_val,
                     "unit_custom": unit_custom,
-                    "status": "OK" if matched_name else "Revisar",
+                    "status": "OK" if (pid_i is not None or matched_name) else "Revisar",
                 }
             else:
                 merged[key]["quantity"] = float(merged[key]["quantity"] or 0.0) + qty
@@ -313,52 +602,71 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                     merged[key]["unit_custom"] = unit_custom
 
                 if spoken and spoken not in (merged[key].get("spoken_name") or ""):
-                    merged[key]["spoken_name"] = (merged[key]["spoken_name"] + " | " + spoken).strip(" | ")
+                    merged[key]["spoken_name"] = (str(merged[key]["spoken_name"]) + " | " + spoken).strip(" | ")
 
         df = pd.DataFrame(list(merged.values()))
         if "unit_custom" not in df.columns:
             df["unit_custom"] = ""
+        if "matched_product_id" not in df.columns:
+            df["matched_product_id"] = pd.NA
 
         with get_session() as s:
             df = add_provider_column(s, df, venue_id=venue_id)
 
         return df
 
-    def append_message(role_: str, text_: str) -> None:
-        text_ = (text_ or "").strip()
-        if not text_:
-            return
+    # =========================================================
+    # 1) ASR CONFIG (READ-ONLY, per venue)
+    # =========================================================
+    ASR_CFG_TTL_SECONDS = 90
+    defaults = {
+        "asr_backend": "Google Speech-to-Text",
+        "lang_code": "auto",
+        "samplerate": 22050,
+        "hide_user_controls": True,
+    }
 
-        st.session_state[S("order_chat")].append({"role": role_, "text": text_})
+    cfg_key = S("asr_cfg")
+    cfg_ts_key = S("asr_cfg_ts")
+    now = time.time()
 
-        prev = (st.session_state.get(S("transcript_area")) or "").strip()
-        st.session_state[S("transcript_area")] = (prev + "\n" + text_).strip() if prev else text_
+    cfg_cached = st.session_state.get(cfg_key)
+    ts = float(st.session_state.get(cfg_ts_key) or 0.0)
+    needs_refresh = (not isinstance(cfg_cached, dict)) or (now - ts > ASR_CFG_TTL_SECONDS)
 
-    # ---------------------------
-    # Sidebar options
-    # ---------------------------
-    with st.sidebar.expander("⚙️ Opciones de transcripción", expanded=False):
-        asr_backend = st.selectbox(
-            "Backend ASR",
-            ["OpenAI Whisper API", "Google Speech-to-Text","Faster-Whisper (local)"],
-            key=K("asr_backend"),
-        )
-        lang_code = st.selectbox(
-            "Idioma",
-            ["auto", "es", "el", "en"],
-            index=0,
-            key=K("lang_code"),
-        )
-        samplerate = st.selectbox(
-            "Samplerate",
-            [16000, 22050, 24000],
-            index=0,
-            key=K("samplerate"),
-        )
+    if needs_refresh:
+        cfg_data = defaults.copy()
+        with get_session() as s:
+            cfg = s.exec(
+                select(VenueTranscriptionSettings).where(VenueTranscriptionSettings.venue_id == int(venue_id))
+            ).first()
+            if cfg:
+                cfg_data["asr_backend"] = getattr(cfg, "asr_backend", None) or cfg_data["asr_backend"]
+                cfg_data["lang_code"] = getattr(cfg, "lang_code", None) or cfg_data["lang_code"]
+                try:
+                    cfg_data["samplerate"] = int(getattr(cfg, "samplerate", cfg_data["samplerate"]))
+                except Exception:
+                    cfg_data["samplerate"] = defaults["samplerate"]
+                cfg_data["hide_user_controls"] = bool(getattr(cfg, "hide_user_controls", True))
 
-    # ---------------------------
-    # Load catalog
-    # ---------------------------
+        st.session_state[cfg_key] = cfg_data
+        st.session_state[cfg_ts_key] = now
+        cfg_cached = cfg_data
+
+    asr_backend = cfg_cached.get("asr_backend", defaults["asr_backend"])
+    lang_code = cfg_cached.get("lang_code", defaults["lang_code"])
+    try:
+        samplerate = int(cfg_cached.get("samplerate", defaults["samplerate"]))
+    except Exception:
+        samplerate = defaults["samplerate"]
+
+    # If venue hides controls, ensure UI override can't accidentally apply
+    if bool(cfg_cached.get("hide_user_controls", True)):
+        st.session_state.pop(S("lang_code_ui"), None)
+
+    # =========================================================
+    # 2) LOAD CATALOG + indexes
+    # =========================================================
     with get_session() as s:
         products = s.exec(
             select(Product)
@@ -370,28 +678,21 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         st.warning("Primero crea tu catálogo en la pestaña 'Catálogo'.")
         return
 
-    # ✅ catalog matching uses normalized text (accent-insensitive)
-    catalog_names = [normalize_text(p.name) for p in products]
-    catalog_norm_to_product = {normalize_text(p.name): p for p in products}
-    name_to_product = {p.name: p for p in products}
-    
-    def build_google_phrases(products: List[Product]) -> List[str]:
-        phrases: List[str] = []
-        for p in products:
-            # product name
+    products_by_id: dict[int, Product] = {int(p.id): p for p in products if getattr(p, "id", None) is not None}
+
+    def build_google_phrases(products_: list[Product]) -> list[str]:
+        phrases: list[str] = []
+        for p in products_:
             if getattr(p, "name", None):
                 phrases.append(str(p.name).strip())
-
-            # aliases stored like: "alias1 | alias2 | alias3"
             raw_aliases = (getattr(p, "aliases", "") or "")
             for a in raw_aliases.split("|"):
                 a = a.strip()
                 if a:
                     phrases.append(a)
 
-        # stable dedupe (case-insensitive)
         seen = set()
-        out: List[str] = []
+        out: list[str] = []
         for x in phrases:
             k = x.strip().lower()
             if k and k not in seen:
@@ -401,45 +702,108 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
     catalog_prompt_names = build_google_phrases(products)
 
-
-    # ---------------------------
-    # Alias indexes (from ADMIN3 enrichment)
-    # ---------------------------
     alias_indexes = build_alias_indexes(products)
+    alias_to_pids = alias_indexes["alias_to_pids"]
+    token_to_pids = alias_indexes["token_to_pids"]
     alias_to_products = alias_indexes["alias_to_products"]
-    token_to_products = alias_indexes["token_to_products"]
 
+    catalog_norm_to_pids: dict[str, list[int]] = {}
+    for pid, p in products_by_id.items():
+        kn = normalize_text(getattr(p, "name", "") or "")
+        if kn:
+            catalog_norm_to_pids.setdefault(kn, []).append(int(pid))
+    catalog_names = list(catalog_norm_to_pids.keys())
 
-
-    # ---------------------------
-    # CSS
-    # ---------------------------
+    # =========================================================
+    # 3) MOBILE-FIRST STYLES
+    # =========================================================
     st.markdown(
         """
         <style>
+        /* ===============================
+        Chat bubbles (existing)
+        =============================== */
         .chat-bubble {
-            display: inline-block;
-            padding: 10px 12px;
-            border-radius: 14px;
-            margin: 4px 0;
-            max-width: 86%;
-            line-height: 1.35;
-            font-size: 0.95rem;
-            word-wrap: break-word;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+        display: inline-block;
+        padding: 10px 12px;
+        border-radius: 14px;
+        margin: 4px 0;
+        max-width: 92%;
+        line-height: 1.35;
+        font-size: 0.98rem;
+        word-wrap: break-word;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.06);
         }
         .bubble-user { background: #DCF8C6; border-top-right-radius: 7px; }
-        .bubble-asr  { background: #FFFFFF; border-top-left-radius: 7px; }
-        [data-testid="stChatMessage"] { padding: 0.2rem 0.2rem; }
-        [data-testid="stChatInput"] textarea { border-radius: 16px; }
+        .bubble-asr { background: #FFFFFF; border-top-left-radius: 7px; }
 
-        button[data-testid="stAudioRecorderStartButton"],
-        button[data-testid="stAudioRecorderStopButton"] {
-            font-size: 1.2rem !important;
-            padding: 0.9rem 1.3rem !important;
-            border-radius: 14px !important;
-            min-width: 56px !important;
-            height: 56px !important;
+        /* ===============================
+        Parsed pills (existing)
+        =============================== */
+        .row-pill {
+        display: inline-block;
+        padding: 8px 10px;
+        border-radius: 14px;
+        margin: 6px 0;
+        width: 100%;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        font-size: 0.98rem;
+        }
+
+        /* ===============================
+        Notes timeline (mobile-first)
+        =============================== */
+        .notes-wrap {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        }
+
+        .note-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        }
+
+        .note-bubble {
+        flex: 1;
+        border-radius: 16px;
+        padding: 10px 12px;
+        line-height: 1.35;
+        word-break: break-word;
+        border: 1px solid rgba(49, 51, 63, 0.18);
+        box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+        background: #fff;
+        }
+
+        .note-user {
+        background: #DCF8C6;
+        border-top-right-radius: 7px;
+        }
+
+        .note-asr {
+        background: #FFFFFF;
+        border-top-left-radius: 7px;
+        }
+
+        /* Who + text + time in ONE line */
+        .note-meta {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between; /* pushes time right */
+            gap: 10px;
+            font-size: 0.80rem;
+        }
+
+        .note-text {
+            flex: 1;
+            word-break: break-word;
+        }
+
+        .note-time {
+            white-space: nowrap;
+            font-size: 0.72rem;
+            opacity: 0.45;   /* subtle */
         }
         </style>
         """,
@@ -447,148 +811,254 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     )
 
     # =========================================================
-    # HEADER
+    # HEADER (notes mindset) + Active draft display
     # =========================================================
-    # `vertical_alignment` exists only in newer Streamlit versions.
-    # Avoid it for compatibility.
     hL, hR = st.columns([3, 1])
     with hL:
-        st.subheader("🧾 Nuevo pedido")
-    with hR:
-        if st.button("🧹 Limpiar", key=K("btn_clear_all_chat")):
-            reset_new_order(used_component_recorder=False)
+        st.subheader("📝 Notas de faltantes")
+        st.caption("Modo notas · nada se envía · puedes corregir luego")
+        if active_draft_id:
+            st.caption(f"📦 Pedido en preparación: #{int(active_draft_id)} (borrador)")
+        else:
+            st.caption("📦 Pedido en preparación: (ninguno aún) — se creará al guardar")
 
     # =========================================================
-    # CHAT PANEL
+    # Timeline (living notes) — mobile friendly + aligned
     # =========================================================
     with st.container(border=True):
-        if not st.session_state[S("order_chat")]:
+        chat = st.session_state.get(S("order_chat"), [])
+
+        if not chat:
             st.info("Empieza escribiendo abajo o graba un audio 👇")
+        else:
+            st.markdown('<div class="notes-wrap">', unsafe_allow_html=True)
 
-        for msg in st.session_state[S("order_chat")]:
-            role_msg = msg.get("role")
-            txt = msg.get("text", "")
-            if role_msg == "user":
-                with st.chat_message("user"):
-                    st.markdown(f'<div class="chat-bubble bubble-user">{txt}</div>', unsafe_allow_html=True)
-            else:
-                with st.chat_message("assistant"):
-                    st.markdown(f'<div class="chat-bubble bubble-asr">{txt}</div>', unsafe_allow_html=True)
+            # Iterate over a copy so deletion is safe
+            for i, msg in enumerate(list(chat)):
+                role_msg = safe_str(msg.get("role"))
+                txt = safe_str(msg.get("text", ""))
+                tsf = float(msg.get("ts") or 0.0)
+
+                who = "Tú" if role_msg == "user" else "Audio"
+                cls = "note-user" if role_msg == "user" else "note-asr"
+                tlabel = time.strftime("%H:%M", time.localtime(tsf)) if tsf else ""
+
+                bubble_col, del_col = st.columns([20, 2], vertical_alignment="top")
+
+                import html  # ideally move to top of file
+
+                with bubble_col:
+                    st.markdown(
+                        f"""
+                        <div class="note-row">
+                          <div class="note-bubble {cls}">
+                            <div class="note-meta">
+                              <div class="note-text"><strong>{who}:</strong> {txt}</div>
+                              <div class="note-time">{tlabel}</div>
+                            </div>
+                          </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                with del_col:
+                    msg_key = f"{int(tsf * 1000)}" if tsf else f"idx_{i}"
+
+                    if st.button(
+                        "🗑️",
+                        key=K(f"del_msg_{msg_key}"),
+                        help="Eliminar esta nota",
+                        type="secondary",
+                    ):
+                        st.session_state[S("order_chat")].pop(i)
+                        _rebuild_transcript_from_chat()
+
+                        st.session_state[S("auto_parse_pending")] = True
+                        st.session_state.pop(S("parsed_df"), None)
+                        st.session_state.pop(S("parse_candidates_df"), None)
+                        st.session_state.pop(S("finalize_parse_pending"), None)
+                        st.rerun()
+
+            st.markdown("</div>", unsafe_allow_html=True)
 
     # =========================================================
-    # INPUT ROW: MIC + TYPING
+    # Input bar (voice + typed) + language selector next to mic
     # =========================================================
-    mic_col, type_col = st.columns([2, 12])
+    # =========================================================
+    # Input bar (voice + typed) — mobile friendly
+    # =========================================================
+    # --- Mic recorder (mobile-friendly) ---
+    st.session_state.setdefault(S("audio_input_key"), "audio_input_main")
+    st.session_state.setdefault(S("audio_bytes"), b"")
+
+    # with mic_col:
+    audio_file = st.audio_input("", key=K("audio_msg"))
+    if audio_file is not None:
+        st.session_state[S("audio_bytes")] = audio_file.read()
+    # if st.session_state[S("audio_bytes")]:
+    #     st.caption("✅")
+
+    bar = st.columns([1.2, 7.6], vertical_alignment="center")
+    
+
+    lang_col, type_col = bar
 
     audio_bytes = b""
-    used_component_recorder = False
 
-    with mic_col:
-        try:
-            from audiorecorder import audiorecorder
-            used_component_recorder = True
+    # --- Language picker: icon + popover (best) / expander (fallback) ---
+    effective_lang_code = lang_code or "auto"
 
-            audio_seg = audiorecorder(
-                start_prompt="🎤",
-                stop_prompt="⏹️",
-                key=st.session_state[S("audiorecorder_key")],
-            )
-            if audio_seg is not None and len(audio_seg) > 0:
-                audio_bytes = audio_seg.export(format="wav").read()
+    if not bool(cfg_cached.get("hide_user_controls", True)):
+        st.session_state.setdefault(S("lang_code_ui"), None)
+        if st.session_state.get(S("lang_code_ui")) is None:
+            st.session_state[S("lang_code_ui")] = lang_code or "auto"
 
-        except Exception:
-            audio = mic_or_upload_audio(
-                "🎤",
-                key=st.session_state[S("audio_widget_key")],
-                sample_rate=samplerate,
-            )
-            if audio is not None:
-                audio_bytes = read_audio_bytes(audio)
+        # Use current override as effective
+        effective_lang_code = st.session_state.get(S("lang_code_ui")) or lang_code or "auto"
 
-    # Auto-transcribe when new audio arrives
+        with lang_col:
+            # Streamlit popover is great on mobile (opens a panel)
+            try:
+                with st.popover("🌐", use_container_width=True):
+                    picked = st.radio(
+                        "Idioma",
+                        options=["auto", "es", "en", "el"],
+                        index=["auto", "es", "en", "el"].index(effective_lang_code if effective_lang_code in ["auto","es","en","el"] else "auto"),
+                        format_func=lambda v: {
+                            "auto": "🌐 Auto",
+                            "es": "🇪🇸 Español",
+                            "en": "🇬🇧 English",
+                            "el": "🇬🇷 Ελληνικά",
+                        }.get(v, v),
+                        key=K("lang_picker_radio"),
+                    )
+                    st.session_state[S("lang_code_ui")] = picked
+                    effective_lang_code = picked
+            except Exception:
+                # Fallback if popover not available in your Streamlit version
+                with st.expander("🌐", expanded=False):
+                    picked = st.radio(
+                        "Idioma",
+                        options=["auto", "es", "en", "el"],
+                        index=["auto", "es", "en", "el"].index(effective_lang_code if effective_lang_code in ["auto","es","en","el"] else "auto"),
+                        format_func=lambda v: {
+                            "auto": "🌐 Auto",
+                            "es": "🇪🇸 Español",
+                            "en": "🇬🇧 English",
+                            "el": "🇬🇷 Ελληνικά",
+                        }.get(v, v),
+                        key=K("lang_picker_radio_fallback"),
+                    )
+                    st.session_state[S("lang_code_ui")] = picked
+                    effective_lang_code = picked
+    else:
+        # Venue hides controls → no override
+        st.session_state.pop(S("lang_code_ui"), None)
+        effective_lang_code = lang_code or "auto"
+
+
+
+
+    # Use this everywhere downstream
+    audio_bytes = st.session_state[S("audio_bytes")] or b""
+
+    # --- Transcribe ---
     audio_hash = hashlib.sha1(audio_bytes).hexdigest() if audio_bytes else None
     if audio_bytes and audio_hash and audio_hash != st.session_state.get(S("last_audio_hash")):
         try:
             with st.spinner("Transcribiendo…"):
                 if asr_backend == "OpenAI Whisper API":
-                    transcript = asr_openai_whisper(audio_bytes, catalog_prompt_names, language=lang_code)
-
+                    transcript = asr_openai_whisper(audio_bytes, catalog_prompt_names, language=effective_lang_code)
                 elif asr_backend == "Faster-Whisper (local)":
-                    transcript = asr_faster_whisper(audio_bytes, catalog_prompt_names, language=lang_code)
-
+                    transcript = asr_faster_whisper(audio_bytes, catalog_prompt_names, language=effective_lang_code)
                 elif asr_backend == "Google Speech-to-Text":
-                    transcript = asr_google(audio_bytes, catalog_prompt_names, language=lang_code)
-
+                    transcript = asr_google(audio_bytes, catalog_prompt_names, language=effective_lang_code)
                 else:
                     transcript = ""
 
-
             st.session_state[S("last_audio_hash")] = audio_hash
             transcript = cleanup_asr_transcript(transcript)
+            transcript = " | ".join(tokenize_items(transcript))
             append_message("asr", transcript)
             st.rerun()
         except Exception as e:
             st.error(f"Error transcribiendo: {e}")
 
+    # --- Typed input (full width) ---
     with type_col:
-        typed = st.chat_input(
-            "Escribe un ítem del pedido… (ej: 3 cajas cerveza)",
-            key=K("chat_input"),
-        )
+        typed = st.chat_input("Escribe un ítem… (ej: 3 cajas cerveza)", key=K("chat_input"))
         if typed:
             append_message("user", typed)
             st.rerun()
 
     # =========================================================
-    # PARSE
+    # Auto-parse engine (runs in same screen)
     # =========================================================
-    chat_msgs = [
-        (m.get("text") or "").strip()
-        for m in st.session_state.get(S("order_chat"), [])
-        if (m.get("text") or "").strip()
-    ]
-    raw_text = (st.session_state.get(S("transcript_area")) or "").strip()
-    has_any_text = bool(chat_msgs) or bool(raw_text)
+    # =========================================================
+    # Auto-parse engine (runs in same screen)
+    # =========================================================
+    def _parse_chat_to_candidates() -> pd.DataFrame:
+        chat = st.session_state.get(S("order_chat"), []) or []
+        if not chat:
+            return pd.DataFrame([])
 
-    parse_clicked = st.button(
-        "✨ Parsear pedido",
-        type="primary",
-        disabled=not has_any_text,
-        key=K("btn_parse_order"),
-    )
+        # Persist ambiguity resolutions: item_key -> product_id
+        resolved_picks: Dict[str, int] = st.session_state.setdefault(S("resolved_picks"), {})
 
-    # =========================
-    # PARSE
-    # =========================
-    
-    if parse_clicked:
-        items: List[str] = []
-        if chat_msgs:
-            for msg_text in chat_msgs:
-                items.extend(tokenize_items(msg_text))
-        else:
-            items = tokenize_items(raw_text)
-            
-            
-        # ✅ second-pass: split fragments that contain multiple catalog aliases
-        items2 = []
-        for frag in items:
-            items2.extend(split_fragment_by_catalog_aliases(frag, alias_to_products))
+        # Build items with stable keys per *chat line* (ts) + per-item index.
+        # This guarantees:
+        # - old ambiguous items won't ask again (we reuse resolved_picks[item_key])
+        # - new lines are new items (even if same name)
+        items: List[Dict[str, Any]] = []
+        for m in chat:
+            msg_text = (m.get("text") or "").strip()
+            if not msg_text:
+                continue
 
-        items = items2
+            # IMPORTANT: each message is considered a "line" for your rule
+            msg_ts = float(m.get("ts") or 0.0)
+
+            msg_items: List[str] = []
+            for raw in tokenize_items(msg_text):
+                msg_items.extend(split_fragment_by_catalog_aliases(raw, alias_to_products))
+
+            for j, frag in enumerate(msg_items):
+                frag_clean = (frag or "").strip()
+                if not frag_clean:
+                    continue
+                items.append({"chat_ts": msg_ts, "item_idx": j, "frag": frag_clean})
+
+        if not items:
+            return pd.DataFrame([])
 
         parsed_rows: List[Dict[str, Any]] = []
-        for frag in items:
+
+        LOW_CONFIDENCE_SCORE = 80.0
+        TOP_CHOICES = 10
+
+        for it in items:
+            frag = it["frag"]
+
+            # Stable per-line key: if it's on a new line (new ts), it's a new item_key
+            # Even if the product name is the same, a new line triggers a new key.
+            item_key = f'{it["chat_ts"]}:{it["item_idx"]}:{normalize_text(frag)}'
+
             parsed = parse_item(frag)
             if not parsed:
                 parsed_rows.append({
+                    "item_key": item_key,
+                    "chat_ts": it["chat_ts"],
+                    "item_idx": it["item_idx"],
                     "spoken_name": frag,
+                    "matched_product_id": None,
                     "matched_name": None,
                     "confidence": 0.0,
                     "quantity": None,
                     "unit": "unit",
                     "unit_custom": "",
-                    "suggestions": [],  # ✅ internal only
+                    "suggestions": [],
+                    "recommended_pid": None,
                     "status": "No interpretado",
                 })
                 continue
@@ -596,448 +1066,475 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             name, qty, unit_raw = parsed
             name_norm = normalize_text(name)
 
-            # 1) Try direct fuzzy match
-            # 1) Alias-first match (ADMIN3 enriched aliases)
-            suggestions_list: List[str] = []
+            suggestions_pids: List[int] = []
             prod: Optional[Product] = None
-            score: Optional[float] = None
+            score: float = 0.0
+            matched_pid: Optional[int] = None
 
-            # Try exact alias (also on simple singular variants)
-            alias_keys = [name_norm]
-            name_sing_es = singularize_es(name_norm)
-            if name_sing_es and name_sing_es != name_norm:
-                alias_keys.append(name_sing_es)
-            name_sing_el = singularize_el(name_norm)
-            if name_sing_el and name_sing_el != name_norm:
-                alias_keys.append(name_sing_el)
+            # ---- NEW: If this exact line-item was resolved earlier, auto-apply it ----
+            picked_pid = resolved_picks.get(item_key)
+            if picked_pid is not None:
+                try:
+                    picked_pid_i = int(picked_pid)
+                except Exception:
+                    picked_pid_i = None
 
-            exact_hits: List[str] = []
-            for k in alias_keys:
-                hits = alias_to_products.get(k, [])
-                if hits:
-                    exact_hits = hits
-                    break
+                if picked_pid_i is not None and picked_pid_i in products_by_id:
+                    prod = products_by_id.get(picked_pid_i)
+                    matched_pid = picked_pid_i
+                    score = 99.0
+                    suggestions_pids = []  # don’t ask again for old line
+            # ------------------------------------------------------------------------
 
-            if exact_hits:
-                if len(exact_hits) == 1:
-                    prod = name_to_product.get(exact_hits[0])
-                    score = 100.0 if prod else None
-                else:
-                    # ambiguous alias: force user to choose
-                    suggestions_list = exact_hits[:20]
+            # If not already resolved, proceed with your existing matching logic
+            if prod is None:
+                name_sing_es = singularize_es(name_norm)
+                name_sing_el = singularize_el(name_norm)
 
-            # 2) If still no product, fuzzy match against catalog names
-            if prod is None and not suggestions_list:
-                match_norm, score = fuzzy_match(name_norm, catalog_names)
-                prod = catalog_norm_to_product.get(match_norm) if match_norm else None
+                # 1) exact alias hits
+                alias_keys = [name_norm]
+                if name_sing_es and name_sing_es != name_norm:
+                    alias_keys.append(name_sing_es)
+                if name_sing_el and name_sing_el != name_norm:
+                    alias_keys.append(name_sing_el)
 
-                # fallback: try singular ES
-                if prod is None:
-                    if name_sing_es and name_sing_es != name_norm:
-                        match_norm2, score2 = fuzzy_match(name_sing_es, catalog_names)
-                        prod2 = catalog_norm_to_product.get(match_norm2) if match_norm2 else None
-                        if prod2:
-                            prod = prod2
-                            match_norm, score = match_norm2, score2
+                exact_hits_pids: List[int] = []
+                for k in alias_keys:
+                    hits = alias_to_pids.get(k, [])
+                    if hits:
+                        exact_hits_pids = [int(x) for x in hits]
+                        break
 
-                # fallback: try singular EL
-                if prod is None:
-                    if name_sing_el and name_sing_el != name_norm:
-                        match_norm3, score3 = fuzzy_match(name_sing_el, catalog_names)
-                        prod3 = catalog_norm_to_product.get(match_norm3) if match_norm3 else None
-                        if prod3:
-                            prod = prod3
-                            match_norm, score = match_norm3, score3
+                if exact_hits_pids:
+                    if len(exact_hits_pids) == 1:
+                        matched_pid = int(exact_hits_pids[0])
+                        prod = products_by_id.get(matched_pid)
+                        score = 100.0 if prod else 0.0
+                    else:
+                        suggestions_pids = exact_hits_pids[:TOP_CHOICES]
 
-            # unit normalization
+                # 2) fuzzy match
+                if prod is None and not suggestions_pids:
+                    match_norm, score2 = fuzzy_match(name_norm, catalog_names)
+                    if match_norm:
+                        score = float(score2 or 0.0)
+                        pids = catalog_norm_to_pids.get(match_norm, [])
+
+                        is_generic_query = (len(name_norm.split()) == 1 and len(name_norm) <= 10)
+                        prefix_hits = [cn for cn in catalog_names if cn == name_norm or cn.startswith(name_norm + " ")]
+
+                        if is_generic_query and len(prefix_hits) >= 2:
+                            top = suggest_matches(name_norm, catalog_names, limit=TOP_CHOICES)
+                            seen = set()
+                            for cand_norm, _sc in top:
+                                for pid in catalog_norm_to_pids.get(cand_norm, []):
+                                    pid_i = int(pid)
+                                    if pid_i not in seen:
+                                        suggestions_pids.append(pid_i)
+                                        seen.add(pid_i)
+                            suggestions_pids = suggestions_pids[:TOP_CHOICES]
+
+                        elif len(pids) == 1:
+                            if score < LOW_CONFIDENCE_SCORE:
+                                top = suggest_matches(name_norm, catalog_names, limit=TOP_CHOICES)
+                                seen = set()
+                                for cand_norm, _sc in top:
+                                    for pid in catalog_norm_to_pids.get(cand_norm, []):
+                                        pid_i = int(pid)
+                                        if pid_i not in seen:
+                                            suggestions_pids.append(pid_i)
+                                            seen.add(pid_i)
+                                suggestions_pids = suggestions_pids[:TOP_CHOICES]
+                            else:
+                                matched_pid = int(pids[0])
+                                prod = products_by_id.get(matched_pid)
+
+                        elif len(pids) > 1:
+                            top = suggest_matches(name_norm, catalog_names, limit=TOP_CHOICES)
+                            seen = set()
+                            for cand_norm, _sc in top:
+                                for pid in catalog_norm_to_pids.get(cand_norm, []):
+                                    pid_i = int(pid)
+                                    if pid_i not in seen:
+                                        suggestions_pids.append(pid_i)
+                                        seen.add(pid_i)
+                            for pid in pids:
+                                pid_i = int(pid)
+                                if pid_i not in seen:
+                                    suggestions_pids.insert(0, pid_i)
+                                    seen.add(pid_i)
+                            suggestions_pids = suggestions_pids[:TOP_CHOICES]
+
+                # unit normalization
+                unit_val = normalize_unit(unit_raw) if unit_raw else ""
+                if prod and getattr(prod, "unit", None):
+                    unit_val = normalize_unit(prod.unit)
+
+                # still no product -> alias suggestions
+                if prod is None and not suggestions_pids:
+                    alias_hits = alias_suggestions(
+                        name_norm,
+                        alias_to_pids=alias_to_pids,
+                        token_to_pids=token_to_pids,
+                        limit=TOP_CHOICES,
+                    )
+                    if alias_hits:
+                        suggestions_pids = [int(x) for x in alias_hits][:TOP_CHOICES]
+                    else:
+                        top = suggest_matches(name_norm, catalog_names, limit=TOP_CHOICES)
+                        seen = set()
+                        for cand_norm, _sc in top:
+                            for pid in catalog_norm_to_pids.get(cand_norm, []):
+                                pid_i = int(pid)
+                                if pid_i not in seen:
+                                    suggestions_pids.append(pid_i)
+                                    seen.add(pid_i)
+                        suggestions_pids = suggestions_pids[:TOP_CHOICES]
+
+            # Final unit normalization (must be defined even if resolved)
             unit_val = normalize_unit(unit_raw) if unit_raw else ""
             if prod and getattr(prod, "unit", None):
                 unit_val = normalize_unit(prod.unit)
 
-            # 3) If no product, generate suggestions (alias token hits first, then fuzzy)
-            if prod is None and not suggestions_list:
-                alias_hits = alias_suggestions(
-                    name_norm,
-                    alias_to_products=alias_to_products,
-                    token_to_products=token_to_products,
-                    limit=20,
-                )
-                if alias_hits:
-                    suggestions_list = alias_hits
-                else:
-                    top = suggest_matches(name_norm, catalog_names, limit=10)
-                    suggestions_list = [cand for (cand, _sc) in top]
+            if prod and getattr(prod, "id", None) is not None:
+                matched_pid = int(prod.id)
+
+            recommended_pid = (
+                suggestions_pids[0]
+                if suggestions_pids
+                else (matched_pid if matched_pid is not None else None)
+            )
+
+            status = "OK" if prod else ("Elegir" if suggestions_pids else "Revisar")
 
             parsed_rows.append({
+                "item_key": item_key,
+                "chat_ts": it["chat_ts"],
+                "item_idx": it["item_idx"],
                 "spoken_name": name,
+                "matched_product_id": matched_pid,
                 "matched_name": prod.name if prod else None,
-                "confidence": round(score or 0.0, 1),
+                "confidence": round(float(score or 0.0), 1),
                 "quantity": qty,
                 "unit": unit_val or "unit",
                 "unit_custom": "",
-                "suggestions": suggestions_list,  # ✅ internal only
-                "status": "OK" if prod else ("Elegir" if suggestions_list else "Revisar"),
+                "suggestions": suggestions_pids,
+                "recommended_pid": recommended_pid,
+                "status": status,
             })
 
-        # ✅ Store candidates and resolve ambiguous items BEFORE building final df
-        st.session_state[S("parse_candidates_df")] = pd.DataFrame(parsed_rows)
-        st.session_state.pop(S("parsed_df"), None)
+        return pd.DataFrame(parsed_rows)
+
+    # Run auto-parse if pending
+    has_any_text = bool((st.session_state.get(S("transcript_area")) or "").strip())
+    if st.session_state.get(S("auto_parse_pending"), False) and has_any_text:
+        candidates_df = _parse_chat_to_candidates()
+        st.session_state[S("parse_candidates_df")] = candidates_df
         st.session_state[S("finalize_parse_pending")] = True
+        st.session_state[S("auto_parse_pending")] = False
+
+        # If no ambiguity -> finalize immediately
+        if isinstance(candidates_df, pd.DataFrame) and not candidates_df.empty:
+            needs_choice = candidates_df[
+                (candidates_df["status"] == "Elegir")
+                & candidates_df["suggestions"].apply(lambda x: isinstance(x, list) and len(x) > 0)
+            ]
+            if needs_choice.empty:
+                st.session_state[S("finalize_parse_pending")] = False
+                st.session_state[S("parsed_df")] = finalize_candidates_to_df(
+                    candidates_df,
+                    products_by_id=products_by_id,
+                    venue_id=venue_id,
+                )
         st.rerun()
 
     # =========================================================
-    # Resolve ambiguous items (expander BEFORE final df)
+    # Inline ambiguity resolver (still 1-screen)
+    # =========================================================
+    # =========================================================
+    # Inline ambiguity resolver (still 1-screen)
     # =========================================================
     candidates_df = st.session_state.get(S("parse_candidates_df"))
     finalize_pending = st.session_state.get(S("finalize_parse_pending"), False)
 
+    # Persist ambiguity resolutions: item_key -> picked pid
+    resolved_picks: dict[str, int] = st.session_state.setdefault(S("resolved_picks"), {})
+
     if finalize_pending and isinstance(candidates_df, pd.DataFrame) and not candidates_df.empty:
-        def _needs_choice(row: pd.Series) -> bool:
-            return (
-                safe_str(row.get("status")) == "Elegir"
-                and isinstance(row.get("suggestions"), list)
-                and len(row.get("suggestions")) > 0
-            )
+        # IMPORTANT:
+        # - only unresolved ambiguous lines should show here
+        # - a line is "resolved" if resolved_picks has its item_key
+        def _is_unresolved_ambiguous(row) -> bool:
+            if safe_str(row.get("status")) != "Elegir":
+                return False
+            sugg = row.get("suggestions")
+            if not (isinstance(sugg, list) and len(sugg) > 0):
+                return False
+            item_key = safe_str(row.get("item_key")).strip()
+            if item_key and item_key in resolved_picks:
+                return False
+            return True
 
-        needs_mask = candidates_df.apply(_needs_choice, axis=1)
-        needs_df = candidates_df[needs_mask].copy()
+        needs_df = candidates_df[candidates_df.apply(_is_unresolved_ambiguous, axis=1)].copy()
 
-        # If no ambiguous rows, auto-finalize
-        if needs_df.empty:
-            st.session_state[S("finalize_parse_pending")] = False
-            st.session_state[S("parsed_df")] = finalize_candidates_to_df(
-                candidates_df,
-                name_to_product=name_to_product,
-                venue_id=venue_id,
-            )
-            st.rerun()
+        if not needs_df.empty:
+            with st.container(border=True):
+                st.markdown("### 🔎 Elige productos (solo ambiguos)")
+                st.caption("Toca una opción por línea y pulsa **OK**.")
 
-        # Otherwise show expander for user resolution
-        with st.expander("🔎 Productos con varias opciones (elige una)", expanded=True):
-            st.caption("Selecciona una opción por cada producto ambiguo y pulsa **OK** para finalizar el parse.")
+                picks: dict[int, int] = {}
+                pick_keys: dict[int, str] = {}
 
-            picks: Dict[int, str] = {}
-            for idx, row in needs_df.iterrows():
-                spoken = safe_str(row.get("spoken_name"))
-                qty = row.get("quantity")
-                unit = safe_str(row.get("unit") or "unit")
-                opts: List[str] = row.get("suggestions") or []
+                for idx, row in needs_df.iterrows():
+                    item_key = safe_str(row.get("item_key")).strip()
+                    spoken = safe_str(row.get("spoken_name"))
+                    qty = row.get("quantity")
+                    unit = safe_str(row.get("unit") or "unit")
 
-                label = f"{spoken} — {qty or ''} {unit}".strip()
-                pick = st.selectbox(
-                    label,
-                    options=opts,
-                    index=0,
-                    key=K(f"resolve_pick_{idx}"),
-                )
-                picks[int(idx)] = pick
+                    opts: list[int] = [int(x) for x in (row.get("suggestions") or []) if x is not None]
+                    if not opts:
+                        continue
+                    # --- helpers ---
+                    def _price(pid: int) -> float:
+                        p = products_by_id.get(int(pid))
+                        price = getattr(p, "price", None)
+                        return float(price) if price is not None else float("inf")
 
-            ok_clicked = st.button("✅ OK (finalizar parse)", type="primary", key=K("btn_finalize_parse"))
-            if ok_clicked:
-                df2 = candidates_df.copy()
-                for idx, pick in picks.items():
-                    df2.at[idx, "matched_name"] = pick
-                    df2.at[idx, "status"] = "OK"
-                    df2.at[idx, "confidence"] = max(float(df2.at[idx, "confidence"] or 0.0), 99.0)
+                    # 💶 Cheapest among opts
+                    cheapest_pid = min(opts, key=_price) if opts else None
+                    if cheapest_pid is not None and _price(cheapest_pid) == float("inf"):
+                        cheapest_pid = None  # no prices available
 
-                st.session_state[S("parse_candidates_df")] = df2
-                st.session_state[S("finalize_parse_pending")] = False
-                st.session_state[S("parsed_df")] = finalize_candidates_to_df(
-                    df2,
-                    name_to_product=name_to_product,
-                    venue_id=venue_id,
-                )
-                st.rerun()
+                    # 🕒 Last sent (to provider) among opts for this venue
+                    last_sent_pid = get_last_sent_pid_for_venue_among_opts(venue_id=venue_id, opts=opts)
 
-# =========================
+                    # 🔁 Most frequently sent (to provider) among opts for this venue
+                    most_freq_pid = get_most_frequent_sent_pid_for_venue_among_opts(venue_id=venue_id, opts=opts)
 
-    # =========================
-    # RESULT EDITOR
-    # =========================
+                    def _opt_label(pid: int) -> str:
+                        p = products_by_id.get(int(pid))
+                        if not p:
+                            return f"#{int(pid)}"
+
+                        name2 = (getattr(p, "name", "") or "").strip()
+                        prov2 = (getattr(p, "provider_name", "") or "").strip()
+                        desc2 = (getattr(p, "description", "") or "").strip()
+                        price2 = getattr(p, "price", None)
+                        price_txt = f"{float(price2):.2f}€" if price2 is not None else "—"
+
+                        core = name2 + (f" — {desc2}" if desc2 else "")
+                        meta = " · ".join([x for x in [prov2, price_txt] if x])
+                        label2 = f"{core} · {meta}" if meta else core
+
+                        badges = []
+                        if cheapest_pid is not None and int(pid) == int(cheapest_pid):
+                            badges.append("💶")
+                        if last_sent_pid is not None and int(pid) == int(last_sent_pid):
+                            badges.append("🕒")
+                        if most_freq_pid is not None and int(pid) == int(most_freq_pid):
+                            badges.append("🔁")
+
+                        badge_txt = ("".join(badges) + " ") if badges else ""
+                        return badge_txt + label2
+
+                    # Preselect a sensible default (not a “recommendation”):
+                    # - last sent to provider (if available)
+                    # - else cheapest (if priced)
+                    # - else first option
+                    default_pid = (
+                        int(last_sent_pid)
+                        if (last_sent_pid is not None and int(last_sent_pid) in opts)
+                        else (
+                            int(cheapest_pid)
+                            if (cheapest_pid is not None and int(cheapest_pid) in opts)
+                            else int(opts[0])
+                        )
+                    )
+                    default_index = opts.index(int(default_pid))
+
+                    pick_pid = st.selectbox(
+                        f"{spoken} — {qty or ''} {unit}".strip(),
+                        options=opts,
+                        index=int(default_index),
+                        format_func=_opt_label,
+                        # key MUST be stable per item, not per dataframe idx (idx can change)
+                        key=K(f"resolve_pick_{item_key or idx}"),
+                    )
+
+                    picks[int(idx)] = int(pick_pid)
+                    if item_key:
+                        pick_keys[int(idx)] = item_key
+
+                if st.button("✅ OK", type="primary", key=K("btn_finalize_parse")):
+                    df2 = candidates_df.copy()
+
+                    # 1) Apply picks to the df
+                    for idx, pick_pid in picks.items():
+                        df2.at[idx, "matched_product_id"] = int(pick_pid)
+                        p = products_by_id.get(int(pick_pid))
+                        df2.at[idx, "matched_name"] = (p.name if p else None)
+                        df2.at[idx, "status"] = "OK"
+                        df2.at[idx, "confidence"] = max(float(df2.at[idx, "confidence"] or 0.0), 99.0)
+
+                    # 2) Persist resolution by item_key so old lines won't ask again
+                    for idx, pick_pid in picks.items():
+                        key = pick_keys.get(int(idx))
+                        if key:
+                            resolved_picks[str(key)] = int(pick_pid)
+
+                    st.session_state[S("resolved_picks")] = resolved_picks
+                    st.session_state[S("parse_candidates_df")] = df2
+                    st.session_state[S("finalize_parse_pending")] = False
+
+                    # 3) Build parsed_df
+                    st.session_state[S("parsed_df")] = finalize_candidates_to_df(
+                        df2,
+                        products_by_id=products_by_id,
+                        venue_id=venue_id,
+                    )
+                    st.rerun()
+
+    # =========================================================
+    # Parsed summary pills (fast scanning)
+    # =========================================================
     parsed_df = st.session_state.get(S("parsed_df"))
+
     if isinstance(parsed_df, pd.DataFrame) and not parsed_df.empty:
-        unit_options = unit_dropdown_options()
-        OTHER = "Other…"
-        if OTHER not in unit_options:
-            unit_options = unit_options + [OTHER]
+        st.markdown("### ✅ Interpretado (rápido)")
 
-        df_editor = parsed_df.copy()
+        # build quick pills
+        for _, r in parsed_df.iterrows():
+            pid = r.get("matched_product_id", None)
+            qty = r.get("quantity", None)
+            unit = safe_str(r.get("unit") or "unit")
+            name = safe_str(r.get("matched_name") or r.get("spoken_name") or "")
+            status = safe_str(r.get("status") or "")
 
-        # Make sure unit values are canonical or "Other…"
-        def _editor_unit(u: Any) -> str:
-            u_norm = normalize_unit(u)
-            return u_norm if u_norm in unit_options else OTHER
+            icon = "🟢" if (pid is not None and not pd.isna(pid)) else "🟡"
+            if "revis" in status.lower():
+                icon = "🟡"
 
-        df_editor["unit"] = df_editor["unit"].apply(_editor_unit)
-        if "unit_custom" not in df_editor.columns:
-            df_editor["unit_custom"] = ""
+            prov = safe_str(r.get("provider") or "").strip()
+            meta = []
+            if qty is not None and str(qty).strip() != "":
+                meta.append(f"{qty:g} {unit}".strip())
+            if prov:
+                meta.append(prov)
 
-        edited = st.data_editor(
-            df_editor,
-            width="stretch",
-            num_rows="dynamic",
-            hide_index=True,
-            column_config={
-                "confidence": st.column_config.NumberColumn("Confianza", help="0-100"),
-                "quantity": st.column_config.NumberColumn("Cantidad"),
-                "unit": st.column_config.SelectboxColumn("Unidad", options=unit_options),
-                "unit_custom": st.column_config.TextColumn("Unidad (custom)", help="Usa esto si Unidad = Other…"),
-                "matched_name": st.column_config.TextColumn("Producto (catálogo)"),
-                "status": st.column_config.TextColumn("Estado", disabled=True),
-                "provider": st.column_config.TextColumn("Proveedor (catálogo)", disabled=True),
-            },
-            key=K("parse_editor"),
-        )
+            meta_txt = " · ".join([m for m in meta if m])
+            line = f"{icon} {name}"
+            if meta_txt:
+                line = f"{line} — {meta_txt}"
 
-        # Apply unit choice + normalization
-        edited = apply_unit_choice(edited)
+            st.markdown(f'<div class="row-pill">{line}</div>', unsafe_allow_html=True)
 
-        with get_session() as s:
-            edited = add_provider_column(s, edited, venue_id=venue_id)
-
-        st.session_state[S("parsed_df")] = edited
-
-# =========================================================
-    # Save actions
+    # =========================================================
+    # Save section (single primary CTA)
     # =========================================================
     has_parsed = (
         S("parsed_df") in st.session_state
         and isinstance(st.session_state[S("parsed_df")], pd.DataFrame)
         and not st.session_state[S("parsed_df")].empty
     )
+
+    st.markdown("### 💾 Guardar")
+
     if not has_parsed:
+        st.info("Aún no hay ítems interpretados. Añade una nota para empezar.")
         return
 
-    df_to_use = st.session_state[S("parsed_df")].copy()
-    df_to_use = apply_unit_choice(df_to_use)  # ✅ ensure canonical units right before saving
+    df_to_use = apply_unit_choice(st.session_state[S("parsed_df")].copy())
 
-    b1, b2 = st.columns(2)
-    save_draft_clicked = b1.button("💾 Nuevo borrador", type="primary", key=K("btn_save_new_draft"))
-    add_to_existing_clicked = b2.button("➕ Añadir a borrador", key=K("btn_add_to_existing"))
+    c1, c2, c3 = st.columns([2, 1, 1])
 
-    # ---------------- SAVE AS NEW DRAFT ----------------
-    if save_draft_clicked:
+    save_clicked = c1.button(
+        "Guardar preparación",
+        type="primary",
+        use_container_width=True,
+        key=K("btn_save_preparation"),
+    )
+
+    clear_chat_clicked = c2.button(
+        "🧹 Limpiar chat",
+        use_container_width=True,
+        key=K("btn_clear_chat_bottom"),
+        help="Borra el chat y el interpretado, pero conserva elecciones previas en ambigüedades.",
+    )
+
+    reset_all_clicked = c3.button(
+        "🗑️ Reset completo",
+        use_container_width=True,
+        key=K("btn_reset_all_bottom"),
+        help="Borra chat, interpretado y también las elecciones guardadas para ambigüedades.",
+    )
+
+    if clear_chat_clicked:
+        reset_notes_only(clear_resolved_picks=False)
+
+    if reset_all_clicked:
+        reset_notes_only(clear_resolved_picks=True)
+
+    # Optional: choose target draft (fallback / power user)
+    with st.expander("⚙️ Cambiar borrador destino (opcional)", expanded=False):
         with get_session() as s:
-            actor = current_actor()
-            new_order = Order(
-                status="draft",
-                title=None,
-                venue_id=venue_id,
-                created_by=actor,
-            )
-            s.add(new_order)
-            s.commit()
-            s.refresh(new_order)
-            oid = new_order.id
+            drafts = s.exec(
+                select(Order)
+                .where(Order.venue_id == venue_id, Order.status == "draft")
+                .order_by(Order.created_at.desc())
+            ).all()
 
-            merged_db: Dict[Any, Dict[str, Any]] = {}
-            for _, row in df_to_use.iterrows():
-                matched_name = safe_str(row.get("matched_name")).strip()
-                qty = float(row.get("quantity") or 0.0)
-                conf = float(row.get("confidence") or 0.0)
-
-                unit_val = normalize_unit(row.get("unit")) or "unit"
-
-                spoken_norm = normalize_text(row.get("spoken_name") or "")
-
-                if not matched_name and qty == 0.0 and not unit_val:
-                    continue
-
-                prod_obj = (
-                    s.exec(select(Product).where(Product.venue_id == venue_id, Product.name == matched_name)).first()
-                    if matched_name else None
-                )
-                pid = prod_obj.id if prod_obj else None
-
-                # Prefer product unit if present (normalized)
-                if prod_obj and getattr(prod_obj, "unit", None):
-                    unit_val = normalize_unit(prod_obj.unit) or unit_val
-
-                key = ("pid", pid) if pid is not None else ("spoken", normalize_text(row.get("spoken_name") or ""))
-                if key in merged_db:
-                    merged_db[key]["quantity"] = float(merged_db[key]["quantity"] or 0.0) + qty
-                    merged_db[key]["confidence"] = max(float(merged_db[key]["confidence"] or 0.0), conf)
-                else:
-                    merged_db[key] = dict(
-                        venue_id=venue_id,
-                        order_id=oid,
-                        product_id=pid,
-                        spoken_name=spoken_norm,
-                        matched_name=(matched_name if matched_name else None),
-                        confidence=conf,
-                        quantity=qty,
-                        unit=unit_val,
-                    )
-
-            for payload in merged_db.values():
-                s.add(OrderLine(**payload))
-            s.commit()
-
-        st.success(f"Borrador guardado ✅ (ID {oid})")
-        bump_orders_refresh_token()
-        # Open this draft automatically in Orders tab
-        st.session_state["orders_active_order_id"] = int(oid)
-
-        reset_new_order(used_component_recorder=used_component_recorder)
-
-    # ---------------- ADD TO EXISTING DRAFT ----------------
-    # ---------------- ADD TO EXISTING DRAFT ----------------
-    with get_session() as s:
-        drafts = s.exec(
-            select(Order)
-            .where(Order.venue_id == venue_id, Order.status == "draft")
-            .order_by(Order.created_at.desc())
-        ).all()
-
-    if add_to_existing_clicked:
         if not drafts:
-            st.warning("No hay borradores disponibles. Crea uno nuevo primero.")
+            st.caption("No hay borradores aún. Se creará uno al guardar.")
         else:
-            st.session_state[S("adding_to_draft_mode")] = True
+            draft_options = [(o.id, f"#{o.id} — {o.title or o.created_at.strftime('%Y-%m-%d %H:%M')}") for o in drafts]
+            labels = [lbl for _, lbl in draft_options]
+            ids = [oid for oid, _ in draft_options]
 
-    if st.session_state.get(S("adding_to_draft_mode"), False) and drafts:
-        draft_options = [(o.id, f"#{o.id} — {o.title or o.created_at.strftime('%Y-%m-%d %H:%M')}") for o in drafts]
-        labels = [lbl for _, lbl in draft_options]
-        ids = [oid for oid, _ in draft_options]
+            # default: active draft if exists
+            default_idx = 0
+            if active_draft_id in ids:
+                default_idx = ids.index(active_draft_id)
 
-        chosen_label = st.selectbox("Borrador", options=labels, key=K("choose_draft_select"))
-        selected_draft_id = ids[labels.index(chosen_label)]
+            chosen_label = st.selectbox("Borrador destino", options=labels, index=default_idx, key=K("choose_draft_select"))
+            manual_target_id = int(ids[labels.index(chosen_label)])
 
-        cA, cB = st.columns([1, 1])
-        confirm_add = cA.button("✅ Confirmar", type="primary", key=K("confirm_add_lines"))
-        cancel_add = cB.button("❌ Cancelar", key=K("cancel_add_lines"))
+            if st.button("Usar este borrador como activo", key=K("btn_set_active_draft")):
+                _set_active_draft(manual_target_id)
+                st.success(f"Activo: #{manual_target_id}")
+                st.rerun()
 
-        if cancel_add:
-            st.session_state[S("adding_to_draft_mode")] = False
-            st.rerun()
+    if save_clicked:
+        actor = current_actor()
 
-        if confirm_add:
-            oid = int(selected_draft_id)
-            actor = current_actor()
+        # Determine save target:
+        # - if there is an active draft -> add lines
+        # - else -> create a new draft
+        target_id: int = 0
+        if active_draft_id:
+            _add_lines_to_existing_draft(
+                venue_id=venue_id,
+                order_id=int(active_draft_id),
+                actor=actor,
+                df=df_to_use,
+            )
+            target_id = int(active_draft_id)
+        else:
+            new_id = _create_draft_and_insert_lines(
+                venue_id=venue_id,
+                actor=actor,
+                df=df_to_use,
+            )
+            if new_id:
+                target_id = int(new_id)
 
-            with get_session() as s:
-                # ✅ Ensure order exists & belongs to this venue and is still a draft
-                order = s.exec(
-                    select(Order).where(
-                        Order.id == oid,
-                        Order.venue_id == venue_id,
-                        Order.status == "draft",
-                    )
-                ).first()
+        if not target_id:
+            st.warning("No hay líneas válidas para guardar.")
+            return
 
-                if not order:
-                    st.error("El borrador seleccionado no existe o ya no es un borrador.")
-                    st.session_state[S("adding_to_draft_mode")] = False
-                    st.stop()
+        # Sync active draft + refresh Orders + navigate
+        _set_active_draft(target_id)
+        bump_orders_refresh_token()
 
-                for _, row in df_to_use.iterrows():
-                    matched_name = safe_str(row.get("matched_name")).strip()
-                    spoken_norm = normalize_text(row.get("spoken_name") or "")  # ✅ FIX: define per row
-
-                    qty_to_add = float(row.get("quantity") or 0.0)
-                    conf = float(row.get("confidence") or 0.0)
-                    unit_val = normalize_unit(row.get("unit")) or "unit"
-
-                    # ✅ Skip empty / zero qty
-                    if qty_to_add <= 0.0 and not matched_name and not spoken_norm:
-                        continue
-                    if qty_to_add <= 0.0:
-                        continue
-
-                    prod_obj = (
-                        s.exec(
-                            select(Product).where(
-                                Product.venue_id == venue_id,
-                                Product.name == matched_name,
-                            )
-                        ).first()
-                        if matched_name else None
-                    )
-                    pid = int(prod_obj.id) if (prod_obj and prod_obj.id is not None) else None
-
-                    # Prefer product unit if present
-                    if prod_obj and getattr(prod_obj, "unit", None):
-                        unit_val = normalize_unit(prod_obj.unit) or unit_val
-
-                    existing_line = None
-
-                    # ✅ FIX: always scope by venue_id too
-                    if pid is not None:
-                        existing_line = s.exec(
-                            select(OrderLine).where(
-                                and_(
-                                    OrderLine.venue_id == venue_id,
-                                    OrderLine.order_id == oid,
-                                    OrderLine.product_id == pid,
-                                    # Merge only if unit matches (prevents accidental merges)
-                                    OrderLine.unit == unit_val,
-                                )
-                            )
-                        ).first()
-
-                    if existing_line is None and matched_name:
-                        existing_line = s.exec(
-                            select(OrderLine).where(
-                                and_(
-                                    OrderLine.venue_id == venue_id,
-                                    OrderLine.order_id == oid,
-                                    OrderLine.matched_name == matched_name,
-                                    OrderLine.unit == unit_val,
-                                )
-                            )
-                        ).first()
-
-                    if existing_line is None and (not matched_name) and spoken_norm:
-                        existing_line = s.exec(
-                            select(OrderLine).where(
-                                and_(
-                                    OrderLine.venue_id == venue_id,
-                                    OrderLine.order_id == oid,
-                                    OrderLine.product_id.is_(None),
-                                    OrderLine.matched_name.is_(None),
-                                    OrderLine.spoken_name == spoken_norm,
-                                )
-                            )
-                        ).first()
-
-                    if existing_line:
-                        existing_line.quantity = float(existing_line.quantity or 0.0) + qty_to_add
-                        existing_line.unit = normalize_unit(existing_line.unit) or unit_val
-                        existing_line.confidence = max(float(existing_line.confidence or 0.0), conf)
-                        existing_line.updated_at = datetime.utcnow()
-                        existing_line.updated_by = actor
-                        s.add(existing_line)
-                    else:
-                        s.add(
-                            OrderLine(
-                                venue_id=venue_id,
-                                order_id=oid,
-                                product_id=pid,
-                                spoken_name=spoken_norm,
-                                matched_name=(matched_name if matched_name else None),
-                                provider=(getattr(prod_obj, "provider_name", None) or None) if prod_obj else None,
-                                confidence=conf,
-                                quantity=qty_to_add,
-                                unit=unit_val,
-                                updated_at=datetime.utcnow(),
-                                updated_by=actor,
-                            )
-                        )
-
-                # ✅ Update parent order audit (recommended)
-                order.updated_at = datetime.utcnow()
-                order.updated_by = actor
-                if not order.created_by:
-                    order.created_by = actor
-                s.add(order)
-
-                s.commit()
-
-            st.success(f"Líneas añadidas ✅ (ID {oid}).")
-            bump_orders_refresh_token()
-            # Open this draft automatically in Orders tab
-            st.session_state["orders_active_order_id"] = int(oid)
-            st.session_state[S("adding_to_draft_mode")] = False
-
-            reset_new_order(used_component_recorder=used_component_recorder)
-
+        st.success(f"Preparación guardada ✅ (#{target_id})")
+        reset_notes_only(do_rerun=False)
+        _go_orders(target_id)

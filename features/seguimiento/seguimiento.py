@@ -17,6 +17,7 @@ All closures happen on the venue side.
 from datetime import datetime
 from typing import Any, Dict, Optional, List, Tuple
 import json
+import html
 import streamlit as st
 from sqlmodel import select
 import re
@@ -89,7 +90,7 @@ def _css() -> None:
   --bad:#ef4444;
 }
 .main{max-width:900px;margin:0 auto;padding:1rem 0.25rem;}
-.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:16px;margin:12px 0;box-shadow:0 6px 18px rgba(2,6,23,.06);}
+.card{background:var(--card);border:1px solid var(--line);border-radius:18px;padding:16px;margin:12px 0;box-shadow:0 4px 12px rgba(2,6,23,.05);}
 .h1{font-size:1.25rem;font-weight:900;margin:0 0 6px 0;color:var(--text);}
 .muted{color:var(--muted);font-size:.92rem;}
 .badge{display:inline-flex;align-items:center;gap:6px;padding:6px 10px;border-radius:999px;border:1px solid var(--line);font-weight:700;font-size:.82rem;}
@@ -105,6 +106,26 @@ def _css() -> None:
 .pillrow{display:flex;gap:6px;flex-wrap:wrap;margin-top:8px;}
 .pill{display:inline-flex;align-items:center;gap:6px;padding:4px 10px;border-radius:999px;border:1px solid var(--line);background:#f8fafc;font-weight:800;font-size:.78rem;color:var(--text);}
 
+/* Product text hierarchy */
+.product-name{font-weight:900;font-size:.95rem;color:var(--text);line-height:1.2;}
+.product-desc{font-size:.78rem;color:var(--muted);opacity:.75;margin-top:2px;}
+.row{display:flex;justify-content:space-between;align-items:flex-start;gap:12px;}
+.right{white-space:nowrap;font-weight:900;font-variant-numeric:tabular-nums;}
+.pill-muted{background:#f1f5f9;color:var(--muted);border-color:var(--line);}
+.num{font-variant-numeric:tabular-nums;}
+
+/* Streamlit primary buttons: make them more visible */
+div.stButton > button[kind="primary"]{
+  height:44px;
+  font-weight:900;
+  border-radius:12px;
+}
+
+/* Venue / Supplier message bubble (minimal) */
+.msgbox{border-left:4px solid #93c5fd;background:#eff6ff;}
+.msgbox .label{font-weight:900;color:#1e3a8a;margin-bottom:6px;}
+.msgbox .txt{white-space:pre-wrap;color:#0f172a;font-weight:700;line-height:1.25;}
+
 </style>
 """,
         unsafe_allow_html=True,
@@ -114,6 +135,19 @@ def _css() -> None:
 def _badge(text: str, kind: str = "info") -> str:
     return f"<span class='badge {kind}'>{text}</span>"
 
+
+
+def _product_html(name: str, desc: str = "") -> str:
+    name = (name or "Product").strip()
+    desc = (desc or "").strip()
+    if desc:
+        return (
+            "<div>"
+            f"<div class='product-name'>{name}</div>"
+            f"<div class='product-desc'>{desc}</div>"
+            "</div>"
+        )
+    return f"<div class='product-name'>{name}</div>"
 
 def _now() -> datetime:
     return datetime.utcnow()
@@ -689,18 +723,7 @@ def _header(ctx: Dict[str, Any]) -> None:
         unsafe_allow_html=True,
     )
 
-    # # Show a clear summary of what has an issue (supplier needs to know exactly what/why)
-    # open_like = [t for t in tickets if (t.state or "").lower() != "resolved"]
-    # if open_like:
-    #     with st.container(border=True):
-    #         st.markdown("### ⚠️ Items with issues")
-    #         for t in open_like:
-    #             why = (t.kind or "").replace("_", " ")
-    #             extra = (t.note or "").strip()
-    #             txt = f"- **{t.product_name}** · {why}"
-    #             if extra:
-    #                 txt += f"  \n  <span class='muted'>{extra}</span>"
-    #             st.markdown(txt, unsafe_allow_html=True)
+
 
     # Full order overview (always useful for supplier to double-check)
     if lines:
@@ -710,7 +733,11 @@ def _header(ctx: Dict[str, Any]) -> None:
                 name = (getattr(p, "name", None) or getattr(line, "spoken_name", None) or "Product").strip()
                 unit = (getattr(p, "unit", None) or getattr(line, "unit", None) or "unit")
                 ordered = float(getattr(line, "quantity", 0) or 0)
-                st.markdown(f"- **{name}** · {ordered:g} {unit}")
+                desc = (getattr(p, "description", None) or "").strip() if p else ""
+                st.markdown(
+                    f"<div class='row'>{_product_html(name, desc)}<div class='right num'>{ordered:g} {unit}</div></div>",
+                    unsafe_allow_html=True,
+                )
 
 
 def _render_supplier_confirmation(ctx: Dict[str, Any]) -> None:
@@ -738,15 +765,18 @@ def _render_supplier_confirmation(ctx: Dict[str, Any]) -> None:
     if inv_key not in st.session_state:
         st.session_state[inv_key] = (getattr(receipt, "invoice_number", None) or "")
 
-    inv_input = st.text_input(
-        "Invoice number (as written on the invoice)",
-        key=inv_key,
-        placeholder="e.g. INV-2026-00123",
-    )
-    if st.button("Save invoice number", use_container_width=True, key=f"save_inv_{inv_key}"):
-        save_supplier_invoice_number(ctx, inv_input)
-        st.success("Invoice number saved")
-        st.rerun()
+    ic1, ic2 = st.columns([4, 1], vertical_alignment="bottom")
+    with ic1:
+        inv_input = st.text_input(
+            "Invoice number (as written on the invoice)",
+            key=inv_key,
+            placeholder="e.g. INV-2026-00123",
+        )
+    with ic2:
+        if st.button("Save", type="primary", use_container_width=True, key=f"save_inv_{inv_key}"):
+            save_supplier_invoice_number(ctx, inv_input)
+            st.success("Invoice number saved")
+            st.rerun()
 
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
 
@@ -783,43 +813,57 @@ def _render_supplier_confirmation(ctx: Dict[str, Any]) -> None:
                 default_qty = float(fu.supplier_qty) if fu.supplier_qty is not None else ordered
 
         with st.container(border=True):
-            st.markdown(f"**{name}**")
-            st.markdown(
-                f"<div class='pillrow'><span class='pill'>Ordered: {ordered:g} {unit}</span></div>",
-                unsafe_allow_html=True,
-            )
+            desc = (getattr(p, "description", None) or "").strip() if p else ""
 
-            c1, c2 = st.columns([1.1, 1])
-            with c1:
-                choice = st.selectbox(
-                    "Status",
-                    ["full", "partial", "none"],
-                    index={"full": 0, "partial": 1, "none": 2}[default_choice],
-                    format_func=lambda x: {
-                        "full": "✅ Full",
-                        "partial": "🟡 Partial",
-                        "none": "❌ None",
-                    }[x],
-                    key=f"sup_conf_choice_{lid}",
-                    label_visibility="collapsed",
+            left, mid, right = st.columns([2.8, 3.0, 1.3], vertical_alignment="center")
+
+            with left:
+                st.markdown(_product_html(str(name), desc), unsafe_allow_html=True)
+                st.markdown(
+                    f"<div class='pillrow'><span class='pill'>Ordered: {ordered:g} {unit}</span></div>",
+                    unsafe_allow_html=True,
                 )
 
-            qty_send = ordered if choice == "full" else (0.0 if choice == "none" else None)
-
-            with c2:
-                if choice == "partial":
-                    qty_send = st.number_input(
-                        "Qty to send",
-                        min_value=1.0,
-                        max_value=float(ordered) - 1.0,
-                        value=float(ordered) - 1.0,
-                        step=1.0,
-                        key=f"sup_conf_qty_{lid}",
+            with mid:
+                m1, m2 = st.columns([1.15, 1.0], vertical_alignment="center")
+                with m1:
+                    choice = st.selectbox(
+                        "Status",
+                        ["full", "partial", "none"],
+                        index={"full": 0, "partial": 1, "none": 2}[default_choice],
+                        format_func=lambda x: {
+                            "full": "✅ Full",
+                            "partial": "🟡 Partial",
+                            "none": "❌ None",
+                        }[x],
+                        key=f"sup_conf_choice_{lid}",
                         label_visibility="collapsed",
                     )
-                    st.caption(f"Will send: {qty_send:g} {unit}")
-                else:
-                    st.caption(f"Will send: {qty_send:g} {unit}")
+
+                qty_send = ordered if choice == "full" else (0.0 if choice == "none" else None)
+
+                with m2:
+                    if choice == "partial":
+                        qty_send = st.number_input(
+                            "Qty",
+                            min_value=0.0,
+                            max_value=float(ordered),
+                            value=float(default_qty),
+                            step=1.0,
+                            key=f"sup_conf_qty_{lid}",
+                            label_visibility="collapsed",
+                        )
+                    else:
+                        # keep column height consistent
+                        st.markdown("<div style='height:38px'></div>", unsafe_allow_html=True)
+
+            with right:
+                # Right-aligned "will send"
+                qs = float(qty_send or 0.0)
+                st.markdown(
+                    f"<div class='right num'><div class='muted'>Will send</div>{qs:g} {unit}</div>",
+                    unsafe_allow_html=True,
+                )
 
         payload[lid] = {"choice": choice, "qty": float(qty_send or 0.0)}
 
@@ -845,6 +889,7 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
     receipt: Optional[ProviderReceipt] = ctx.get("receipt")
     inv = (getattr(receipt, "invoice_number", None) or "").strip() or "—"
 
+    # --- Step 4 header card ---
     st.markdown(
         "<div class='card'>"
         f"<div class='h1'>Step 4 · Resolve issues (Invoice: {inv})</div>"
@@ -852,6 +897,30 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
         "</div>",
         unsafe_allow_html=True,
     )
+
+    # ------------------------------------------------------------
+    # Venue → Supplier message (shown to supplier before resolving)
+    # Stored inside OrderWorkflow.note like: "... Venue message: <text>"
+    # ------------------------------------------------------------
+    wf = ctx.get("workflow")
+    _note = (getattr(wf, "note", None) or "").strip()
+
+    venue_msg = ""
+    marker = "Venue message:"
+    if marker.lower() in _note.lower():
+        # case-insensitive split
+        idx = _note.lower().find(marker.lower())
+        venue_msg = _note[idx + len(marker):].strip()
+
+    if venue_msg:
+        st.markdown(
+            "<div class='card' style='border-left:6px solid #2563eb;'>"
+            "<div style='font-weight:900;margin-bottom:4px;'>💬 Venue message</div>"
+            f"<div class='muted' style='white-space:pre-wrap;'>{venue_msg}</div>"
+            "</div>",
+            unsafe_allow_html=True,
+        )
+
     
     if not open_t:
         st.info("No supplier action is required for this order right now.")
@@ -907,6 +976,8 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
 
             name = _pname(line, getattr(t, "product_name", "") or "")
             unit = _punit(line, getattr(t, "unit", "") or "")
+            p = products.get(getattr(line, "product_id", None)) if (line and getattr(line, "product_id", None)) else None
+            desc = (getattr(p, "description", None) or "").strip() if p else ""
 
             expected = _expected_qty(line, fu)
             issue_qty = float(getattr(t, "qty_invoiced", 0) or 0)
@@ -919,17 +990,26 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
             kind = (getattr(t, "kind", "") or "").replace("_", " ")
             if (getattr(t, "kind", "") or "").lower() in {"invoice_discrepancy", "operational_missing"}:
                 st.markdown(
-                    f"- **{name}** · {kind} · invoiced **{expected:g}** · received **{received:g}** · missing **{issue_qty:g} {unit}**"
+                    f"<div class='row'>{_product_html(name, desc)}"
+                    f"<div class='right num'>missing {issue_qty:g} {unit}</div></div>"
+                    f"<div class='muted num' style='margin-top:2px;'>invoiced {expected:g} · received {received:g} · {kind}</div>",
+                    unsafe_allow_html=True,
                 )
             elif (getattr(t, "kind", "") or "").lower() in {"damaged", "wrong_item"}:
                 kind_l = (getattr(t, "kind", "") or "").lower()
                 kind_label = "damaged" if kind_l == "damaged" else "wrong item"
                 st.markdown(
-                    f"- **{name}** · {kind_label} · invoiced **{expected:g}** · received **{received:g}** · issue **{issue_qty:g} {unit}**"
+                    f"<div class='row'>{_product_html(name, desc)}"
+                    f"<div class='right num'>issue {issue_qty:g} {unit}</div></div>"
+                    f"<div class='muted num' style='margin-top:2px;'>invoiced {expected:g} · received {received:g} · {kind_label}</div>",
+                    unsafe_allow_html=True,
                 )
             else:
                 st.markdown(
-                    f"- **{name}** · {kind} · invoiced **{expected:g}** · received **{received:g}** · issue **{issue_qty:g} {unit}**"
+                    f"<div class='row'>{_product_html(name, desc)}"
+                    f"<div class='right num'>issue {issue_qty:g} {unit}</div></div>"
+                    f"<div class='muted num' style='margin-top:2px;'>invoiced {expected:g} · received {received:g} · {kind}</div>",
+                    unsafe_allow_html=True,
                 )
 
             if (getattr(t, "note", None) or "").strip():
@@ -994,9 +1074,7 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
         with st.container(border=True):
             c1, c2, c3 = st.columns([2.4, 1.6, 1.4])
             with c1:
-                st.markdown(f"**{name}**")
-                if desc:
-                    st.caption(desc)
+                st.markdown(_product_html(name, desc), unsafe_allow_html=True)
 
             with c2:
                 # Chips
@@ -1034,13 +1112,33 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
 
     # Shared credit note number
+    # Shared credit note number
     credit_note_no: Optional[str] = None
+
     if credit_note_ids:
-        credit_note_no = st.text_input(
-            "Credit note invoice number (applies to all credit note items)",
-            placeholder="e.g. CN-2026-001",
-        ).strip() or None
-        st.caption("All products marked as *Credit note* will share the same credit note number.")
+        cn1, cn2 = st.columns([4, 1], vertical_alignment="bottom")
+
+        with cn1:
+            credit_note_input = st.text_input(
+                "Credit note invoice number (applies to all credit note items)",
+                key=f"credit_note_no_{ctx['order'].id}_{ctx['provider_name']}",
+                placeholder="e.g. CN-2026-001",
+            )
+
+        with cn2:
+            if st.button(
+                "Save",
+                type="primary",
+                use_container_width=True,
+                key=f"save_credit_note_{ctx['order'].id}_{ctx['provider_name']}",
+            ):
+                credit_note_no = (credit_note_input or "").strip() or None
+                st.caption(
+                    "All products marked as *Credit note* will share the same credit note number."
+                )
+                st.success("Credit note number saved")
+                st.rerun()
+
 
     # Re-delivery grouping
     same_eta: Optional[str] = None
