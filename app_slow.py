@@ -7,6 +7,26 @@ import warnings
 
 ENV_PATH = Path(__file__).resolve().parent / ".env"
 load_dotenv(dotenv_path=ENV_PATH, override=True)
+# import os
+# import streamlit as st
+# from core.config import get_database_url
+
+# print("ENV DATABASE_URL:", os.getenv("DATABASE_URL"))
+# print("SECRETS has DATABASE_URL:", ("DATABASE_URL" in st.secrets))
+# if "DATABASE_URL" in st.secrets:
+#     print("SECRETS DATABASE_URL:", st.secrets["DATABASE_URL"])
+
+# print("get_database_url():", get_database_url())
+
+
+
+
+# from core.config import get_database_url
+# print("FULL DATABASE_URL:", get_database_url())
+# # Optional but VERY useful while debugging
+# import os
+# print("DATABASE_URL host:",
+#       os.getenv("DATABASE_URL", "NOT SET").split("@")[-1].split("/")[0])
 
 # -------------------------------
 # 2) Streamlit config
@@ -19,11 +39,21 @@ st.set_page_config(
     layout="centered",
 )
 
+
+
 # -------------------------------
-# 3) LIGHT imports only (fast)
+# 3) Now it is SAFE to import DB + app modules
 # -------------------------------
 from core.config import ensure_google_credentials_file
 from core.init import init_db
+
+from features.manage_orders.orders import orders_tab
+from features.manage_orders.receive_orders import *
+from features.create_order import new_order_tab
+from features.catalog import catalog_tab
+from features.manage_orders.reports import reports_page
+from features.manage_orders.history import _render_history_tab
+
 from features.auth_and_manage.auth_multi_tenant import (
     init_auth_db,
     auth_gate,
@@ -33,8 +63,9 @@ from features.auth_and_manage.auth_multi_tenant import (
     manage_organization_ui,
     current_venues_for_user,
 )
-from core.url_nav import qp_int, qp_str, set_query_params
 
+# URL helpers
+from core.url_nav import qp_int, qp_str, set_query_params
 
 # -------------------------------
 # 4) Warnings (cosmetic)
@@ -42,20 +73,6 @@ from core.url_nav import qp_int, qp_str, set_query_params
 warnings.filterwarnings("ignore", message=".*use_container_width.*")
 warnings.filterwarnings("ignore", message=".*label.*got an empty value.*")
 
-
-# -------------------------------
-# 5) One-time bootstrap (HUGE speedup)
-# -------------------------------
-@st.cache_resource(show_spinner=False)
-def bootstrap_once():
-    """
-    Runs once per Streamlit server process.
-    Avoids init_db/init_auth_db on every rerun.
-    """
-    ensure_google_credentials_file()
-    init_db()
-    init_auth_db()
-    return True
 
 
 def _go(page_key: str) -> None:
@@ -94,7 +111,9 @@ def home_page(pages: dict[str, str]) -> None:
     st.title("Welcome 👋")
     st.caption("Choose what you want to do.")
 
+    # ✅ Venue selector ONLY here
     venue_selector_home_only()
+
     st.divider()
 
     cols = st.columns(2)
@@ -108,43 +127,10 @@ def home_page(pages: dict[str, str]) -> None:
         i += 1
 
 
-# -------------------------------
-# Lazy imports for pages (FASTER reruns)
-# -------------------------------
-def _page_catalog():
-    from features.catalog import catalog_tab
-    return catalog_tab
-
-
-def _page_new_order():
-    from features.create_order import new_order_tab
-    return new_order_tab
-
-
-def _page_orders():
-    from features.manage_orders.orders import orders_tab
-    return orders_tab
-
-
-def _page_tracking_dashboard():
-    # ✅ import only what you need (NO import *)
-    from features.manage_orders.receive_orders import tracking_dashboard
-    return tracking_dashboard
-
-
-def _page_history():
-    from features.manage_orders.history import _render_history_tab
-    return _render_history_tab
-
-
-def _page_reports():
-    from features.manage_orders.reports import reports_page
-    return reports_page
-
-
 def main():
-    # ✅ run heavy bootstrapping only once
-    bootstrap_once()
+    ensure_google_credentials_file()
+    init_db()
+    init_auth_db()
 
     # Login UI (selector hidden globally; shown only on Home)
     auth_gate(show_manage_org=True, show_venue_selector=False)
@@ -161,7 +147,7 @@ def main():
 
         if account_role in {"owner", "admin", "manager"}:
             st.info("Create your first venue below.")
-            manage_organization_ui(venue_role="owner")
+            manage_organization_ui(venue_role="owner")  # treat account admins as owner here
         else:
             st.info("Ask an admin to grant you access.")
         st.stop()
@@ -171,7 +157,7 @@ def main():
     venue_id = venue["id"]
 
     # -----------------------------
-    # Deep-link params
+    # MVP deep-link params
     # -----------------------------
     deep_page = (qp_str("page", "").strip().lower() or "")
     deep_order_id = qp_int("order_id")
@@ -181,15 +167,16 @@ def main():
     # ---- Pages by role ----
     if venue_role in {"owner", "manager"}:
         PAGES = {
-            "home": "🏠 Inicio",
-            "manage_org": "🏢 Organización",
-            "catalog": "📦 Catálogo",
-            "new_order": "📝 Notas",
-            "orders": "📜 Pedidos",
-            "tracking": "📊 Dashboard",
-            "history": "📚 History",
-            "reports": "Reports",
-        }
+            
+                "home": "🏠 Inicio",
+                "manage_org": "🏢 Organización",
+                "catalog": "📦 Catálogo",
+                "new_order": "📝 Notas",
+                "orders": "📜 Pedidos",
+                "tracking": "📊 Dashboard",
+                "history":"📚 History",
+                "reports": "Reports"
+            }
     else:
         PAGES = {
             "home": "🏠 Inicio",
@@ -202,6 +189,7 @@ def main():
 
     # ---- URL -> Session sync ----
     st.session_state.setdefault("page", "home")
+
     if deep_page in allowed and st.session_state["page"] != deep_page:
         st.session_state["page"] = deep_page
 
@@ -213,10 +201,11 @@ def main():
 
     # ---- Back to home button (except on home) ----
     if page != "home":
-        top_left, _ = st.columns([1, 3], vertical_alignment="center")
+        top_left, top_right = st.columns([1, 3], vertical_alignment="center")
         with top_left:
             if st.button("⬅️ Home"):
                 _go("home")
+
 
     # ---- ROUTER ----
     if page == "home":
@@ -226,13 +215,13 @@ def main():
         manage_organization_ui(venue_role=venue_role)
 
     elif page == "catalog":
-        _page_catalog()(venue_id=venue_id, venue_role=venue_role)
+        catalog_tab(venue_id=venue_id, venue_role=venue_role)
 
     elif page == "new_order":
-        _page_new_order()(venue_id, venue_role)
+        new_order_tab(venue_id, venue_role)
 
     elif page == "orders":
-        _page_orders()(
+        orders_tab(
             venue_id,
             venue_role,
             deep_order_id=deep_order_id,
@@ -240,17 +229,20 @@ def main():
         )
 
     elif page == "tracking":
-        _page_tracking_dashboard()(
+        tracking_dashboard(
             venue_id,
             deep_order_id=deep_order_id,
             deep_provider=deep_provider,
         )
+    
 
     elif page == "history":
-        _page_history()(int(venue_id), deep_provider=deep_provider)
+        _render_history_tab(int(venue_id), deep_provider=deep_provider)
+        
 
-    elif page == "reports":
-        _page_reports()(venue_id=int(venue_id), venue_role=venue_role)
+        
+    elif page =="reports":
+        reports_page(venue_id=int(venue_id), venue_role=venue_role)
 
     else:
         _go("home")

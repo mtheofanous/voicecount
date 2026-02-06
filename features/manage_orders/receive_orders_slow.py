@@ -21,17 +21,12 @@ This module does NOT handle payments.
 from dataclasses import dataclass, field
 from datetime import datetime, date
 from typing import Any, Dict, List, Optional, Tuple
+import requests
 import json
 import math
 import re
 import pandas as pd
 import streamlit as st
-
-
-def _orders_refresh_token(venue_id: int) -> int:
-    """Session-state based cache buster for order-related caches."""
-    return int(st.session_state.get(f"orders_refresh_token_{int(venue_id)}", 0) or 0)
-
 from sqlmodel import select
 import html
 from core.db import get_session
@@ -1767,20 +1762,13 @@ class OrderContext:
 # Data loading
 # =============================
 
-@st.cache_data(show_spinner=False, ttl=15)
-def _get_active_orders(venue_id: int, *, refresh_token: int = 0) -> List[Order]:
-    """Fast: cached list of recent orders for the venue.
-
-    refresh_token is only used to invalidate cache when orders change.
-    """
-    _ = int(refresh_token or 0)
+def _get_active_orders(venue_id: int) -> List[Order]:
     with get_session() as s:
         return list(
             s.exec(
                 select(Order)
                 .where(Order.venue_id == int(venue_id))
                 .order_by(Order.created_at.desc())
-                .limit(200)
             ).all()
         )
 
@@ -1801,9 +1789,7 @@ def _get_history_orders(venue_id: int) -> List[Order]:
         )
         return list(s.exec(q).all())
 
-@st.cache_data(show_spinner=False, ttl=15)
-def _load_order_context(venue_id: int, order_id: int, *, refresh_token: int = 0) -> OrderContext:
-    _ = int(refresh_token or 0)
+def _load_order_context(venue_id: int, order_id: int) -> OrderContext:
     with get_session() as s:
         order = s.exec(select(Order).where(Order.id == int(order_id))).first()
         if not order:
@@ -1887,187 +1873,6 @@ def _load_order_context(venue_id: int, order_id: int, *, refresh_token: int = 0)
         receipts_by_provider=receipts_by_provider,
         resolutions_by_provider=resolutions_by_provider,  # ✅ NEW
     )
-
-
-
-@st.cache_data(show_spinner=False, ttl=20)
-def _load_dashboard_bundle(
-    venue_id: int,
-    order_ids: tuple[int, ...],
-    *,
-    refresh_token: int = 0,
-) -> dict[str, Any]:
-    """Bulk-load everything the dashboard needs in a few queries.
-
-    Goal: avoid calling _load_order_context() repeatedly inside dashboard loops.
-    Cache is busted via refresh_token (orders_refresh_token_{venue_id}).
-    """
-    _ = int(refresh_token or 0)
-    if not order_ids:
-        return {"contexts": {}, "sent_providers_by_order": {}}
-
-    # ---- bulk queries ----
-    with get_session() as s:
-        orders = list(s.exec(select(Order).where(Order.id.in_(list(order_ids)))).all())
-
-        providers = list(s.exec(select(Provider).where(Provider.venue_id == int(venue_id))).all())
-        providers_by_name_global = {norm_provider(p.name): p for p in providers if getattr(p, "name", None)}
-        orders_by_id = {int(o.id): o for o in orders if getattr(o, "id", None) is not None}
-
-        workflows = list(
-            s.exec(select(OrderWorkflow).where(OrderWorkflow.order_id.in_(list(order_ids)))).all()
-        )
-        workflows_by_ok: dict[tuple[int, str], OrderWorkflow] = {}
-        for w in workflows:
-            oid = int(getattr(w, "order_id", 0) or 0)
-            prov = norm_provider(getattr(w, "provider_name", "") or "")
-            if oid and prov:
-                workflows_by_ok[(oid, prov)] = w
-
-        tickets = list(
-            s.exec(select(SeguimientoTicket).where(SeguimientoTicket.order_id.in_(list(order_ids)))).all()
-        )
-        tickets_by_ok: Dict[Tuple[int, str], List[SeguimientoTicket]] = {}
-        for t in tickets:
-            oid = int(getattr(t, "order_id", 0) or 0)
-            prov = norm_provider(getattr(t, "provider_name", "") or "")
-            if oid and prov:
-                tickets_by_ok.setdefault((oid, prov), []).append(t)
-
-        lines = list(s.exec(select(OrderLine).where(OrderLine.order_id.in_(list(order_ids)))).all())
-
-        # products
-        product_ids = sorted({int(l.product_id) for l in lines if getattr(l, "product_id", None)})
-        products: Dict[int, Product] = {}
-        if product_ids:
-            ps = list(s.exec(select(Product).where(Product.id.in_(product_ids))).all())
-            products = {int(p.id): p for p in ps if getattr(p, "id", None) is not None}
-
-        followups = list(
-            s.exec(select(ProviderLineFollowUp).where(ProviderLineFollowUp.order_id.in_(list(order_ids)))).all()
-        )
-        followups_by_okl: Dict[Tuple[int, str, int], ProviderLineFollowUp] = {}
-        for fu in followups:
-            oid = int(getattr(fu, "order_id", 0) or 0)
-            prov = norm_provider(getattr(fu, "provider_name", "") or "")
-            lid = int(getattr(fu, "order_line_id", 0) or 0)
-            if oid and prov and lid:
-                followups_by_okl[(oid, prov, lid)] = fu
-
-        receipts = list(
-            s.exec(select(ProviderReceipt).where(ProviderReceipt.order_id.in_(list(order_ids)))).all()
-        )
-        receipts_by_ok: Dict[Tuple[int, str], ProviderReceipt] = {}
-        for r in receipts:
-            oid = int(getattr(r, "order_id", 0) or 0)
-            prov = norm_provider(getattr(r, "provider_name", "") or "")
-            if oid and prov:
-                receipts_by_ok[(oid, prov)] = r
-
-        # ProviderResolution is optional in some deployments
-        resolutions_by_ok: Dict[Tuple[int, str], List[Any]] = {}
-        try:
-            resolutions = list(
-                s.exec(select(ProviderResolution).where(ProviderResolution.order_id.in_(list(order_ids)))).all()
-            )
-            for rr in resolutions:
-                oid = int(getattr(rr, "order_id", 0) or 0)
-                prov = norm_provider(getattr(rr, "provider_name", "") or "")
-                if oid and prov:
-                    resolutions_by_ok.setdefault((oid, prov), []).append(rr)
-        except Exception:
-            resolutions = []
-
-        send_rows = list(
-            s.exec(select(ProviderSendStatus).where(ProviderSendStatus.order_id.in_(list(order_ids)))).all()
-        )
-        sent_providers_by_order: Dict[int, set[str]] = {}
-        for r in send_rows:
-            oid = int(getattr(r, "order_id", 0) or 0)
-            if not oid:
-                continue
-            if bool(getattr(r, "sent", False)) or bool(getattr(r, "sent_email", False)) or bool(getattr(r, "sent_whatsapp", False)):
-                sent_providers_by_order.setdefault(oid, set()).add(norm_provider(getattr(r, "provider_name", "") or ""))
-
-    # ---- build OrderContext per order ----
-    contexts: Dict[int, OrderContext] = {}
-
-    # group lines by (order_id, provider)
-    lines_by_ok: Dict[Tuple[int, str], List[OrderLine]] = {}
-    for l in lines:
-        oid = int(getattr(l, "order_id", 0) or 0)
-        if not oid:
-            continue
-
-        prov = ""
-        p = products.get(int(l.product_id)) if getattr(l, "product_id", None) else None
-        if p and getattr(p, "provider_name", None):
-            prov = p.provider_name
-        else:
-            prov = _s(getattr(l, "provider", None))
-        prov = norm_provider(prov)
-        if not prov:
-            continue
-        lines_by_ok.setdefault((oid, prov), []).append(l)
-
-    for oid in order_ids:
-        order = orders_by_id.get(int(oid))
-        if not order:
-            continue
-
-        # per-provider maps
-        lines_by_provider: Dict[str, List[OrderLine]] = {}
-        tickets_by_provider: Dict[str, List[SeguimientoTicket]] = {}
-        workflows_by_provider: Dict[str, OrderWorkflow] = {}
-        receipts_by_provider: Dict[str, ProviderReceipt] = {}
-        resolutions_by_provider: Dict[str, Any] = {}
-        followups_by_key: Dict[Tuple[str, int], ProviderLineFollowUp] = {}
-
-        # providers involved
-        providers = {prov for (oo, prov) in lines_by_ok.keys() if int(oo) == int(oid)}
-        for prov in providers:
-            lns = lines_by_ok.get((int(oid), prov), [])
-            if lns:
-                lines_by_provider[prov] = lns
-            tks = tickets_by_ok.get((int(oid), prov), [])
-            if tks:
-                tickets_by_provider[prov] = tks
-            w = workflows_by_ok.get((int(oid), prov))
-            if w:
-                workflows_by_provider[prov] = w
-            r = receipts_by_ok.get((int(oid), prov))
-            if r:
-                receipts_by_provider[prov] = r
-            rr = resolutions_by_ok.get((int(oid), prov))
-            if rr:
-                resolutions_by_provider[prov] = rr
-
-            # followups per line
-            for ln in lns:
-                lid = int(getattr(ln, "id", 0) or 0)
-                if not lid:
-                    continue
-                fu = followups_by_okl.get((int(oid), prov, lid))
-                if fu:
-                    followups_by_key[(prov, lid)] = fu
-
-
-        # Build the per-order context
-        contexts[int(oid)] = OrderContext(
-            order=order,
-            providers_by_name=providers_by_name_global,
-            workflows_by_provider=workflows_by_provider,
-            tickets_by_provider=tickets_by_provider,
-            products_by_id=products,
-            lines_by_provider=lines_by_provider,
-            followups_by_key=followups_by_key,
-            receipts_by_provider=receipts_by_provider,
-            resolutions_by_provider=resolutions_by_provider,
-        )
-
-    return {"contexts": contexts, "sent_providers_by_order": sent_providers_by_order}
-
-
 
 
 
@@ -5204,7 +5009,7 @@ def _list_pending_receive_items(venue_id: int) -> List[Dict[str, Any]]:
         "CLOSED",
     }
 
-    orders = _get_active_orders(int(venue_id), refresh_token=_orders_refresh_token(int(venue_id)))
+    orders = _get_active_orders(int(venue_id))
     if not orders:
         return []
 
@@ -5416,7 +5221,7 @@ def _render_receive_provider_panel(ctx: OrderContext, provider: str) -> None:
 
 def _list_open_incidences_items(venue_id: int) -> List[Dict[str, Any]]:
     """Flat list of (order, provider) that has at least one open SeguimientoTicket."""
-    orders = _get_active_orders(int(venue_id), refresh_token=_orders_refresh_token(int(venue_id)))
+    orders = _get_active_orders(int(venue_id))
     if not orders:
         return []
 
@@ -5443,7 +5248,7 @@ def _list_open_incidences_items(venue_id: int) -> List[Dict[str, Any]]:
         if not oid:
             continue
 
-        ctx = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
+        ctx = _load_order_context(int(venue_id), oid)
 
         providers = sorted(ctx.lines_by_provider.keys(), key=lambda x: x.lower())
         # only providers actually sent
@@ -5515,19 +5320,15 @@ def tracking_dashboard(
 
     st.markdown("# Dashboard")
 
-    orders = _get_active_orders(int(venue_id), refresh_token=_orders_refresh_token(int(venue_id)))
+    orders = _get_active_orders(int(venue_id))
     if not orders:
         st.info("No orders yet.")
         return
     
     order_ids = [int(o.id) for o in orders if o.id is not None]
-    bundle = _load_dashboard_bundle(int(venue_id), tuple(order_ids), refresh_token=_orders_refresh_token(int(venue_id)))
-    # NOTE: avoid escaped quotes (was causing SyntaxError on Streamlit Cloud)
-    contexts = bundle.get("contexts", {})
-    sent_providers_by_order = bundle.get("sent_providers_by_order", {})
     selected_id = order_ids[0]   # or your deep link logic / expander selection
     
-    ctx = contexts.get(int(selected_id)) or _load_order_context(int(venue_id), int(selected_id), refresh_token=_orders_refresh_token(int(venue_id)))
+    ctx = _load_order_context(int(venue_id), int(selected_id))
     providers = sorted(ctx.lines_by_provider.keys(), key=lambda x: x.lower())
     
     
@@ -5535,7 +5336,24 @@ def tracking_dashboard(
     #======================PANEL
     
      # ✅ Only keep providers that are actually sent (email or whatsapp)
-    sent_providers = sent_providers_by_order.get(int(ctx.order.id), set())
+    with get_session() as s:
+        rows = list(
+            s.exec(
+                select(ProviderSendStatus).where(
+                    ProviderSendStatus.order_id == int(ctx.order.id)
+                )
+            ).all()
+        )
+
+    
+    sent_providers = {
+        norm_provider(r.provider_name)
+        for r in rows
+        if bool(getattr(r, "sent", False))
+        or bool(getattr(r, "sent_email", False))
+        or bool(getattr(r, "sent_whatsapp", False))
+    }
+
     providers = [p for p in providers if norm_provider(p) in sent_providers]
 
     # -----------------------------
@@ -5559,7 +5377,7 @@ def tracking_dashboard(
     # KPIs (GLOBAL across all active orders) ✅ consistent
     # -----------------------------
     try:
-        orders_all = _get_active_orders(int(venue_id), refresh_token=_orders_refresh_token(int(venue_id)))
+        orders_all = _get_active_orders(int(venue_id))
         order_ids_all = [int(o.id) for o in orders_all if getattr(o, "id", None) is not None]
 
         # Sent pairs across ALL active orders
@@ -5614,7 +5432,7 @@ def tracking_dashboard(
             if not oid:
                 continue
 
-            ctx_o = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
+            ctx_o = _load_order_context(int(venue_id), oid)
 
             # providers for THIS order that were actually sent
             provs_sent = sorted(
@@ -5761,7 +5579,7 @@ def tracking_dashboard(
             if qp_int("order_id") != oid:
                 set_query_params(page="tracking", order_id=str(oid), provider=norm_provider(prov))
 
-            ctx = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
+            ctx = _load_order_context(int(venue_id), oid)
             _render_receive_provider_panel(ctx, prov)
             
             st.empty()
@@ -5808,7 +5626,7 @@ def tracking_dashboard(
             if qp_int("order_id") != oid:
                 set_query_params(page="tracking", order_id=str(oid), provider=norm_provider(prov))
 
-            ctx = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
+            ctx = _load_order_context(int(venue_id), oid)
             _render_incidences_cards(ctx, [prov], show_prices=True, include_iva=True)
 
         return

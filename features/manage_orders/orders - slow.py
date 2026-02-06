@@ -66,14 +66,6 @@ except Exception:  # pragma: no cover
     User = None  # type: ignore
 
 
-@dataclass(frozen=True)
-class OrderRow:
-    id: int
-    title: str
-    status: str
-    created_at: Optional[datetime] = None
-
-
 def current_actor() -> str:
     """Compatibility: other modules import current_actor() from here."""
     try:
@@ -213,28 +205,12 @@ def _remove_name_words_from_description(name: str, desc: str) -> str:
 
 
 @st.cache_data(ttl=10, show_spinner=False, hash_funcs={type(lambda: None): lambda _: "session_fn"})
-def _list_orders_cached(_get_session_fn, venue_id: int, refresh_token: int) -> list[OrderRow]:
+def _list_orders_cached(_get_session_fn, venue_id: int, refresh_token: int) -> list[Order]:
     _ = refresh_token
     with _get_session_fn() as s:
-        rows = s.exec(
-            select(Order.id, Order.title, Order.status, Order.created_at)
-            .where(Order.venue_id == int(venue_id))
-            .order_by(Order.created_at.desc())
-        ).all()
-
-    out: list[OrderRow] = []
-    for oid, title, status, created_at in rows:
-        if oid is None:
-            continue
-        out.append(
-            OrderRow(
-                id=int(oid),
-                title=_s(title) or f"Pedido #{int(oid)}",
-                status=_s(status) or "draft",
-                created_at=created_at,
-            )
+        return list(
+            s.exec(select(Order).where(Order.venue_id == venue_id).order_by(Order.created_at.desc())).all()
         )
-    return out
 
 
 @st.cache_data(ttl=60, show_spinner=False, hash_funcs={type(lambda: None): lambda _: "session_fn"})
@@ -243,42 +219,6 @@ def _products_cached(_get_session_fn, venue_id: int) -> list[Product]:
         return list(
             s.exec(select(Product).where(Product.venue_id == venue_id).order_by(Product.name.asc(), Product.provider_name.asc())).all()
         )
-
-
-@st.cache_data(ttl=120, show_spinner=False, hash_funcs={type(lambda: None): lambda _: "session_fn"})
-def _product_ui_index_cached(_get_session_fn, venue_id: int):
-    """Precomputed product index for fast reruns (search/filter/labels)."""
-    products = _products_cached(_get_session_fn, int(venue_id))
-
-    products_by_id: dict[int, Product] = {int(p.id): p for p in products if getattr(p, "id", None) is not None}
-
-    label_by_id = _products_label_map(products)
-
-    cat_by_pid: dict[int, str] = {
-        int(p.id): (_s(getattr(p, "category", "")) or "").strip()
-        for p in products
-        if getattr(p, "id", None) is not None
-    }
-    prov_by_pid: dict[int, str] = {
-        int(p.id): (_s(getattr(p, "provider_name", "")) or "(Sin proveedor)").strip()
-        for p in products
-        if getattr(p, "id", None) is not None
-    }
-
-    all_categories = sorted({c for c in cat_by_pid.values() if c})
-    all_providers = sorted({p for p in prov_by_pid.values() if p})
-
-    base_pids = sorted(label_by_id.keys())
-    return (
-        products,
-        products_by_id,
-        label_by_id,
-        cat_by_pid,
-        prov_by_pid,
-        all_categories,
-        all_providers,
-        base_pids,
-    )
 
 
 @st.cache_data(ttl=10, show_spinner=False, hash_funcs={type(lambda: None): lambda _: "session_fn"})
@@ -1136,8 +1076,8 @@ def _render_workflow_actions(*, venue_id: int, order: Order, role: Optional[str]
 
 def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: list[Product], lines: list[OrderLine]) -> None:
     st.subheader("🧾 Líneas del pedido")
-    # Use cached product index (major speedup on reruns)
-    products, products_by_id, label_by_id, cat_by_pid, prov_by_pid, all_categories, all_providers, base_pids = _product_ui_index_cached(get_session, venue_id)
+    products_by_id = {int(p.id): p for p in products if p.id is not None}
+    label_by_id = _products_label_map(products)
     editor_key = f"order_editor_{int(order.id)}"
     df_state_key = f"{editor_key}__df"
     
@@ -1167,7 +1107,28 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
     # Quick add expander (cascading filters + paging + toggle)
     # -----------------------------
 
-    # (categories/providers maps come from _product_ui_index_cached)
+    # Build options from products
+    all_categories = sorted({
+        (_s(getattr(p, "category", "")) or "").strip()
+        for p in products
+        if _s(getattr(p, "category", "")).strip()
+    })
+    all_providers = sorted({
+        (_s(getattr(p, "provider_name", "")) or "(Sin proveedor)").strip()
+        for p in products
+    })
+
+    # Maps
+    cat_by_pid = {
+        int(p.id): (_s(getattr(p, "category", "")) or "").strip()
+        for p in products
+        if p.id is not None
+    }
+    prov_by_pid = {
+        int(p.id): (_s(getattr(p, "provider_name", "")) or "(Sin proveedor)").strip()
+        for p in products
+        if p.id is not None
+    }
 
     def _qty_by_product(df: pd.DataFrame) -> dict[int, float]:
         df = _sanitize_editor_df(df)
@@ -2492,9 +2453,7 @@ def orders_tab(
         st.error("Pedido no encontrado.")
         return
 
-    products, products_by_id, label_by_id, cat_by_pid, prov_by_pid, all_categories, all_providers, base_pids = _product_ui_index_cached(get_session, venue_id)
-    # keep the original variable name expected by render functions
-    products = products
+    products = _products_cached(get_session, venue_id)
     lines = _order_lines_cached(get_session, int(order.id), _refresh_token(venue_id))
 
     _render_header(order)

@@ -10,10 +10,11 @@ import streamlit as st
 from sqlmodel import Session, select
 from datetime import datetime
 from sqlalchemy import desc, func, and_
-
-from domain.models import Product, Order, OrderLine, VenueTranscriptionSettings, ProviderSendStatus
-from core.db import get_session
+from domain.models import Product, Order, OrderLine, VenueTranscriptionSettings, ProviderSendStatus 
+from core.db import get_engine
+from core.config import get_database_url
 from features.utils.asr_google import asr_google
+
 
 from features.manage_orders.orders import current_actor
 from features.utils.voice_and_orders_utils import *
@@ -24,6 +25,12 @@ from core.normalization import normalize_text, normalize_unit, UNIT_SYNONYMS
 # ✅ Router / deep links (matches app.py router)
 from core.url_nav import set_query_params
 
+
+# ---------------------------
+# DB session helper
+# ---------------------------
+def get_session() -> Session:
+    return Session(get_engine(get_database_url()))
 
 def unit_dropdown_options() -> List[str]:
     """Canonical unit options derived from UNIT_SYNONYMS."""
@@ -40,76 +47,6 @@ def resolve_venue_id(passed_venue_id: Optional[int]) -> int:
     st.error("No active venue selected")
     st.stop()
     raise RuntimeError("Unreachable")
-
-
-# ---------------------------
-# Catalog helpers (moved to top-level for caching)
-# ---------------------------
-def build_google_phrases(products_: list[Product]) -> list[str]:
-    phrases: list[str] = []
-    for p in products_:
-        if getattr(p, "name", None):
-            phrases.append(str(p.name).strip())
-        raw_aliases = (getattr(p, "aliases", "") or "")
-        for a in raw_aliases.split("|"):
-            a = a.strip()
-            if a:
-                phrases.append(a)
-
-    seen = set()
-    out: list[str] = []
-    for x in phrases:
-        k = x.strip().lower()
-        if k and k not in seen:
-            seen.add(k)
-            out.append(x.strip())
-    return out
-
-
-@st.cache_data(show_spinner=False, ttl=300)
-def load_catalog_and_indexes(venue_id: int):
-    """
-    Cached catalog + indexes to avoid reloading on every Streamlit rerun.
-    TTL 5 minutes. (You can also add a refresh token to the cache key later.)
-    """
-    with get_session() as s:
-        products = s.exec(
-            select(Product)
-            .where(Product.venue_id == venue_id)
-            .order_by(Product.name.asc(), Product.provider_name.asc())
-        ).all()
-
-    products_by_id: dict[int, Product] = {int(p.id): p for p in products if getattr(p, "id", None) is not None}
-
-    alias_indexes = build_alias_indexes(products)
-
-    catalog_norm_to_pids: dict[str, list[int]] = {}
-    for pid, p in products_by_id.items():
-        kn = normalize_text(getattr(p, "name", "") or "")
-        if kn:
-            catalog_norm_to_pids.setdefault(kn, []).append(int(pid))
-
-    catalog_prompt_names = build_google_phrases(products)
-
-    # Provider lookup maps (used to avoid DB work during finalize)
-    pid_to_provider: dict[int, str] = {}
-    norm_name_to_provider: dict[str, str] = {}
-    for pid, p in products_by_id.items():
-        pid_to_provider[int(pid)] = (getattr(p, "provider_name", "") or "")
-        k = normalize_text(getattr(p, "name", "") or "")
-        if k:
-            norm_name_to_provider[k] = (getattr(p, "provider_name", "") or "")
-
-    return (
-        products,
-        products_by_id,
-        alias_indexes,
-        catalog_norm_to_pids,
-        catalog_prompt_names,
-        pid_to_provider,
-        norm_name_to_provider,
-    )
-
 
 def get_last_sent_pid_for_venue_among_opts(venue_id: int, opts: list[int]) -> int | None:
     """🕒 Last product among opts that was included in an order that was SENT to its provider (per-provider send)."""
@@ -161,40 +98,59 @@ def get_most_frequent_sent_pid_for_venue_among_opts(venue_id: int, opts: list[in
         )
         row = s.exec(stmt).first()
         return int(row[0]) if row else None
-
-
 # ---------------------------
-# Provider column enrichment (FAST, no DB, no apply-axis=1)
+# Provider column enrichment
 # ---------------------------
-def add_provider_column_fast(
-    df: pd.DataFrame,
-    *,
-    pid_to_provider: Dict[int, str],
-    norm_name_to_provider: Dict[str, str],
-) -> pd.DataFrame:
+def add_provider_column(sess: Session, df: pd.DataFrame, *, venue_id: Optional[int] = None) -> pd.DataFrame:
     """
     Adds/updates a 'provider' column based on:
-      1) matched_product_id -> provider
-      2) fallback: matched_name (normalized) -> provider
-    Vectorized (much faster than df.apply(axis=1)).
+      1) matched_product_id -> Product.provider_name
+      2) fallback: matched_name (normalized) -> provider_name
     """
     out = df.copy()
     if "provider" not in out.columns:
         out["provider"] = ""
 
-    if "matched_product_id" in out.columns:
-        out["provider"] = out["matched_product_id"].map(pid_to_provider).fillna("")
+    q = select(Product)
+    if venue_id is not None:
+        q = q.where(Product.venue_id == int(venue_id))
 
-    if "matched_name" in out.columns:
-        missing = out["provider"] == ""
-        if missing.any():
-            out.loc[missing, "provider"] = (
-                out.loc[missing, "matched_name"]
-                .map(lambda x: norm_name_to_provider.get(normalize_text(x), ""))
-                .fillna("")
-            )
+    products = sess.exec(q).all()
 
-    out["provider"] = out["provider"].astype("string")
+    pid_to_provider: Dict[int, str] = {}
+    norm_name_to_provider: Dict[str, str] = {}
+    for p in products:
+        pid = getattr(p, "id", None)
+        if pid is not None:
+            pid_to_provider[int(pid)] = (getattr(p, "provider_name", "") or "")
+        k = normalize_text(getattr(p, "name", "") or "")
+        if k:
+            norm_name_to_provider[k] = (getattr(p, "provider_name", "") or "")
+
+    def _provider(row: Any) -> str:
+        try:
+            pid = row.get("matched_product_id", None)
+        except Exception:
+            pid = None
+
+        try:
+            if pid is not None and not pd.isna(pid):
+                pid_i = int(pid)
+                if pid_i in pid_to_provider:
+                    return pid_to_provider.get(pid_i, "") or ""
+        except Exception:
+            pass
+
+        try:
+            mn = row.get("matched_name", None)
+        except Exception:
+            mn = None
+        k = normalize_text(mn)
+        return norm_name_to_provider.get(k, "") or ""
+
+    if "matched_product_id" in out.columns or "matched_name" in out.columns:
+        out["provider"] = out.apply(_provider, axis=1).astype("string")
+
     return out
 
 
@@ -327,6 +283,7 @@ def alias_suggestions(
 # =========================================================
 # MAIN TAB
 # =========================================================
+
 def new_order_tab(venue_id: int, role: str | None = None) -> None:
     """
     1-screen mobile flow: Notas de faltantes → Pedido en preparación (draft)
@@ -358,12 +315,14 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     st.session_state.setdefault(S("order_chat"), [])  # [{"role":"user"|"asr","text":str,"ts":float}]
     st.session_state.setdefault(S("auto_parse_pending"), False)
     st.session_state.setdefault(S("resolved_picks"), {})  # item_key -> picked_product_id
-    st.session_state.setdefault(S("lang_code_ui"), None)  # UI-only language override
+    # UI-only language override (session only; does NOT write DB)
+    st.session_state.setdefault(S("lang_code_ui"), None)
 
     # ---------------------------
     # Helpers
     # ---------------------------
     def reset_notes_only(clear_resolved_picks: bool = False, *, do_rerun: bool = True) -> None:
+
         """Clear the notes + parse output, keep venue context.
         If clear_resolved_picks=True, also clears ambiguity memory.
         """
@@ -426,8 +385,9 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         active_draft_id = int(active_draft_id) if active_draft_id is not None else None
     except Exception:
         active_draft_id = None
-
-    # ✅ Validate that active_draft_id is actually a DRAFT in DB
+        
+        
+    # ✅ NEW: Validate that active_draft_id is actually a DRAFT in DB
     if active_draft_id:
         with get_session() as s:
             o = s.exec(
@@ -435,8 +395,10 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             ).first()
         o_status = (getattr(o, "status", "") or "").lower() if o else ""
         if o_status != "draft":
+            # stale pointer → clear it so Notas creates/targets a real draft
             st.session_state.pop(ACTIVE_DRAFT_KEY, None)
             active_draft_id = None
+        
 
     def _set_active_draft(order_id: int) -> None:
         st.session_state[ACTIVE_DRAFT_KEY] = int(order_id)
@@ -447,326 +409,9 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         set_query_params(page="orders", order_id=int(order_id), status="draft")
         st.rerun()
 
-    # =========================================================
-    # 1) ASR CONFIG (READ-ONLY, per venue)
-    # =========================================================
-    ASR_CFG_TTL_SECONDS = 90
-    defaults = {
-        "asr_backend": "Google Speech-to-Text",
-        "lang_code": "auto",
-        "samplerate": 22050,
-        "hide_user_controls": True,
-    }
-
-    cfg_key = S("asr_cfg")
-    cfg_ts_key = S("asr_cfg_ts")
-    now = time.time()
-
-    cfg_cached = st.session_state.get(cfg_key)
-    ts = float(st.session_state.get(cfg_ts_key) or 0.0)
-    needs_refresh = (not isinstance(cfg_cached, dict)) or (now - ts > ASR_CFG_TTL_SECONDS)
-
-    if needs_refresh:
-        cfg_data = defaults.copy()
-        with get_session() as s:
-            cfg = s.exec(
-                select(VenueTranscriptionSettings).where(VenueTranscriptionSettings.venue_id == int(venue_id))
-            ).first()
-            if cfg:
-                cfg_data["asr_backend"] = getattr(cfg, "asr_backend", None) or cfg_data["asr_backend"]
-                cfg_data["lang_code"] = getattr(cfg, "lang_code", None) or cfg_data["lang_code"]
-                try:
-                    cfg_data["samplerate"] = int(getattr(cfg, "samplerate", cfg_data["samplerate"]))
-                except Exception:
-                    cfg_data["samplerate"] = defaults["samplerate"]
-                cfg_data["hide_user_controls"] = bool(getattr(cfg, "hide_user_controls", True))
-
-        st.session_state[cfg_key] = cfg_data
-        st.session_state[cfg_ts_key] = now
-        cfg_cached = cfg_data
-
-    asr_backend = cfg_cached.get("asr_backend", defaults["asr_backend"])
-    lang_code = cfg_cached.get("lang_code", defaults["lang_code"])
-    try:
-        samplerate = int(cfg_cached.get("samplerate", defaults["samplerate"]))
-    except Exception:
-        samplerate = defaults["samplerate"]
-
-    if bool(cfg_cached.get("hide_user_controls", True)):
-        st.session_state.pop(S("lang_code_ui"), None)
-
-    # =========================================================
-    # 2) LOAD CATALOG + indexes (CACHED)
-    # =========================================================
-    (
-        products,
-        products_by_id,
-        alias_indexes,
-        catalog_norm_to_pids,
-        catalog_prompt_names,
-        pid_to_provider,
-        norm_name_to_provider,
-    ) = load_catalog_and_indexes(venue_id)
-
-    if not products:
-        st.warning("Primero crea tu catálogo en la pestaña 'Catálogo'.")
-        return
-
-    alias_to_pids = alias_indexes["alias_to_pids"]
-    token_to_pids = alias_indexes["token_to_pids"]
-    alias_to_products = alias_indexes["alias_to_products"]
-
-    catalog_names = list(catalog_norm_to_pids.keys())
-
-    # =========================================================
-    # 3) MOBILE-FIRST STYLES
-    # =========================================================
-    st.markdown(
-        """
-        <style>
-        .chat-bubble {
-        display: inline-block;
-        padding: 10px 12px;
-        border-radius: 14px;
-        margin: 4px 0;
-        max-width: 92%;
-        line-height: 1.35;
-        font-size: 0.98rem;
-        word-wrap: break-word;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.06);
-        }
-        .bubble-user { background: #DCF8C6; border-top-right-radius: 7px; }
-        .bubble-asr { background: #FFFFFF; border-top-left-radius: 7px; }
-
-        .row-pill {
-        display: inline-block;
-        padding: 8px 10px;
-        border-radius: 14px;
-        margin: 6px 0;
-        width: 100%;
-        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-        font-size: 0.98rem;
-        }
-
-        .notes-wrap {
-        display: flex;
-        flex-direction: column;
-        gap: 10px;
-        }
-
-        .note-row {
-        display: flex;
-        align-items: flex-start;
-        gap: 10px;
-        }
-
-        .note-bubble {
-        flex: 1;
-        border-radius: 16px;
-        padding: 10px 12px;
-        line-height: 1.35;
-        word-break: break-word;
-        border: 1px solid rgba(49, 51, 63, 0.18);
-        box-shadow: 0 1px 2px rgba(0,0,0,0.04);
-        background: #fff;
-        }
-
-        .note-user {
-        background: #DCF8C6;
-        border-top-right-radius: 7px;
-        }
-
-        .note-asr {
-        background: #FFFFFF;
-        border-top-left-radius: 7px;
-        }
-
-        .note-meta {
-            display: flex;
-            align-items: flex-start;
-            justify-content: space-between;
-            gap: 10px;
-            font-size: 0.80rem;
-        }
-
-        .note-text {
-            flex: 1;
-            word-break: break-word;
-        }
-
-        .note-time {
-            white-space: nowrap;
-            font-size: 0.72rem;
-            opacity: 0.45;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    # =========================================================
-    # HEADER (notes mindset) + Active draft display
-    # =========================================================
-    hL, hR = st.columns([3, 1])
-    with hL:
-        st.subheader("📝 Notas de faltantes")
-        st.caption("Modo notas · nada se envía · puedes corregir luego")
-        if active_draft_id:
-            st.caption(f"📦 Pedido en preparación: #{int(active_draft_id)} (borrador)")
-        else:
-            st.caption("📦 Pedido en preparación: (ninguno aún) — se creará al guardar")
-
-    # =========================================================
-    # Timeline (living notes) — mobile friendly + aligned
-    # =========================================================
-    with st.container(border=True):
-        chat = st.session_state.get(S("order_chat"), [])
-
-        if not chat:
-            st.info("Empieza escribiendo abajo o graba un audio 👇")
-        else:
-            st.markdown('<div class="notes-wrap">', unsafe_allow_html=True)
-
-            for i, msg in enumerate(list(chat)):
-                role_msg = safe_str(msg.get("role"))
-                txt = safe_str(msg.get("text", ""))
-                tsf = float(msg.get("ts") or 0.0)
-
-                who = "Tú" if role_msg == "user" else "Audio"
-                cls = "note-user" if role_msg == "user" else "note-asr"
-                tlabel = time.strftime("%H:%M", time.localtime(tsf)) if tsf else ""
-
-                bubble_col, del_col = st.columns([20, 2], vertical_alignment="top")
-
-                with bubble_col:
-                    st.markdown(
-                        f"""
-                        <div class="note-row">
-                          <div class="note-bubble {cls}">
-                            <div class="note-meta">
-                              <div class="note-text"><strong>{who}:</strong> {txt}</div>
-                              <div class="note-time">{tlabel}</div>
-                            </div>
-                          </div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
-
-                with del_col:
-                    msg_key = f"{int(tsf * 1000)}" if tsf else f"idx_{i}"
-                    if st.button(
-                        "🗑️",
-                        key=K(f"del_msg_{msg_key}"),
-                        help="Eliminar esta nota",
-                        type="secondary",
-                    ):
-                        st.session_state[S("order_chat")].pop(i)
-                        _rebuild_transcript_from_chat()
-
-                        st.session_state[S("auto_parse_pending")] = True
-                        st.session_state.pop(S("parsed_df"), None)
-                        st.session_state.pop(S("parse_candidates_df"), None)
-                        st.session_state.pop(S("finalize_parse_pending"), None)
-                        st.rerun()
-
-            st.markdown("</div>", unsafe_allow_html=True)
-
-    # =========================================================
-    # Input bar (voice + typed)
-    # =========================================================
-    st.session_state.setdefault(S("audio_input_key"), "audio_input_main")
-    st.session_state.setdefault(S("audio_bytes"), b"")
-
-    audio_file = st.audio_input("", key=K("audio_msg"))
-    if audio_file is not None:
-        st.session_state[S("audio_bytes")] = audio_file.read()
-
-    bar = st.columns([1.2, 7.6], vertical_alignment="center")
-    lang_col, type_col = bar
-
-    effective_lang_code = lang_code or "auto"
-
-    if not bool(cfg_cached.get("hide_user_controls", True)):
-        st.session_state.setdefault(S("lang_code_ui"), None)
-        if st.session_state.get(S("lang_code_ui")) is None:
-            st.session_state[S("lang_code_ui")] = lang_code or "auto"
-
-        effective_lang_code = st.session_state.get(S("lang_code_ui")) or lang_code or "auto"
-
-        with lang_col:
-            try:
-                with st.popover("🌐", use_container_width=True):
-                    picked = st.radio(
-                        "Idioma",
-                        options=["auto", "es", "en", "el"],
-                        index=["auto", "es", "en", "el"].index(
-                            effective_lang_code if effective_lang_code in ["auto", "es", "en", "el"] else "auto"
-                        ),
-                        format_func=lambda v: {
-                            "auto": "🌐 Auto",
-                            "es": "🇪🇸 Español",
-                            "en": "🇬🇧 English",
-                            "el": "🇬🇷 Ελληνικά",
-                        }.get(v, v),
-                        key=K("lang_picker_radio"),
-                    )
-                    st.session_state[S("lang_code_ui")] = picked
-                    effective_lang_code = picked
-            except Exception:
-                with st.expander("🌐", expanded=False):
-                    picked = st.radio(
-                        "Idioma",
-                        options=["auto", "es", "en", "el"],
-                        index=["auto", "es", "en", "el"].index(
-                            effective_lang_code if effective_lang_code in ["auto", "es", "en", "el"] else "auto"
-                        ),
-                        format_func=lambda v: {
-                            "auto": "🌐 Auto",
-                            "es": "🇪🇸 Español",
-                            "en": "🇬🇧 English",
-                            "el": "🇬🇷 Ελληνικά",
-                        }.get(v, v),
-                        key=K("lang_picker_radio_fallback"),
-                    )
-                    st.session_state[S("lang_code_ui")] = picked
-                    effective_lang_code = picked
-    else:
-        st.session_state.pop(S("lang_code_ui"), None)
-        effective_lang_code = lang_code or "auto"
-
-    audio_bytes = st.session_state[S("audio_bytes")] or b""
-
-    audio_hash = hashlib.sha1(audio_bytes).hexdigest() if audio_bytes else None
-    if audio_bytes and audio_hash and audio_hash != st.session_state.get(S("last_audio_hash")):
-        try:
-            with st.spinner("Transcribiendo…"):
-                if asr_backend == "OpenAI Whisper API":
-                    transcript = asr_openai_whisper(audio_bytes, catalog_prompt_names, language=effective_lang_code)
-                elif asr_backend == "Faster-Whisper (local)":
-                    transcript = asr_faster_whisper(audio_bytes, catalog_prompt_names, language=effective_lang_code)
-                elif asr_backend == "Google Speech-to-Text":
-                    transcript = asr_google(audio_bytes, catalog_prompt_names, language=effective_lang_code)
-                else:
-                    transcript = ""
-
-            st.session_state[S("last_audio_hash")] = audio_hash
-            transcript = cleanup_asr_transcript(transcript)
-            transcript = " | ".join(tokenize_items(transcript))
-            append_message("asr", transcript)
-            st.rerun()
-        except Exception as e:
-            st.error(f"Error transcribiendo: {e}")
-
-    with type_col:
-        typed = st.chat_input("Escribe un ítem… (ej: 3 cajas cerveza)", key=K("chat_input"))
-        if typed:
-            append_message("user", typed)
-            st.rerun()
-
-    # =========================================================
+    # ---------------------------
     # Convert df -> order lines
-    # =========================================================
+    # ---------------------------
     def _df_to_orderline_rows(df: pd.DataFrame) -> list[dict[str, Any]]:
         rows: list[dict[str, Any]] = []
         if df is None or df.empty:
@@ -818,7 +463,9 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 qty = float(it["quantity"])
                 unit = str(it["unit"])
 
-                prod = s.exec(select(Product).where(Product.venue_id == int(venue_id), Product.id == pid)).first()
+                prod = s.exec(
+                    select(Product).where(Product.venue_id == int(venue_id), Product.id == pid)
+                ).first()
                 provider_name = (getattr(prod, "provider_name", "") or "") if prod else ""
 
                 s.add(
@@ -860,7 +507,9 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 qty = float(it["quantity"])
                 unit = str(it["unit"])
 
-                prod = s.exec(select(Product).where(Product.venue_id == int(venue_id), Product.id == pid)).first()
+                prod = s.exec(
+                    select(Product).where(Product.venue_id == int(venue_id), Product.id == pid)
+                ).first()
                 provider_name = (getattr(prod, "provider_name", "") or "") if prod else ""
 
                 if pid in by_pid and by_pid[pid] is not None:
@@ -961,10 +610,391 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         if "matched_product_id" not in df.columns:
             df["matched_product_id"] = pd.NA
 
-        # ✅ Fast provider enrichment without DB calls
-        df = add_provider_column_fast(df, pid_to_provider=pid_to_provider, norm_name_to_provider=norm_name_to_provider)
+        with get_session() as s:
+            df = add_provider_column(s, df, venue_id=venue_id)
+
         return df
 
+    # =========================================================
+    # 1) ASR CONFIG (READ-ONLY, per venue)
+    # =========================================================
+    ASR_CFG_TTL_SECONDS = 90
+    defaults = {
+        "asr_backend": "Google Speech-to-Text",
+        "lang_code": "auto",
+        "samplerate": 22050,
+        "hide_user_controls": True,
+    }
+
+    cfg_key = S("asr_cfg")
+    cfg_ts_key = S("asr_cfg_ts")
+    now = time.time()
+
+    cfg_cached = st.session_state.get(cfg_key)
+    ts = float(st.session_state.get(cfg_ts_key) or 0.0)
+    needs_refresh = (not isinstance(cfg_cached, dict)) or (now - ts > ASR_CFG_TTL_SECONDS)
+
+    if needs_refresh:
+        cfg_data = defaults.copy()
+        with get_session() as s:
+            cfg = s.exec(
+                select(VenueTranscriptionSettings).where(VenueTranscriptionSettings.venue_id == int(venue_id))
+            ).first()
+            if cfg:
+                cfg_data["asr_backend"] = getattr(cfg, "asr_backend", None) or cfg_data["asr_backend"]
+                cfg_data["lang_code"] = getattr(cfg, "lang_code", None) or cfg_data["lang_code"]
+                try:
+                    cfg_data["samplerate"] = int(getattr(cfg, "samplerate", cfg_data["samplerate"]))
+                except Exception:
+                    cfg_data["samplerate"] = defaults["samplerate"]
+                cfg_data["hide_user_controls"] = bool(getattr(cfg, "hide_user_controls", True))
+
+        st.session_state[cfg_key] = cfg_data
+        st.session_state[cfg_ts_key] = now
+        cfg_cached = cfg_data
+
+    asr_backend = cfg_cached.get("asr_backend", defaults["asr_backend"])
+    lang_code = cfg_cached.get("lang_code", defaults["lang_code"])
+    try:
+        samplerate = int(cfg_cached.get("samplerate", defaults["samplerate"]))
+    except Exception:
+        samplerate = defaults["samplerate"]
+
+    # If venue hides controls, ensure UI override can't accidentally apply
+    if bool(cfg_cached.get("hide_user_controls", True)):
+        st.session_state.pop(S("lang_code_ui"), None)
+
+    # =========================================================
+    # 2) LOAD CATALOG + indexes
+    # =========================================================
+    with get_session() as s:
+        products = s.exec(
+            select(Product)
+            .where(Product.venue_id == venue_id)
+            .order_by(Product.name.asc(), Product.provider_name.asc())
+        ).all()
+
+    if not products:
+        st.warning("Primero crea tu catálogo en la pestaña 'Catálogo'.")
+        return
+
+    products_by_id: dict[int, Product] = {int(p.id): p for p in products if getattr(p, "id", None) is not None}
+
+    def build_google_phrases(products_: list[Product]) -> list[str]:
+        phrases: list[str] = []
+        for p in products_:
+            if getattr(p, "name", None):
+                phrases.append(str(p.name).strip())
+            raw_aliases = (getattr(p, "aliases", "") or "")
+            for a in raw_aliases.split("|"):
+                a = a.strip()
+                if a:
+                    phrases.append(a)
+
+        seen = set()
+        out: list[str] = []
+        for x in phrases:
+            k = x.strip().lower()
+            if k and k not in seen:
+                seen.add(k)
+                out.append(x.strip())
+        return out
+
+    catalog_prompt_names = build_google_phrases(products)
+
+    alias_indexes = build_alias_indexes(products)
+    alias_to_pids = alias_indexes["alias_to_pids"]
+    token_to_pids = alias_indexes["token_to_pids"]
+    alias_to_products = alias_indexes["alias_to_products"]
+
+    catalog_norm_to_pids: dict[str, list[int]] = {}
+    for pid, p in products_by_id.items():
+        kn = normalize_text(getattr(p, "name", "") or "")
+        if kn:
+            catalog_norm_to_pids.setdefault(kn, []).append(int(pid))
+    catalog_names = list(catalog_norm_to_pids.keys())
+
+    # =========================================================
+    # 3) MOBILE-FIRST STYLES
+    # =========================================================
+    st.markdown(
+        """
+        <style>
+        /* ===============================
+        Chat bubbles (existing)
+        =============================== */
+        .chat-bubble {
+        display: inline-block;
+        padding: 10px 12px;
+        border-radius: 14px;
+        margin: 4px 0;
+        max-width: 92%;
+        line-height: 1.35;
+        font-size: 0.98rem;
+        word-wrap: break-word;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.06);
+        }
+        .bubble-user { background: #DCF8C6; border-top-right-radius: 7px; }
+        .bubble-asr { background: #FFFFFF; border-top-left-radius: 7px; }
+
+        /* ===============================
+        Parsed pills (existing)
+        =============================== */
+        .row-pill {
+        display: inline-block;
+        padding: 8px 10px;
+        border-radius: 14px;
+        margin: 6px 0;
+        width: 100%;
+        box-shadow: 0 1px 2px rgba(0,0,0,0.05);
+        font-size: 0.98rem;
+        }
+
+        /* ===============================
+        Notes timeline (mobile-first)
+        =============================== */
+        .notes-wrap {
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        }
+
+        .note-row {
+        display: flex;
+        align-items: flex-start;
+        gap: 10px;
+        }
+
+        .note-bubble {
+        flex: 1;
+        border-radius: 16px;
+        padding: 10px 12px;
+        line-height: 1.35;
+        word-break: break-word;
+        border: 1px solid rgba(49, 51, 63, 0.18);
+        box-shadow: 0 1px 2px rgba(0,0,0,0.04);
+        background: #fff;
+        }
+
+        .note-user {
+        background: #DCF8C6;
+        border-top-right-radius: 7px;
+        }
+
+        .note-asr {
+        background: #FFFFFF;
+        border-top-left-radius: 7px;
+        }
+
+        /* Who + text + time in ONE line */
+        .note-meta {
+            display: flex;
+            align-items: flex-start;
+            justify-content: space-between; /* pushes time right */
+            gap: 10px;
+            font-size: 0.80rem;
+        }
+
+        .note-text {
+            flex: 1;
+            word-break: break-word;
+        }
+
+        .note-time {
+            white-space: nowrap;
+            font-size: 0.72rem;
+            opacity: 0.45;   /* subtle */
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+    # =========================================================
+    # HEADER (notes mindset) + Active draft display
+    # =========================================================
+    hL, hR = st.columns([3, 1])
+    with hL:
+        st.subheader("📝 Notas de faltantes")
+        st.caption("Modo notas · nada se envía · puedes corregir luego")
+        if active_draft_id:
+            st.caption(f"📦 Pedido en preparación: #{int(active_draft_id)} (borrador)")
+        else:
+            st.caption("📦 Pedido en preparación: (ninguno aún) — se creará al guardar")
+
+    # =========================================================
+    # Timeline (living notes) — mobile friendly + aligned
+    # =========================================================
+    with st.container(border=True):
+        chat = st.session_state.get(S("order_chat"), [])
+
+        if not chat:
+            st.info("Empieza escribiendo abajo o graba un audio 👇")
+        else:
+            st.markdown('<div class="notes-wrap">', unsafe_allow_html=True)
+
+            # Iterate over a copy so deletion is safe
+            for i, msg in enumerate(list(chat)):
+                role_msg = safe_str(msg.get("role"))
+                txt = safe_str(msg.get("text", ""))
+                tsf = float(msg.get("ts") or 0.0)
+
+                who = "Tú" if role_msg == "user" else "Audio"
+                cls = "note-user" if role_msg == "user" else "note-asr"
+                tlabel = time.strftime("%H:%M", time.localtime(tsf)) if tsf else ""
+
+                bubble_col, del_col = st.columns([20, 2], vertical_alignment="top")
+
+                import html  # ideally move to top of file
+
+                with bubble_col:
+                    st.markdown(
+                        f"""
+                        <div class="note-row">
+                          <div class="note-bubble {cls}">
+                            <div class="note-meta">
+                              <div class="note-text"><strong>{who}:</strong> {txt}</div>
+                              <div class="note-time">{tlabel}</div>
+                            </div>
+                          </div>
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
+                    )
+
+                with del_col:
+                    msg_key = f"{int(tsf * 1000)}" if tsf else f"idx_{i}"
+
+                    if st.button(
+                        "🗑️",
+                        key=K(f"del_msg_{msg_key}"),
+                        help="Eliminar esta nota",
+                        type="secondary",
+                    ):
+                        st.session_state[S("order_chat")].pop(i)
+                        _rebuild_transcript_from_chat()
+
+                        st.session_state[S("auto_parse_pending")] = True
+                        st.session_state.pop(S("parsed_df"), None)
+                        st.session_state.pop(S("parse_candidates_df"), None)
+                        st.session_state.pop(S("finalize_parse_pending"), None)
+                        st.rerun()
+
+            st.markdown("</div>", unsafe_allow_html=True)
+
+    # =========================================================
+    # Input bar (voice + typed) + language selector next to mic
+    # =========================================================
+    # =========================================================
+    # Input bar (voice + typed) — mobile friendly
+    # =========================================================
+    # --- Mic recorder (mobile-friendly) ---
+    st.session_state.setdefault(S("audio_input_key"), "audio_input_main")
+    st.session_state.setdefault(S("audio_bytes"), b"")
+
+    # with mic_col:
+    audio_file = st.audio_input("", key=K("audio_msg"))
+    if audio_file is not None:
+        st.session_state[S("audio_bytes")] = audio_file.read()
+    # if st.session_state[S("audio_bytes")]:
+    #     st.caption("✅")
+
+    bar = st.columns([1.2, 7.6], vertical_alignment="center")
+    
+
+    lang_col, type_col = bar
+
+    audio_bytes = b""
+
+    # --- Language picker: icon + popover (best) / expander (fallback) ---
+    effective_lang_code = lang_code or "auto"
+
+    if not bool(cfg_cached.get("hide_user_controls", True)):
+        st.session_state.setdefault(S("lang_code_ui"), None)
+        if st.session_state.get(S("lang_code_ui")) is None:
+            st.session_state[S("lang_code_ui")] = lang_code or "auto"
+
+        # Use current override as effective
+        effective_lang_code = st.session_state.get(S("lang_code_ui")) or lang_code or "auto"
+
+        with lang_col:
+            # Streamlit popover is great on mobile (opens a panel)
+            try:
+                with st.popover("🌐", use_container_width=True):
+                    picked = st.radio(
+                        "Idioma",
+                        options=["auto", "es", "en", "el"],
+                        index=["auto", "es", "en", "el"].index(effective_lang_code if effective_lang_code in ["auto","es","en","el"] else "auto"),
+                        format_func=lambda v: {
+                            "auto": "🌐 Auto",
+                            "es": "🇪🇸 Español",
+                            "en": "🇬🇧 English",
+                            "el": "🇬🇷 Ελληνικά",
+                        }.get(v, v),
+                        key=K("lang_picker_radio"),
+                    )
+                    st.session_state[S("lang_code_ui")] = picked
+                    effective_lang_code = picked
+            except Exception:
+                # Fallback if popover not available in your Streamlit version
+                with st.expander("🌐", expanded=False):
+                    picked = st.radio(
+                        "Idioma",
+                        options=["auto", "es", "en", "el"],
+                        index=["auto", "es", "en", "el"].index(effective_lang_code if effective_lang_code in ["auto","es","en","el"] else "auto"),
+                        format_func=lambda v: {
+                            "auto": "🌐 Auto",
+                            "es": "🇪🇸 Español",
+                            "en": "🇬🇧 English",
+                            "el": "🇬🇷 Ελληνικά",
+                        }.get(v, v),
+                        key=K("lang_picker_radio_fallback"),
+                    )
+                    st.session_state[S("lang_code_ui")] = picked
+                    effective_lang_code = picked
+    else:
+        # Venue hides controls → no override
+        st.session_state.pop(S("lang_code_ui"), None)
+        effective_lang_code = lang_code or "auto"
+
+
+
+
+    # Use this everywhere downstream
+    audio_bytes = st.session_state[S("audio_bytes")] or b""
+
+    # --- Transcribe ---
+    audio_hash = hashlib.sha1(audio_bytes).hexdigest() if audio_bytes else None
+    if audio_bytes and audio_hash and audio_hash != st.session_state.get(S("last_audio_hash")):
+        try:
+            with st.spinner("Transcribiendo…"):
+                if asr_backend == "OpenAI Whisper API":
+                    transcript = asr_openai_whisper(audio_bytes, catalog_prompt_names, language=effective_lang_code)
+                elif asr_backend == "Faster-Whisper (local)":
+                    transcript = asr_faster_whisper(audio_bytes, catalog_prompt_names, language=effective_lang_code)
+                elif asr_backend == "Google Speech-to-Text":
+                    transcript = asr_google(audio_bytes, catalog_prompt_names, language=effective_lang_code)
+                else:
+                    transcript = ""
+
+            st.session_state[S("last_audio_hash")] = audio_hash
+            transcript = cleanup_asr_transcript(transcript)
+            transcript = " | ".join(tokenize_items(transcript))
+            append_message("asr", transcript)
+            st.rerun()
+        except Exception as e:
+            st.error(f"Error transcribiendo: {e}")
+
+    # --- Typed input (full width) ---
+    with type_col:
+        typed = st.chat_input("Escribe un ítem… (ej: 3 cajas cerveza)", key=K("chat_input"))
+        if typed:
+            append_message("user", typed)
+            st.rerun()
+
+    # =========================================================
+    # Auto-parse engine (runs in same screen)
+    # =========================================================
     # =========================================================
     # Auto-parse engine (runs in same screen)
     # =========================================================
@@ -973,14 +1003,20 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         if not chat:
             return pd.DataFrame([])
 
+        # Persist ambiguity resolutions: item_key -> product_id
         resolved_picks: Dict[str, int] = st.session_state.setdefault(S("resolved_picks"), {})
 
+        # Build items with stable keys per *chat line* (ts) + per-item index.
+        # This guarantees:
+        # - old ambiguous items won't ask again (we reuse resolved_picks[item_key])
+        # - new lines are new items (even if same name)
         items: List[Dict[str, Any]] = []
         for m in chat:
             msg_text = (m.get("text") or "").strip()
             if not msg_text:
                 continue
 
+            # IMPORTANT: each message is considered a "line" for your rule
             msg_ts = float(m.get("ts") or 0.0)
 
             msg_items: List[str] = []
@@ -1003,6 +1039,9 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
         for it in items:
             frag = it["frag"]
+
+            # Stable per-line key: if it's on a new line (new ts), it's a new item_key
+            # Even if the product name is the same, a new line triggers a new key.
             item_key = f'{it["chat_ts"]}:{it["item_idx"]}:{normalize_text(frag)}'
 
             parsed = parse_item(frag)
@@ -1032,6 +1071,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             score: float = 0.0
             matched_pid: Optional[int] = None
 
+            # ---- NEW: If this exact line-item was resolved earlier, auto-apply it ----
             picked_pid = resolved_picks.get(item_key)
             if picked_pid is not None:
                 try:
@@ -1043,12 +1083,15 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                     prod = products_by_id.get(picked_pid_i)
                     matched_pid = picked_pid_i
                     score = 99.0
-                    suggestions_pids = []
+                    suggestions_pids = []  # don’t ask again for old line
+            # ------------------------------------------------------------------------
 
+            # If not already resolved, proceed with your existing matching logic
             if prod is None:
                 name_sing_es = singularize_es(name_norm)
                 name_sing_el = singularize_el(name_norm)
 
+                # 1) exact alias hits
                 alias_keys = [name_norm]
                 if name_sing_es and name_sing_es != name_norm:
                     alias_keys.append(name_sing_es)
@@ -1070,6 +1113,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                     else:
                         suggestions_pids = exact_hits_pids[:TOP_CHOICES]
 
+                # 2) fuzzy match
                 if prod is None and not suggestions_pids:
                     match_norm, score2 = fuzzy_match(name_norm, catalog_names)
                     if match_norm:
@@ -1121,10 +1165,12 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                                     seen.add(pid_i)
                             suggestions_pids = suggestions_pids[:TOP_CHOICES]
 
+                # unit normalization
                 unit_val = normalize_unit(unit_raw) if unit_raw else ""
                 if prod and getattr(prod, "unit", None):
                     unit_val = normalize_unit(prod.unit)
 
+                # still no product -> alias suggestions
                 if prod is None and not suggestions_pids:
                     alias_hits = alias_suggestions(
                         name_norm,
@@ -1145,6 +1191,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                                     seen.add(pid_i)
                         suggestions_pids = suggestions_pids[:TOP_CHOICES]
 
+            # Final unit normalization (must be defined even if resolved)
             unit_val = normalize_unit(unit_raw) if unit_raw else ""
             if prod and getattr(prod, "unit", None):
                 unit_val = normalize_unit(prod.unit)
@@ -1152,7 +1199,12 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             if prod and getattr(prod, "id", None) is not None:
                 matched_pid = int(prod.id)
 
-            recommended_pid = suggestions_pids[0] if suggestions_pids else (matched_pid if matched_pid is not None else None)
+            recommended_pid = (
+                suggestions_pids[0]
+                if suggestions_pids
+                else (matched_pid if matched_pid is not None else None)
+            )
+
             status = "OK" if prod else ("Elegir" if suggestions_pids else "Revisar")
 
             parsed_rows.append({
@@ -1181,6 +1233,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         st.session_state[S("finalize_parse_pending")] = True
         st.session_state[S("auto_parse_pending")] = False
 
+        # If no ambiguity -> finalize immediately
         if isinstance(candidates_df, pd.DataFrame) and not candidates_df.empty:
             needs_choice = candidates_df[
                 (candidates_df["status"] == "Elegir")
@@ -1198,12 +1251,19 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     # =========================================================
     # Inline ambiguity resolver (still 1-screen)
     # =========================================================
+    # =========================================================
+    # Inline ambiguity resolver (still 1-screen)
+    # =========================================================
     candidates_df = st.session_state.get(S("parse_candidates_df"))
     finalize_pending = st.session_state.get(S("finalize_parse_pending"), False)
 
+    # Persist ambiguity resolutions: item_key -> picked pid
     resolved_picks: dict[str, int] = st.session_state.setdefault(S("resolved_picks"), {})
 
     if finalize_pending and isinstance(candidates_df, pd.DataFrame) and not candidates_df.empty:
+        # IMPORTANT:
+        # - only unresolved ambiguous lines should show here
+        # - a line is "resolved" if resolved_picks has its item_key
         def _is_unresolved_ambiguous(row) -> bool:
             if safe_str(row.get("status")) != "Elegir":
                 return False
@@ -1234,17 +1294,21 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                     opts: list[int] = [int(x) for x in (row.get("suggestions") or []) if x is not None]
                     if not opts:
                         continue
-
+                    # --- helpers ---
                     def _price(pid: int) -> float:
                         p = products_by_id.get(int(pid))
                         price = getattr(p, "price", None)
                         return float(price) if price is not None else float("inf")
 
+                    # 💶 Cheapest among opts
                     cheapest_pid = min(opts, key=_price) if opts else None
                     if cheapest_pid is not None and _price(cheapest_pid) == float("inf"):
-                        cheapest_pid = None
+                        cheapest_pid = None  # no prices available
 
+                    # 🕒 Last sent (to provider) among opts for this venue
                     last_sent_pid = get_last_sent_pid_for_venue_among_opts(venue_id=venue_id, opts=opts)
+
+                    # 🔁 Most frequently sent (to provider) among opts for this venue
                     most_freq_pid = get_most_frequent_sent_pid_for_venue_among_opts(venue_id=venue_id, opts=opts)
 
                     def _opt_label(pid: int) -> str:
@@ -1273,6 +1337,10 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                         badge_txt = ("".join(badges) + " ") if badges else ""
                         return badge_txt + label2
 
+                    # Preselect a sensible default (not a “recommendation”):
+                    # - last sent to provider (if available)
+                    # - else cheapest (if priced)
+                    # - else first option
                     default_pid = (
                         int(last_sent_pid)
                         if (last_sent_pid is not None and int(last_sent_pid) in opts)
@@ -1289,6 +1357,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                         options=opts,
                         index=int(default_index),
                         format_func=_opt_label,
+                        # key MUST be stable per item, not per dataframe idx (idx can change)
                         key=K(f"resolve_pick_{item_key or idx}"),
                     )
 
@@ -1299,6 +1368,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 if st.button("✅ OK", type="primary", key=K("btn_finalize_parse")):
                     df2 = candidates_df.copy()
 
+                    # 1) Apply picks to the df
                     for idx, pick_pid in picks.items():
                         df2.at[idx, "matched_product_id"] = int(pick_pid)
                         p = products_by_id.get(int(pick_pid))
@@ -1306,6 +1376,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                         df2.at[idx, "status"] = "OK"
                         df2.at[idx, "confidence"] = max(float(df2.at[idx, "confidence"] or 0.0), 99.0)
 
+                    # 2) Persist resolution by item_key so old lines won't ask again
                     for idx, pick_pid in picks.items():
                         key = pick_keys.get(int(idx))
                         if key:
@@ -1315,6 +1386,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                     st.session_state[S("parse_candidates_df")] = df2
                     st.session_state[S("finalize_parse_pending")] = False
 
+                    # 3) Build parsed_df
                     st.session_state[S("parsed_df")] = finalize_candidates_to_df(
                         df2,
                         products_by_id=products_by_id,
@@ -1330,6 +1402,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     if isinstance(parsed_df, pd.DataFrame) and not parsed_df.empty:
         st.markdown("### ✅ Interpretado (rápido)")
 
+        # build quick pills
         for _, r in parsed_df.iterrows():
             pid = r.get("matched_product_id", None)
             qty = r.get("quantity", None)
@@ -1401,6 +1474,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     if reset_all_clicked:
         reset_notes_only(clear_resolved_picks=True)
 
+    # Optional: choose target draft (fallback / power user)
     with st.expander("⚙️ Cambiar borrador destino (opcional)", expanded=False):
         with get_session() as s:
             drafts = s.exec(
@@ -1416,6 +1490,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             labels = [lbl for _, lbl in draft_options]
             ids = [oid for oid, _ in draft_options]
 
+            # default: active draft if exists
             default_idx = 0
             if active_draft_id in ids:
                 default_idx = ids.index(active_draft_id)
@@ -1431,6 +1506,9 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     if save_clicked:
         actor = current_actor()
 
+        # Determine save target:
+        # - if there is an active draft -> add lines
+        # - else -> create a new draft
         target_id: int = 0
         if active_draft_id:
             _add_lines_to_existing_draft(
@@ -1453,6 +1531,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             st.warning("No hay líneas válidas para guardar.")
             return
 
+        # Sync active draft + refresh Orders + navigate
         _set_active_draft(target_id)
         bump_orders_refresh_token()
 
