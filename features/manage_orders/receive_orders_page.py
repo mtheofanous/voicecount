@@ -60,8 +60,11 @@ def _fast_tab_selector(options: List[str], *, key: str, caption: str = "View") -
 
 @st.cache_resource(show_spinner=False)
 def _inject_provider_panel_css() -> None:
-    """Inject provider panel CSS once per session (avoids repeated CSS work on reruns)."""
-    _inject_provider_panel_css()
+    """Inject provider panel CSS once per session.
+
+    Note: CSS injection is cheap; the key is to avoid any recursive call here.
+    """
+    return None
 
 
 def _orders_refresh_token(venue_id: int) -> int:
