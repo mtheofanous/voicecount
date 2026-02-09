@@ -56,17 +56,6 @@ def _fast_tab_selector(options: List[str], *, key: str, caption: str = "View") -
 
 
 
-
-
-@st.cache_resource(show_spinner=False)
-def _inject_provider_panel_css() -> None:
-    """Inject provider panel CSS once per session.
-
-    Note: CSS injection is cheap; the key is to avoid any recursive call here.
-    """
-    return None
-
-
 def _orders_refresh_token(venue_id: int) -> int:
     """Session-state based cache buster for order-related caches."""
     return int(st.session_state.get(f"orders_refresh_token_{int(venue_id)}", 0) or 0)
@@ -286,6 +275,15 @@ def _inject_css() -> None:
 """,
         unsafe_allow_html=True,
     )
+
+
+def _inject_css_once() -> None:
+    """Inject global CSS once per session to reduce rerun work."""
+    if st.session_state.get("_voi_css_injected"):
+        return
+    _inject_css_once()
+    st.session_state["_voi_css_injected"] = True
+
 
 # =============================
 # Helpers
@@ -1368,7 +1366,6 @@ def _upsert_provider_send_status(
 #             s.add(o)
 #             s.commit()
 
-@st.fragment
 def _render_urgent_tab(ctx: 'OrderContext') -> None:
     st.markdown("### ⚡ Urgent reorders")
     reqs = _list_open_urgent_requests()
@@ -5478,7 +5475,36 @@ def _list_pending_receive_items(venue_id: int) -> List[Dict[str, Any]]:
 
 def _render_receive_provider_panel(ctx: OrderContext, provider: str) -> None:
     
-    _inject_provider_panel_css()
+    st.markdown(
+        """
+        <style>
+        /* Fuse header card + expander */
+        .voi-card.voi-card--header{
+            margin-bottom: 0.35rem;
+            border-bottom-left-radius: 0 !important;
+            border-bottom-right-radius: 0 !important;
+        }
+
+        /* Style the expander container to look like the same card */
+        div[data-testid="stExpander"]{
+            border: 1px solid rgba(49, 51, 63, 0.12);
+            border-top: none;
+            border-bottom-left-radius: 12px;
+            border-bottom-right-radius: 12px;
+            padding: 0.25rem 0.25rem 0.5rem 0.25rem;
+            margin-top: -10px; /* pulls it up under the card */
+            background: #fff;
+        }
+
+        /* Make expander header more compact */
+        div[data-testid="stExpander"] summary{
+            padding: 0.25rem 0.5rem;
+            font-weight: 600;
+        }
+        </style>
+        """,
+        unsafe_allow_html=True,
+    )
     
     
     current_provider = provider
