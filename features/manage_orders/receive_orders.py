@@ -22,10 +22,10 @@ def _mod():
     # Works both when running as a package (features.manage_orders.*)
     # and when running as flat files (Streamlit Cloud quick tests).
     try:
-        from . import receive_orders_page as m  # type: ignore
+        from . import receive_orders_page_mobile_fast as m  # type: ignore
         return m
     except Exception:
-        import receive_orders_page as m  # type: ignore
+        import receive_orders_page_mobile_fast as m  # type: ignore
         return m
 
 
