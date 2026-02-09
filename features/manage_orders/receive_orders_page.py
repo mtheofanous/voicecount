@@ -3124,7 +3124,6 @@ def save_all_received_for_provider(*, ctx: OrderContext, provider: str) -> Tuple
                 t.qty_invoiced = float(issue_qty)
                 t.invoice_number = invoice_number_ui
                 t.updated_at = now
-                t.updated_by = "venue"
                 s.add(t)
 
         # ------------------------------------------------------------
@@ -5975,4 +5974,3 @@ def tracking_dashboard(
     # -----------------------------
     if selected_tab == "⚡ Urgent":
         _render_urgent_tab(ctx)
-
