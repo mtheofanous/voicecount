@@ -5554,39 +5554,36 @@ def _render_receive_provider_panel(ctx: OrderContext, provider: str) -> None:
         # ---------- Action row (invoice + expected popover + save) ----------
         c1, c2 = st.columns(2, vertical_alignment="center")
 
-        with c1:
-            inv_val = st.text_input(
-                "Invoice #",
-                key=inv_key,
-                placeholder="Invoice # (required)",
-                disabled=invoice_locked,
-                label_visibility="collapsed",
-            )
+        # Use a form so typing in inputs does not rerun the whole script on every keystroke.
+        # This makes saving feel dramatically faster on Streamlit Cloud.
+        with st.form(key=f"form_receive_{int(ctx.order.id)}_{prov_key}", clear_on_submit=False):
+            with c1:
+                inv_val = st.text_input(
+                    "Invoice #",
+                    key=inv_key,
+                    placeholder="Invoice # (required)",
+                    disabled=invoice_locked,
+                    label_visibility="collapsed",
+                )
 
-            inv_required_missing = (not invoice_locked) and (not (inv_val or "").strip())
+                inv_required_missing = (not invoice_locked) and (not (inv_val or "").strip())
 
+            with c2:
+                save_all = st.form_submit_button(
+                    "💾 Save",
+                    type="primary",
+                    use_container_width=True,
+                    disabled=invoice_locked or inv_required_missing,
+                )
 
-
-        with c2:
-            save_all = st.button(
-                "💾 Save",
-                type="primary",
-                use_container_width=True,
-                disabled=invoice_locked or inv_required_missing,
-                key=f"btn_save_all_{int(ctx.order.id)}_{prov_key}",
-            )
-
-            # if inv_required_missing:
-            #     st.caption("⚠️ Invoice number is required to save.")
-
-
-        if save_all:
-            ok, msg = save_all_received_for_provider(ctx=ctx, provider=current_provider)
-            if ok:
-                st.success("Saved ✓")
-                st.rerun()
-            else:
-                st.error(msg)
+            if save_all:
+                ok, msg = save_all_received_for_provider(ctx=ctx, provider=current_provider)
+                if ok:
+                    # Bump refresh token so cached reads update without forcing an expensive full page rerun.
+                    _bump_orders_refresh_token(int(ctx.order.venue_id))
+                    st.success("Saved ✓")
+                else:
+                    st.error(msg)
 
         st.markdown("<div class='voi-hr'></div>", unsafe_allow_html=True)
 
@@ -5918,7 +5915,15 @@ def tracking_dashboard(
                 set_query_params(page="tracking", order_id=str(oid), provider=norm_provider(prov))
 
             ctx = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
-            _render_receive_provider_panel(ctx, prov)
+            # Render each provider panel as a fragment when available.
+            # This keeps saves fast by rerunning only the provider section instead of the whole dashboard.
+            if hasattr(st, 'fragment'):
+                @st.fragment
+                def _provider_panel(_ctx=ctx, _prov=prov):
+                    _render_receive_provider_panel(_ctx, _prov)
+                _provider_panel()
+            else:
+                _render_receive_provider_panel(ctx, prov)
             
             st.empty()
 
