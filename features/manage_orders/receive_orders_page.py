@@ -56,6 +56,14 @@ def _fast_tab_selector(options: List[str], *, key: str, caption: str = "View") -
 
 
 
+
+
+@st.cache_resource(show_spinner=False)
+def _inject_provider_panel_css() -> None:
+    """Inject provider panel CSS once per session (avoids repeated CSS work on reruns)."""
+    _inject_provider_panel_css()
+
+
 def _orders_refresh_token(venue_id: int) -> int:
     """Session-state based cache buster for order-related caches."""
     return int(st.session_state.get(f"orders_refresh_token_{int(venue_id)}", 0) or 0)
@@ -1357,6 +1365,7 @@ def _upsert_provider_send_status(
 #             s.add(o)
 #             s.commit()
 
+@st.fragment
 def _render_urgent_tab(ctx: 'OrderContext') -> None:
     st.markdown("### ⚡ Urgent reorders")
     reqs = _list_open_urgent_requests()
@@ -5466,36 +5475,7 @@ def _list_pending_receive_items(venue_id: int) -> List[Dict[str, Any]]:
 
 def _render_receive_provider_panel(ctx: OrderContext, provider: str) -> None:
     
-    st.markdown(
-        """
-        <style>
-        /* Fuse header card + expander */
-        .voi-card.voi-card--header{
-            margin-bottom: 0.35rem;
-            border-bottom-left-radius: 0 !important;
-            border-bottom-right-radius: 0 !important;
-        }
-
-        /* Style the expander container to look like the same card */
-        div[data-testid="stExpander"]{
-            border: 1px solid rgba(49, 51, 63, 0.12);
-            border-top: none;
-            border-bottom-left-radius: 12px;
-            border-bottom-right-radius: 12px;
-            padding: 0.25rem 0.25rem 0.5rem 0.25rem;
-            margin-top: -10px; /* pulls it up under the card */
-            background: #fff;
-        }
-
-        /* Make expander header more compact */
-        div[data-testid="stExpander"] summary{
-            padding: 0.25rem 0.5rem;
-            font-weight: 600;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
+    _inject_provider_panel_css()
     
     
     current_provider = provider
