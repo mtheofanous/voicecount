@@ -28,48 +28,9 @@ import pandas as pd
 import streamlit as st
 
 
-def _fast_tab_selector(options: List[str], *, key: str, caption: str = "View") -> str:
-    """Faster alternative to st.tabs for heavy pages.
-
-    Streamlit tabs render *all* tab bodies on every rerun, even when only one is visible.
-    This selector renders only the active view, drastically speeding up tab switches.
-    """
-    # Ensure stable default across reruns
-    if key not in st.session_state:
-        st.session_state[key] = options[0] if options else ""
-
-    if hasattr(st, "segmented_control"):
-        # Newer Streamlit: nicer UX + compact
-        return st.segmented_control(
-            caption,
-            options=options,
-            key=key,
-            label_visibility="collapsed",
-        )
-    return st.radio(
-        caption,
-        options=options,
-        key=key,
-        horizontal=True,
-        label_visibility="collapsed",
-    )
-
-
-
 def _orders_refresh_token(venue_id: int) -> int:
     """Session-state based cache buster for order-related caches."""
     return int(st.session_state.get(f"orders_refresh_token_{int(venue_id)}", 0) or 0)
-
-
-def _bump_orders_refresh_token(venue_id: int) -> None:
-    """Increment the venue refresh token to bust cached reads.
-
-    Any write that affects orders / tickets / workflows should call this to force
-    `_get_active_orders`, `_load_order_context`, `_load_dashboard_bundle`, etc.
-    to recompute on the next rerun.
-    """
-    k = f"orders_refresh_token_{int(venue_id)}"
-    st.session_state[k] = int(st.session_state.get(k, 0) or 0) + 1
 
 from sqlmodel import select
 import html
@@ -275,15 +236,6 @@ def _inject_css() -> None:
 """,
         unsafe_allow_html=True,
     )
-
-
-def _inject_css_once() -> None:
-    """Inject global CSS once per session to reduce rerun work."""
-    if st.session_state.get("_voi_css_injected"):
-        return
-    _inject_css_once()
-    st.session_state["_voi_css_injected"] = True
-
 
 # =============================
 # Helpers
@@ -3161,6 +3113,7 @@ def save_all_received_for_provider(*, ctx: OrderContext, provider: str) -> Tuple
                 t.qty_invoiced = float(issue_qty)
                 t.invoice_number = invoice_number_ui
                 t.updated_at = now
+                t.updated_by = "venue"
                 s.add(t)
 
         # ------------------------------------------------------------
@@ -3782,41 +3735,6 @@ def _close_ticket(*, ticket_id: int, new_state: str, note: str, actor: str = "ve
 # =============================
 # Incidences: open filters
 # =============================
-
-
-@st.cache_data(ttl=20, show_spinner=False)
-def _count_open_tickets_db(
-    venue_id: int,
-    order_id: int,
-    provider: str,
-    *,
-    refresh_token: int = 0,
-) -> int:
-    """Fast path: count open tickets without loading full OrderContext.
-
-    Used after venue actions to decide whether a workflow can be auto-closed.
-    We keep a short TTL and also include refresh_token for deterministic busting.
-    """
-    _ = int(refresh_token or 0)
-    prov = norm_provider(provider)
-
-    with get_session() as s:
-        stmt = (
-            select(func.count(SeguimientoTicket.id))
-            .where(SeguimientoTicket.venue_id == int(venue_id))
-            .where(SeguimientoTicket.order_id == int(order_id))
-            .where(SeguimientoTicket.provider_name == prov)
-            .where(SeguimientoTicket.resolved_at.is_(None))
-            .where(~func.lower(SeguimientoTicket.state).like("resolved%"))
-        )
-        try:
-            return int(s.exec(stmt).one() or 0)
-        except Exception:
-            # Fallback for engines that return tuples
-            row = s.exec(stmt).first()
-            if isinstance(row, (tuple, list)) and row:
-                return int(row[0] or 0)
-            return int(row or 0)
 
 def _provider_open_tickets(ctx: OrderContext, provider: str) -> List[SeguimientoTicket]:
     prov = norm_provider(provider)
@@ -4824,12 +4742,11 @@ def _render_incidences_cards(
                     labels.append("🧾 Expected credit note")
                 if has_redel_pending:
                     labels.append("🚚 Expected re-delivery")
-                # NOTE: st.tabs renders *all* tab bodies on every rerun; use a selector for speed.
-                selected_view = _fast_tab_selector(labels, key=f"prov_view_{order.id}_{provn}")
 
+                tabs = st.tabs(labels)
 
                 # --- Tab 0: invoice / expected lines ---
-                if selected_view == labels[0]:
+                with tabs[0]:
                     _render_expected_lines(
                         ctx,
                         prov,
@@ -4838,10 +4755,11 @@ def _render_incidences_cards(
                         supplier_resolution_by_line_id=resolution_by_line_id,
                     )
 
+                tab_idx = 1
 
                 # --- Credit note tab (now shown also when workflow says CN/items exist) ---
                 if has_credit_pending:
-                    if selected_view == "🧾 Expected credit note":
+                    with tabs[tab_idx]:
                         cn_no = ""
 
                         # 1) Prefer ticket meta CN number (if present)
@@ -4901,10 +4819,11 @@ def _render_incidences_cards(
                                 else:
                                     st.error(res_close)
 
+                    tab_idx += 1
 
                 # --- Re-delivery tab (now shown also when workflow says RD/items exist) ---
                 if has_redel_pending:
-                    if selected_view == "🚚 Expected re-delivery":
+                    with tabs[tab_idx]:
                         sol_rd = dict(sol_wf)
                         sol_rd["resolution"] = "re_delivery"
 
@@ -4934,7 +4853,6 @@ def _render_incidences_cards(
 
             else:
                 # This should rarely happen now, but keep safe fallback
-                # This should rarely happen now, but keep safe fallback
                 _credit_note_preview(prov, provn, open_t, sol_wf)
                 _redelivery_preview(ctx, prov, provn, open_t, sol_wf)
 
@@ -4962,7 +4880,6 @@ def _render_incidences_cards(
             # Helper: apply inline reorder decisions for this provider
             # ---------------------------------------------------------
             def _apply_inline_reorders_for_provider(*, close_non_urgent_op_missing: bool = False) -> None:
-                changed = False
                 for tt in open_t:
                     kind = (_s(getattr(tt, "kind", ""))).lower()
                     if kind not in {"operational_missing", "invoice_discrepancy", "damaged", "wrong_item"}:
@@ -4986,7 +4903,6 @@ def _render_incidences_cards(
                             note="Operational missing: not reordered (urgent toggle OFF).",
                             actor=_s(st.session_state.get("user_email") or st.session_state.get("actor") or "venue"),
                         )
-                        changed = True
                         st.session_state[done_key] = True
                         continue
 
@@ -5031,7 +4947,6 @@ def _render_incidences_cards(
                             unit=_line_unit(ln, ctx.products_by_id) if ln else (_s(getattr(tt, "unit", "")) or "unit"),
                             actor=_s(st.session_state.get("user_email") or st.session_state.get("actor") or "venue"),
                         )
-                        changed = True
 
                         # ✅ NEW: if it’s operational_missing and we created the urgent request,
                         # close the incidence so it disappears from "Open incidences"
@@ -5042,15 +4957,11 @@ def _render_incidences_cards(
                                 note="Urgent request created; moved to Urgent tab.",
                                 actor=_s(st.session_state.get("user_email") or st.session_state.get("actor") or "venue"),
                             )
-                            changed = True
 
                     except Exception:
                         pass
 
                     st.session_state[done_key] = True
-
-                if changed:
-                    _bump_orders_refresh_token(int(order.venue_id))
 
             # ---------------------------------------------------------
             # action panel  ✅ (THIS is what you were missing)
@@ -5087,7 +4998,6 @@ def _render_incidences_cards(
                 if a1.button("✅ Accept reject & close", use_container_width=True, key=f"inc_rej_{order.id}_{provn}"):
                     res = venue_verify_and_close(ctx=ctx, provider=provn, mode="reject")
                     if res == "ok":
-                        _bump_orders_refresh_token(int(order.venue_id))
                         st.success("Closed")
                         st.rerun()
                     else:
@@ -5113,13 +5023,8 @@ def _render_incidences_cards(
 
                         # OP missing has the extra auto-close logic
                         if state_u == "OPERATIONAL_MISSING_PRODUCT":
-                            open_cnt = _count_open_tickets_db(
-                                int(order.venue_id),
-                                int(order.id),
-                                provn,
-                                refresh_token=_orders_refresh_token(int(order.venue_id)),
-                            )
-                            if int(open_cnt) == 0:
+                            ctx2 = _load_order_context(int(ctx.order.venue_id), int(ctx.order.id))
+                            if len(_provider_open_tickets(ctx2, provn)) == 0:
                                 _set_workflow_state(
                                     venue_id=int(order.venue_id),
                                     order_id=int(order.id),
@@ -5129,14 +5034,12 @@ def _render_incidences_cards(
                                     actor="venue",
                                     note="Operational missing: non-urgent items ignored (not reordered).",
                                 )
-                                _bump_orders_refresh_token(int(order.venue_id))
                                 st.success("Saved ✓")
                                 st.rerun()
 
                         # Default path: request supplier resolution link
                         ok, msg = request_supplier_resolution(int(order.venue_id), int(order.id), provn, venue_comment=venue_msg)
                         if ok:
-                            _bump_orders_refresh_token(int(order.venue_id))
                             st.success("Link sent")
                             st.link_button("Open supplier link", msg, use_container_width=True)
                             st.rerun()
@@ -5588,39 +5491,42 @@ def _render_receive_provider_panel(ctx: OrderContext, provider: str) -> None:
                     
 
 
-        # ---------- Action row (invoice + save) ----------
-        # Use a form so typing in inputs does not rerun the whole script on every keystroke.
-        # Important: columns must be created *inside* the form. Otherwise Streamlit will raise
-        # "form_submit_button must be inside a form" in some runtimes.
-        with st.form(key=f"form_receive_{int(ctx.order.id)}_{prov_key}", clear_on_submit=False):
-            c1, c2 = st.columns(2, vertical_alignment="center")
-            with c1:
-                inv_val = st.text_input(
-                    "Invoice #",
-                    key=inv_key,
-                    placeholder="Invoice # (required)",
-                    disabled=invoice_locked,
-                    label_visibility="collapsed",
-                )
+        # ---------- Action row (invoice + expected popover + save) ----------
+        c1, c2 = st.columns(2, vertical_alignment="center")
 
-                inv_required_missing = (not invoice_locked) and (not (inv_val or "").strip())
+        with c1:
+            inv_val = st.text_input(
+                "Invoice #",
+                key=inv_key,
+                placeholder="Invoice # (required)",
+                disabled=invoice_locked,
+                label_visibility="collapsed",
+            )
 
-            with c2:
-                save_all = st.form_submit_button(
-                    "💾 Save",
-                    type="primary",
-                    use_container_width=True,
-                    disabled=invoice_locked or inv_required_missing,
-                )
+            inv_required_missing = (not invoice_locked) and (not (inv_val or "").strip())
 
-            if save_all:
-                ok, msg = save_all_received_for_provider(ctx=ctx, provider=current_provider)
-                if ok:
-                    # Bump refresh token so cached reads update without forcing an expensive full page rerun.
-                    _bump_orders_refresh_token(int(ctx.order.venue_id))
-                    st.success("Saved ✓")
-                else:
-                    st.error(msg)
+
+
+        with c2:
+            save_all = st.button(
+                "💾 Save",
+                type="primary",
+                use_container_width=True,
+                disabled=invoice_locked or inv_required_missing,
+                key=f"btn_save_all_{int(ctx.order.id)}_{prov_key}",
+            )
+
+            # if inv_required_missing:
+            #     st.caption("⚠️ Invoice number is required to save.")
+
+
+        if save_all:
+            ok, msg = save_all_received_for_provider(ctx=ctx, provider=current_provider)
+            if ok:
+                st.success("Saved ✓")
+                st.rerun()
+            else:
+                st.error(msg)
 
         st.markdown("<div class='voi-hr'></div>", unsafe_allow_html=True)
 
@@ -5952,15 +5858,7 @@ def tracking_dashboard(
                 set_query_params(page="tracking", order_id=str(oid), provider=norm_provider(prov))
 
             ctx = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
-            # Render each provider panel as a fragment when available.
-            # This keeps saves fast by rerunning only the provider section instead of the whole dashboard.
-            if hasattr(st, 'fragment'):
-                @st.fragment
-                def _provider_panel(_ctx=ctx, _prov=prov):
-                    _render_receive_provider_panel(_ctx, _prov)
-                _provider_panel()
-            else:
-                _render_receive_provider_panel(ctx, prov)
+            _render_receive_provider_panel(ctx, prov)
             
             st.empty()
 
@@ -6016,3 +5914,4 @@ def tracking_dashboard(
     # -----------------------------
     if selected_tab == "⚡ Urgent":
         _render_urgent_tab(ctx)
+
