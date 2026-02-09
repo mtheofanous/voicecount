@@ -28,34 +28,6 @@ import pandas as pd
 import streamlit as st
 
 
-def _fast_tab_selector(options: List[str], *, key: str, caption: str = "View") -> str:
-    """Faster alternative to st.tabs for heavy pages.
-
-    Streamlit tabs render *all* tab bodies on every rerun, even when only one is visible.
-    This selector renders only the active view, drastically speeding up tab switches.
-    """
-    # Ensure stable default across reruns
-    if key not in st.session_state:
-        st.session_state[key] = options[0] if options else ""
-
-    if hasattr(st, "segmented_control"):
-        # Newer Streamlit: nicer UX + compact
-        return st.segmented_control(
-            caption,
-            options=options,
-            key=key,
-            label_visibility="collapsed",
-        )
-    return st.radio(
-        caption,
-        options=options,
-        key=key,
-        horizontal=True,
-        label_visibility="collapsed",
-    )
-
-
-
 def _orders_refresh_token(venue_id: int) -> int:
     """Session-state based cache buster for order-related caches."""
     return int(st.session_state.get(f"orders_refresh_token_{int(venue_id)}", 0) or 0)
@@ -4815,12 +4787,11 @@ def _render_incidences_cards(
                     labels.append("🧾 Expected credit note")
                 if has_redel_pending:
                     labels.append("🚚 Expected re-delivery")
-                # NOTE: st.tabs renders *all* tab bodies on every rerun; use a selector for speed.
-                selected_view = _fast_tab_selector(labels, key=f"prov_view_{order.id}_{provn}")
 
+                tabs = st.tabs(labels)
 
                 # --- Tab 0: invoice / expected lines ---
-                if selected_view == labels[0]:
+                with tabs[0]:
                     _render_expected_lines(
                         ctx,
                         prov,
@@ -4829,10 +4800,11 @@ def _render_incidences_cards(
                         supplier_resolution_by_line_id=resolution_by_line_id,
                     )
 
+                tab_idx = 1
 
                 # --- Credit note tab (now shown also when workflow says CN/items exist) ---
                 if has_credit_pending:
-                    if selected_view == "🧾 Expected credit note":
+                    with tabs[tab_idx]:
                         cn_no = ""
 
                         # 1) Prefer ticket meta CN number (if present)
@@ -4892,10 +4864,11 @@ def _render_incidences_cards(
                                 else:
                                     st.error(res_close)
 
+                    tab_idx += 1
 
                 # --- Re-delivery tab (now shown also when workflow says RD/items exist) ---
                 if has_redel_pending:
-                    if selected_view == "🚚 Expected re-delivery":
+                    with tabs[tab_idx]:
                         sol_rd = dict(sol_wf)
                         sol_rd["resolution"] = "re_delivery"
 
@@ -4924,7 +4897,6 @@ def _render_incidences_cards(
                                 st.error(res_close)
 
             else:
-                # This should rarely happen now, but keep safe fallback
                 # This should rarely happen now, but keep safe fallback
                 _credit_note_preview(prov, provn, open_t, sol_wf)
                 _redelivery_preview(ctx, prov, provn, open_t, sol_wf)
@@ -5681,34 +5653,6 @@ def _list_open_incidences_items(
     out.sort(key=lambda r: (-int(r["open_count"]), -int(r["order_id"]), (r["provider"] or "").lower()))
     return out
 
-
-# def _list_open_urgent_requests_grouped() -> Dict[int, List[UrgentReorderRequest]]:
-#     """Group pending urgent requests by the *source order id* (via incidence SeguimientoTicket)."""
-#     reqs = _list_open_urgent_requests()
-#     if not reqs:
-#         return {}
-
-#     inc_ids = sorted({int(getattr(r, "incidence_id", 0) or 0) for r in reqs if int(getattr(r, "incidence_id", 0) or 0)})
-#     if not inc_ids:
-#         return {}
-
-#     with get_session() as s:
-#         tickets = list(s.exec(select(SeguimientoTicket).where(SeguimientoTicket.id.in_(inc_ids))).all())
-#     ticket_order_by_id = {int(t.id): int(getattr(t, "order_id", 0) or 0) for t in tickets if getattr(t, "id", None) is not None}
-
-#     grouped: Dict[int, List[UrgentReorderRequest]] = {}
-#     for r in reqs:
-#         inc = int(getattr(r, "incidence_id", 0) or 0)
-#         oid = int(ticket_order_by_id.get(inc, 0) or 0)
-#         if not oid:
-#             continue
-#         grouped.setdefault(oid, []).append(r)
-
-#     # newest requests first per group
-#     for oid in list(grouped.keys()):
-#         grouped[oid].sort(key=lambda x: getattr(x, "created_at", None) or _now(), reverse=True)
-
-#     return grouped
 
 
 # =============================
