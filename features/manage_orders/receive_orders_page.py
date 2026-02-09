@@ -28,22 +28,6 @@ import pandas as pd
 import streamlit as st
 
 
-# -----------------------------
-# Fast-click helpers
-# -----------------------------
-def _request_action(action_key: str) -> None:
-    """Mark an action to be executed exactly once on the next rerun."""
-    st.session_state[action_key] = True
-
-def _consume_action(action_key: str) -> bool:
-    """Return True once per click; resets the flag immediately to avoid double execution."""
-    if st.session_state.get(action_key):
-        st.session_state[action_key] = False
-        return True
-    return False
-
-
-
 def _orders_refresh_token(venue_id: int) -> int:
     """Session-state based cache buster for order-related caches."""
     return int(st.session_state.get(f"orders_refresh_token_{int(venue_id)}", 0) or 0)
@@ -1447,17 +1431,12 @@ def _render_urgent_tab(ctx: 'OrderContext') -> None:
         key=f"urg_send_sel_{int(ctx.order.id)}",
     )
 
-
-    st.button(
+    if st.button(
         "🚀 Send urgent requests",
         type="primary",
         use_container_width=True,
         key=f"urg_send_btn_{int(ctx.order.id)}",
-        on_click=_request_action,
-        args=(f"do_urg_send_{int(ctx.order.id)}",),
-    )
-
-    if _consume_action(f"do_urg_send_{int(ctx.order.id)}"):
+    ):
         actor = _s(st.session_state.get("user_email") or st.session_state.get("actor") or "venue")
         any_fail = False
 
@@ -4867,17 +4846,12 @@ def _render_incidences_cards(
                         with c1:
                             st.caption("Required to close (supplier may leave it blank; venue fills it here).")
                         with c2:
-
-                            st.button(
+                            if st.button(
                                 "✅ Verify credit note & close",
                                 use_container_width=True,
                                 disabled=(not _s(cn_val).strip()),
                                 key=f"inc_verify_cn_{order.id}_{provn}",
-                                on_click=_request_action,
-                                args=(f"do_verify_cn_{order.id}_{provn}",),
-                            )
-
-                            if _consume_action(f"do_verify_cn_{order.id}_{provn}"):
+                            ):
                                 res_close = venue_verify_and_close(
                                     ctx=ctx,
                                     provider=provn,
@@ -4910,16 +4884,11 @@ def _render_incidences_cards(
 
                         st.divider()
 
-
-                        st.button(
+                        if st.button(
                             "✅ Verify delivery & close",
                             use_container_width=True,
                             key=f"inc_verify_rd_{order.id}_{provn}",
-                            on_click=_request_action,
-                            args=(f"do_verify_rd_{order.id}_{provn}",),
-                        )
-
-                        if _consume_action(f"do_verify_rd_{order.id}_{provn}"):
+                        ):
                             res_close = venue_verify_and_close(ctx=ctx, provider=provn, mode="supplementary")
                             if res_close == "ok":
                                 st.success("Re-delivery closed")
@@ -5684,34 +5653,6 @@ def _list_open_incidences_items(
     out.sort(key=lambda r: (-int(r["open_count"]), -int(r["order_id"]), (r["provider"] or "").lower()))
     return out
 
-
-# def _list_open_urgent_requests_grouped() -> Dict[int, List[UrgentReorderRequest]]:
-#     """Group pending urgent requests by the *source order id* (via incidence SeguimientoTicket)."""
-#     reqs = _list_open_urgent_requests()
-#     if not reqs:
-#         return {}
-
-#     inc_ids = sorted({int(getattr(r, "incidence_id", 0) or 0) for r in reqs if int(getattr(r, "incidence_id", 0) or 0)})
-#     if not inc_ids:
-#         return {}
-
-#     with get_session() as s:
-#         tickets = list(s.exec(select(SeguimientoTicket).where(SeguimientoTicket.id.in_(inc_ids))).all())
-#     ticket_order_by_id = {int(t.id): int(getattr(t, "order_id", 0) or 0) for t in tickets if getattr(t, "id", None) is not None}
-
-#     grouped: Dict[int, List[UrgentReorderRequest]] = {}
-#     for r in reqs:
-#         inc = int(getattr(r, "incidence_id", 0) or 0)
-#         oid = int(ticket_order_by_id.get(inc, 0) or 0)
-#         if not oid:
-#             continue
-#         grouped.setdefault(oid, []).append(r)
-
-#     # newest requests first per group
-#     for oid in list(grouped.keys()):
-#         grouped[oid].sort(key=lambda x: getattr(x, "created_at", None) or _now(), reverse=True)
-
-#     return grouped
 
 
 # =============================
