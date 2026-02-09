@@ -5551,12 +5551,12 @@ def _render_receive_provider_panel(ctx: OrderContext, provider: str) -> None:
                     
 
 
-        # ---------- Action row (invoice + expected popover + save) ----------
-        c1, c2 = st.columns(2, vertical_alignment="center")
-
+        # ---------- Action row (invoice + save) ----------
         # Use a form so typing in inputs does not rerun the whole script on every keystroke.
-        # This makes saving feel dramatically faster on Streamlit Cloud.
+        # Important: columns must be created *inside* the form. Otherwise Streamlit will raise
+        # "form_submit_button must be inside a form" in some runtimes.
         with st.form(key=f"form_receive_{int(ctx.order.id)}_{prov_key}", clear_on_submit=False):
+            c1, c2 = st.columns(2, vertical_alignment="center")
             with c1:
                 inv_val = st.text_input(
                     "Invoice #",
