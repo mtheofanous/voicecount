@@ -87,6 +87,20 @@ button{
   font-weight:900;
 }
 
+
+/* Make the very first block (your top bar) sticky */
+section.main .block-container > div:first-child {
+    position: sticky;
+    top: 0;
+    z-index: 9999;
+
+    background: rgba(255,255,255,.96);
+    backdrop-filter: saturate(180%) blur(10px);
+    border-bottom: 1px solid rgba(148,163,184,.35);
+
+    padding: 10px 14px;
+}
+
 /* --- Bottom Tab Bar --- */
 .voi-tabbar{
   position: fixed;
@@ -351,29 +365,25 @@ def main():
     # Debug log for resolved page
     logging.debug(f"Resolved page_key after deep-link sync: {st.session_state['page']}")
     
-    # Top bar (moved out of auth_gate)
+
     u = current_user()
     acc = current_account()
     
+    #TOP BAR --------------------------------------
+    # TOP BAR (must be first thing rendered)
     with st.container(horizontal=True):
+        st.markdown(f"**Account:** {acc['name'] if acc else '—'}")
 
-
-        st.markdown(
-            f"**Account:** {acc['name'] if acc else '—'}")
-        
-        
         venue_id = _venue_selector_compact()
 
-        # Resolve role for the selected venue (needed by some pages like orders_tab)
         _venues = current_venues_for_user() or []
         _role_by_id = {int(v["id"]): role for (v, role) in _venues}
         venue_role = _role_by_id.get(int(venue_id))
 
-
-
         if st.button("Logout", key="logout_btn_app", use_container_width=True):
             clear_auth()
             st.rerun()
+
 
 
 
