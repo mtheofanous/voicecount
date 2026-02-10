@@ -66,37 +66,67 @@ def bootstrap_once():
 
 
 # -------------------------------
-# 5) Micro-UX CSS (fast taps + less vertical waste)
+# 5) Micro-UX CSS (mobile-first & fast)
 # -------------------------------
 def _css():
     st.markdown(
         """
 <style>
-/* tighter top padding */
-.block-container{padding-top:0.9rem; padding-bottom:5rem; max-width:1100px;}
-/* bigger tap targets */
-div.stButton > button, div.stDownloadButton > button{
-  height:44px; border-radius:14px; font-weight:900;
+
+/* ---- Global spacing (mobile first) ---- */
+.block-container{
+  padding:0.75rem 0.75rem 4.5rem;
+  max-width:100%;
 }
-/* make radios look like segmented control */
+
+/* ---- Big, fast tap targets ---- */
+button{
+  min-height:44px;
+  border-radius:14px;
+  font-weight:900;
+}
+
+/* ---- NAV: swipeable pill bar (key fix) ---- */
+div[role="radiogroup"]{
+  display:flex;
+  flex-wrap:nowrap;
+  overflow-x:auto;
+  gap:8px;
+  padding-bottom:4px;
+  -webkit-overflow-scrolling:touch;
+}
+
 div[role="radiogroup"] > label{
-  padding:0.35rem 0.6rem;
+  flex:0 0 auto;
+  white-space:nowrap;
+  padding:0.35rem 0.7rem;
   border-radius:999px;
-  border:1px solid rgba(148,163,184,.55);
-  margin-right:8px;
+  border:1px solid rgba(148,163,184,.5);
 }
-div[role="radiogroup"]{gap:8px;}
-/* subtle cards */
-.voi-card{border:1px solid rgba(148,163,184,.35); border-radius:18px; padding:14px 14px; background:#fff;}
-.voi-muted{color:#64748b;}
-/* mobile: reduce spacing */
-@media (max-width: 640px){
-  .block-container{padding-left:0.75rem; padding-right:0.75rem;}
+
+/* hide scrollbar but keep swipe */
+div[role="radiogroup"]::-webkit-scrollbar{
+  display:none;
 }
+
+/* ---- Cards ---- */
+.voi-card{
+  border:1px solid rgba(148,163,184,.3);
+  border-radius:16px;
+  padding:14px;
+  background:#fff;
+}
+
+.voi-muted{
+  color:#64748b;
+  font-size:.9rem;
+}
+
 </style>
 """,
         unsafe_allow_html=True,
     )
+
 
 
 def _go(page_key: str, **extra_qp: str) -> None:
@@ -180,6 +210,24 @@ def _home_card():
     st.markdown("</div>", unsafe_allow_html=True)
 
 
+
+def _call_page(fn, venue_id: int, **kwargs):
+    """Call a page function but only pass kwargs it actually accepts.
+
+    This prevents TypeError when some pages don't support deep-link params.
+    """
+    import inspect
+    try:
+        sig = inspect.signature(fn)
+    except (TypeError, ValueError):
+        # Builtins / callables without signature: best effort
+        return fn(venue_id)
+
+    params = sig.parameters
+    accepted = {k: v for k, v in kwargs.items() if k in params}
+    return fn(venue_id, **accepted)
+
+
 def main():
     bootstrap_once()
     _css()
@@ -221,6 +269,11 @@ def main():
     with top_l:
         venue_id = _venue_selector_compact()
 
+        # Resolve role for the selected venue (needed by some pages like orders_tab)
+        _venues = current_venues_for_user() or []
+        _role_by_id = {int(v["id"]): role for (v, role) in _venues}
+        venue_role = _role_by_id.get(int(venue_id))
+
     with top_r:
         # Segmented control feel via horizontal radio
         labels = [PAGES[k][0] for k in PAGE_KEYS]
@@ -246,13 +299,26 @@ def main():
     title, loader = PAGES.get(page_key, PAGES["orders"])
     page_fn = loader()
 
-    # Page call signatures differ; handle deep links only where useful
+    # Page call signatures differ; pass only supported kwargs (prevents TypeError)
     if page_key == "tracking":
-        page_fn(venue_id, deep_order_id=deep_order_id, deep_provider=(deep_provider or None))
+        _call_page(
+            page_fn,
+            venue_id,
+            venue_role=venue_role,
+            deep_order_id=deep_order_id,
+            deep_provider=(deep_provider or None),
+        )
     elif page_key == "orders":
-        page_fn(venue_id, deep_order_id=deep_order_id, deep_provider=(deep_provider or None), deep_status=(deep_status or None))
+        _call_page(
+            page_fn,
+            venue_id,
+            venue_role=venue_role,
+            deep_order_id=deep_order_id,
+            deep_provider=(deep_provider or None),
+            deep_status=(deep_status or None),
+        )
     else:
-        page_fn(venue_id)
+        _call_page(page_fn, venue_id, venue_role=venue_role)
 
 
 if __name__ == "__main__":

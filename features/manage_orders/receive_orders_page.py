@@ -24,106 +24,29 @@ from typing import Any, Dict, List, Optional, Tuple
 import json
 import math
 import re
-# LAZY: import pandas as pd
+import pandas as pd
 import streamlit as st
-# =============================
-# Lazy imports (Streamlit Cloud cold-start optimization)
-# =============================
-_LAZY_IMPORTED = False
-
-def _lazy_imports() -> None:
-    """Import heavy deps only when the dashboard is actually used.
-
-    Streamlit Cloud cold-start is very sensitive to module import time.
-    This keeps the module import light, then loads DB/models/pandas only on demand.
-    """
-    global _LAZY_IMPORTED
-    if _LAZY_IMPORTED:
-        return
-
-    # Third-party / heavy libs
-    global pd, select, html, SequenceMatcher, func
-    import pandas as pd  # type: ignore
-    from sqlmodel import select  # type: ignore
-    import html  # type: ignore
-    from difflib import SequenceMatcher  # type: ignore
-    from sqlalchemy import func  # type: ignore
-
-    # App deps
-    global get_session, send_smtp_email
-    global ROLE_SUPPLIER, build_seguimiento_url, norm_provider
-    global set_query_params, qp_int, qp_str
-    global _load_venue_templates, build_resolution_email_full, build_urgent_email_full
-    global Order, OrderLine, OrderWorkflow, OrderWorkflowEvent, Product, Provider
-    global ProviderLineFollowUp, ProviderReceipt, SeguimientoTicket, ProviderDiscountRule, ProviderSendStatus
-    global UrgentReorderRequest, ProviderResolution
-
-    from core.db import get_session  # type: ignore
-    from core.mailer import send_smtp_email  # type: ignore
-    from core.public_links import ROLE_SUPPLIER, build_seguimiento_url, norm_provider  # type: ignore
-    from core.url_nav import set_query_params, qp_int, qp_str  # type: ignore
-    from features.manage_orders.orders import _load_venue_templates  # type: ignore
-    from features.manage_orders.emails import build_resolution_email_full, build_urgent_email_full  # type: ignore
-    from domain.models import (  # type: ignore
-        Order,
-        OrderLine,
-        OrderWorkflow,
-        OrderWorkflowEvent,
-        Product,
-        Provider,
-        ProviderLineFollowUp,
-        ProviderReceipt,
-        SeguimientoTicket,
-        ProviderDiscountRule,
-        ProviderSendStatus,
-        UrgentReorderRequest,
-        ProviderResolution,
-    )
-
-    _LAZY_IMPORTED = True
-
-
-def _ensure_lazy_imports() -> None:
-    # helper for public entrypoints
-    try:
-        _lazy_imports()
-    except Exception as e:
-        # show a helpful error instead of a cryptic NameError later
-        import streamlit as st
-        st.error(f"Import error in Receive/Tracking page: {e}")
-        raise
 
 
 def _orders_refresh_token(venue_id: int) -> int:
     """Session-state based cache buster for order-related caches."""
     return int(st.session_state.get(f"orders_refresh_token_{int(venue_id)}", 0) or 0)
 
+from sqlmodel import select
+import html
+from core.db import get_session
+from difflib import SequenceMatcher
 
-def _bump_orders_refresh_token(venue_id: int) -> None:
-    """Increment the venue refresh token to bust cached reads.
-
-    Any write that affects orders / tickets / workflows should call this to force
-    `_get_active_orders`, `_load_order_context`, `_load_dashboard_bundle`, etc.
-    to recompute on the next rerun.
-    """
-    k = f"orders_refresh_token_{int(venue_id)}"
-    st.session_state[k] = int(st.session_state.get(k, 0) or 0) + 1
-
-# LAZY: from sqlmodel import select
-# LAZY: import html
-# LAZY: from core.db import get_session
-# LAZY: from difflib import SequenceMatcher
-
-# LAZY: from core.mailer import send_smtp_email
-# LAZY: from core.public_links import ROLE_SUPPLIER, build_seguimiento_url, norm_provider
-# LAZY: from core.url_nav import set_query_params, qp_int, qp_str
+from core.mailer import send_smtp_email
+from core.public_links import ROLE_SUPPLIER, build_seguimiento_url, norm_provider
+from core.url_nav import set_query_params, qp_int, qp_str
 from datetime import datetime, timedelta
 
-# LAZY: from features.manage_orders.orders import _load_venue_templates
-# LAZY: from features.manage_orders.emails import build_resolution_email_full, build_urgent_email_full
+from features.manage_orders.orders import _load_venue_templates
+from features.manage_orders.emails import build_resolution_email_full, build_urgent_email_full
 
-# LAZY: from sqlalchemy import func
-# LAZY: from domain.models import (
+from sqlalchemy import func
+from domain.models import (
     Order,
     OrderLine,
     OrderWorkflow,
@@ -602,7 +525,6 @@ def find_alternative_providers(*, ctx: Any, ticket: Any, line: Optional[OrderLin
     # candidate products: same venue catalog
     cands: list[dict[str, Any]] = []
     for pid, p in (products_by_id or {}).items():
-    _ensure_lazy_imports()
         prov = norm_provider(_s(getattr(p, "provider_name", "")))
         pname = _s(getattr(p, "name", ""))
         if not pname:
@@ -2491,7 +2413,6 @@ def _render_expected_lines(
     table_total = 0.0
 
     for ln in sorted(lines, key=lambda x: _line_name(x, ctx.products_by_id).lower()):
-    _ensure_lazy_imports()
         lid = int(ln.id)
         name = _line_name(ln, ctx.products_by_id)
         unit = _line_unit(ln, ctx.products_by_id)
@@ -3192,6 +3113,7 @@ def save_all_received_for_provider(*, ctx: OrderContext, provider: str) -> Tuple
                 t.qty_invoiced = float(issue_qty)
                 t.invoice_number = invoice_number_ui
                 t.updated_at = now
+                t.updated_by = "venue"
                 s.add(t)
 
         # ------------------------------------------------------------
@@ -3263,7 +3185,6 @@ def request_supplier_resolution(venue_id: int, order_id: int, provider: str, ven
 
         emails: List[str] = []
         if p and getattr(p, "order_email", None):
-    _ensure_lazy_imports()
             emails = [x.strip() for x in (p.order_email or "").split("|") if x.strip()]
         if not emails and p and getattr(p, "emails", None):
             emails = [x.strip() for x in (p.emails or "").split("|") if x.strip()]
@@ -3509,7 +3430,6 @@ def venue_verify_and_close(*, ctx: OrderContext, provider: str, mode: str, credi
                     first_clean = "credit_note"
                 # ensure resolution is "credit_note" for this track
                 if "credit_note" not in first_clean.lower():
-    _ensure_lazy_imports()
                     first_clean = "credit_note"
                 # upsert credit_note_invoice=...
                 if re.search(r"(?i)credit_note_invoice\s*=", first_clean):
@@ -3816,41 +3736,6 @@ def _close_ticket(*, ticket_id: int, new_state: str, note: str, actor: str = "ve
 # Incidences: open filters
 # =============================
 
-
-@st.cache_data(ttl=20, show_spinner=False)
-def _count_open_tickets_db(
-    venue_id: int,
-    order_id: int,
-    provider: str,
-    *,
-    refresh_token: int = 0,
-) -> int:
-    """Fast path: count open tickets without loading full OrderContext.
-
-    Used after venue actions to decide whether a workflow can be auto-closed.
-    We keep a short TTL and also include refresh_token for deterministic busting.
-    """
-    _ = int(refresh_token or 0)
-    prov = norm_provider(provider)
-
-    with get_session() as s:
-        stmt = (
-            select(func.count(SeguimientoTicket.id))
-            .where(SeguimientoTicket.venue_id == int(venue_id))
-            .where(SeguimientoTicket.order_id == int(order_id))
-            .where(SeguimientoTicket.provider_name == prov)
-            .where(SeguimientoTicket.resolved_at.is_(None))
-            .where(~func.lower(SeguimientoTicket.state).like("resolved%"))
-        )
-        try:
-            return int(s.exec(stmt).one() or 0)
-        except Exception:
-            # Fallback for engines that return tuples
-            row = s.exec(stmt).first()
-            if isinstance(row, (tuple, list)) and row:
-                return int(row[0] or 0)
-            return int(row or 0)
-
 def _provider_open_tickets(ctx: OrderContext, provider: str) -> List[SeguimientoTicket]:
     prov = norm_provider(provider)
 
@@ -3864,7 +3749,6 @@ def _provider_open_tickets(ctx: OrderContext, provider: str) -> List[Seguimiento
         if getattr(t, "resolved_at", None) is not None:
             continue
         if _s(getattr(t, "state", None)).lower().startswith("resolved"):
-    _ensure_lazy_imports()
             continue
         # open or waiting verification
         out.append(t)
@@ -4996,7 +4880,6 @@ def _render_incidences_cards(
             # Helper: apply inline reorder decisions for this provider
             # ---------------------------------------------------------
             def _apply_inline_reorders_for_provider(*, close_non_urgent_op_missing: bool = False) -> None:
-                changed = False
                 for tt in open_t:
                     kind = (_s(getattr(tt, "kind", ""))).lower()
                     if kind not in {"operational_missing", "invoice_discrepancy", "damaged", "wrong_item"}:
@@ -5020,7 +4903,6 @@ def _render_incidences_cards(
                             note="Operational missing: not reordered (urgent toggle OFF).",
                             actor=_s(st.session_state.get("user_email") or st.session_state.get("actor") or "venue"),
                         )
-                        changed = True
                         st.session_state[done_key] = True
                         continue
 
@@ -5065,7 +4947,6 @@ def _render_incidences_cards(
                             unit=_line_unit(ln, ctx.products_by_id) if ln else (_s(getattr(tt, "unit", "")) or "unit"),
                             actor=_s(st.session_state.get("user_email") or st.session_state.get("actor") or "venue"),
                         )
-                        changed = True
 
                         # ✅ NEW: if it’s operational_missing and we created the urgent request,
                         # close the incidence so it disappears from "Open incidences"
@@ -5076,15 +4957,11 @@ def _render_incidences_cards(
                                 note="Urgent request created; moved to Urgent tab.",
                                 actor=_s(st.session_state.get("user_email") or st.session_state.get("actor") or "venue"),
                             )
-                            changed = True
 
                     except Exception:
                         pass
 
                     st.session_state[done_key] = True
-
-                if changed:
-                    _bump_orders_refresh_token(int(order.venue_id))
 
             # ---------------------------------------------------------
             # action panel  ✅ (THIS is what you were missing)
@@ -5121,7 +4998,6 @@ def _render_incidences_cards(
                 if a1.button("✅ Accept reject & close", use_container_width=True, key=f"inc_rej_{order.id}_{provn}"):
                     res = venue_verify_and_close(ctx=ctx, provider=provn, mode="reject")
                     if res == "ok":
-                        _bump_orders_refresh_token(int(order.venue_id))
                         st.success("Closed")
                         st.rerun()
                     else:
@@ -5147,13 +5023,8 @@ def _render_incidences_cards(
 
                         # OP missing has the extra auto-close logic
                         if state_u == "OPERATIONAL_MISSING_PRODUCT":
-                            open_cnt = _count_open_tickets_db(
-                                int(order.venue_id),
-                                int(order.id),
-                                provn,
-                                refresh_token=_orders_refresh_token(int(order.venue_id)),
-                            )
-                            if int(open_cnt) == 0:
+                            ctx2 = _load_order_context(int(ctx.order.venue_id), int(ctx.order.id))
+                            if len(_provider_open_tickets(ctx2, provn)) == 0:
                                 _set_workflow_state(
                                     venue_id=int(order.venue_id),
                                     order_id=int(order.id),
@@ -5163,14 +5034,12 @@ def _render_incidences_cards(
                                     actor="venue",
                                     note="Operational missing: non-urgent items ignored (not reordered).",
                                 )
-                                _bump_orders_refresh_token(int(order.venue_id))
                                 st.success("Saved ✓")
                                 st.rerun()
 
                         # Default path: request supplier resolution link
                         ok, msg = request_supplier_resolution(int(order.venue_id), int(order.id), provn, venue_comment=venue_msg)
                         if ok:
-                            _bump_orders_refresh_token(int(order.venue_id))
                             st.success("Link sent")
                             st.link_button("Open supplier link", msg, use_container_width=True)
                             st.rerun()
@@ -5622,39 +5491,42 @@ def _render_receive_provider_panel(ctx: OrderContext, provider: str) -> None:
                     
 
 
-        # ---------- Action row (invoice + save) ----------
-        # Use a form so typing in inputs does not rerun the whole script on every keystroke.
-        # Important: columns must be created *inside* the form. Otherwise Streamlit will raise
-        # "form_submit_button must be inside a form" in some runtimes.
-        with st.form(key=f"form_receive_{int(ctx.order.id)}_{prov_key}", clear_on_submit=False):
-            c1, c2 = st.columns(2, vertical_alignment="center")
-            with c1:
-                inv_val = st.text_input(
-                    "Invoice #",
-                    key=inv_key,
-                    placeholder="Invoice # (required)",
-                    disabled=invoice_locked,
-                    label_visibility="collapsed",
-                )
+        # ---------- Action row (invoice + expected popover + save) ----------
+        c1, c2 = st.columns(2, vertical_alignment="center")
 
-                inv_required_missing = (not invoice_locked) and (not (inv_val or "").strip())
+        with c1:
+            inv_val = st.text_input(
+                "Invoice #",
+                key=inv_key,
+                placeholder="Invoice # (required)",
+                disabled=invoice_locked,
+                label_visibility="collapsed",
+            )
 
-            with c2:
-                save_all = st.form_submit_button(
-                    "💾 Save",
-                    type="primary",
-                    use_container_width=True,
-                    disabled=invoice_locked or inv_required_missing,
-                )
+            inv_required_missing = (not invoice_locked) and (not (inv_val or "").strip())
 
-            if save_all:
-                ok, msg = save_all_received_for_provider(ctx=ctx, provider=current_provider)
-                if ok:
-                    # Bump refresh token so cached reads update without forcing an expensive full page rerun.
-                    _bump_orders_refresh_token(int(ctx.order.venue_id))
-                    st.success("Saved ✓")
-                else:
-                    st.error(msg)
+
+
+        with c2:
+            save_all = st.button(
+                "💾 Save",
+                type="primary",
+                use_container_width=True,
+                disabled=invoice_locked or inv_required_missing,
+                key=f"btn_save_all_{int(ctx.order.id)}_{prov_key}",
+            )
+
+            # if inv_required_missing:
+            #     st.caption("⚠️ Invoice number is required to save.")
+
+
+        if save_all:
+            ok, msg = save_all_received_for_provider(ctx=ctx, provider=current_provider)
+            if ok:
+                st.success("Saved ✓")
+                st.rerun()
+            else:
+                st.error(msg)
 
         st.markdown("<div class='voi-hr'></div>", unsafe_allow_html=True)
 
@@ -5859,7 +5731,6 @@ def tracking_dashboard(
 
                 provn = norm_provider(prov)
                 for ln in (ctx_o.lines_by_provider.get(provn, []) or []):
-    _ensure_lazy_imports()
                     lid = int(getattr(ln, "id", 0) or 0)
                     if not lid:
                         continue
@@ -5987,15 +5858,7 @@ def tracking_dashboard(
                 set_query_params(page="tracking", order_id=str(oid), provider=norm_provider(prov))
 
             ctx = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
-            # Render each provider panel as a fragment when available.
-            # This keeps saves fast by rerunning only the provider section instead of the whole dashboard.
-            if hasattr(st, 'fragment'):
-                @st.fragment
-                def _provider_panel(_ctx=ctx, _prov=prov):
-                    _render_receive_provider_panel(_ctx, _prov)
-                _provider_panel()
-            else:
-                _render_receive_provider_panel(ctx, prov)
+            _render_receive_provider_panel(ctx, prov)
             
             st.empty()
 
@@ -6051,3 +5914,4 @@ def tracking_dashboard(
     # -----------------------------
     if selected_tab == "⚡ Urgent":
         _render_urgent_tab(ctx)
+
