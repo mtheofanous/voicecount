@@ -103,25 +103,38 @@ div[data-testid="stVerticalBlock"] > div:has(#app-topbar-marker){
   -webkit-backdrop-filter: blur(10px);
 }
 
-/* --- Topbar: force columns to stay on one line on mobile --- */
+/* --- Topbar: keep in one line BUT allow shrinking (prevents off-screen overflow) --- */
 div:has(#app-topbar-marker) [data-testid="stHorizontalBlock"]{
+  display: flex !important;
   flex-wrap: nowrap !important;
   align-items: center !important;
   gap: 10px !important;
 }
 
-/* Prevent the selectbox from stretching too tall */
-div:has(#app-topbar-marker) [data-testid="stSelectbox"] > div{
-  min-width: 180px;          /* tweak: 160–220 */
+/* Critical: allow Streamlit columns to shrink */
+div:has(#app-topbar-marker) [data-testid="column"]{
+  min-width: 0 !important;
 }
 
-/* Make the logout button compact and not “steal” width */
-div:has(#app-topbar-marker) button[kind="secondary"],
-div:has(#app-topbar-marker) button[kind="primary"]{
+/* Make the selectbox column flexible and shrinkable */
+div:has(#app-topbar-marker) [data-testid="stSelectbox"]{
+  width: 100% !important;
+  min-width: 0 !important;
+}
+
+/* Make the inner selectbox wrapper take full available width */
+div:has(#app-topbar-marker) [data-testid="stSelectbox"] > div{
+  width: 100% !important;
+  min-width: 0 !important;
+}
+
+/* Logout button stays compact */
+div:has(#app-topbar-marker) button{
   min-width: 44px !important;
   padding: 0.35rem 0.5rem !important;
   border-radius: 14px !important;
 }
+
 
 
 /* --- Bottom Tab Bar --- */
@@ -398,7 +411,7 @@ def main():
         name = u.get("full_name") or "—"
         acc_name = acc.get("name") or "—"
 
-        bar_l, bar_c, bar_r = st.columns([5.2, 3.8, 0.9], vertical_alignment="center")
+        bar_l, bar_c, bar_r = st.columns([3.6, 5.4, 1.0], vertical_alignment="center")
 
         with bar_l:
             st.markdown(
