@@ -292,33 +292,33 @@ def main():
         if chosen_key != st.session_state["page"]:
             _go(chosen_key)
 
-    st.divider()
+    with st.container(height=200):
 
-    # Render page
-    page_key = st.session_state["page"]
-    title, loader = PAGES.get(page_key, PAGES["orders"])
-    page_fn = loader()
+        # Render page
+        page_key = st.session_state["page"]
+        title, loader = PAGES.get(page_key, PAGES["orders"])
+        page_fn = loader()
 
-    # Page call signatures differ; pass only supported kwargs (prevents TypeError)
-    if page_key == "tracking":
-        _call_page(
-            page_fn,
-            venue_id,
-            venue_role=venue_role,
-            deep_order_id=deep_order_id,
-            deep_provider=(deep_provider or None),
-        )
-    elif page_key == "orders":
-        _call_page(
-            page_fn,
-            venue_id,
-            venue_role=venue_role,
-            deep_order_id=deep_order_id,
-            deep_provider=(deep_provider or None),
-            deep_status=(deep_status or None),
-        )
-    else:
-        _call_page(page_fn, venue_id, venue_role=venue_role)
+        # Page call signatures differ; pass only supported kwargs (prevents TypeError)
+        if page_key == "tracking":
+            _call_page(
+                page_fn,
+                venue_id,
+                venue_role=venue_role,
+                deep_order_id=deep_order_id,
+                deep_provider=(deep_provider or None),
+            )
+        elif page_key == "orders":
+            _call_page(
+                page_fn,
+                venue_id,
+                venue_role=venue_role,
+                deep_order_id=deep_order_id,
+                deep_provider=(deep_provider or None),
+                deep_status=(deep_status or None),
+            )
+        else:
+            _call_page(page_fn, venue_id, venue_role=venue_role)
 
 
 if __name__ == "__main__":
