@@ -1429,8 +1429,6 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
                     if submitted:
                         _add_product_to_df(pid, qty_val)
 
-    st.caption("Tip: marca 🗑️ para eliminar una línea.")
-
     # Build the dataframe that will be shown in the editor
     df_for_editor = _sanitize_editor_df(st.session_state[df_state_key])
 
@@ -1463,10 +1461,10 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
             key=editor_key,  # editor state lives here
         )
 
-        c1, c2 = st.columns([1.2, 1.0], vertical_alignment="center")
-        with c1:
+
+        with st.container(horizontal=True):
             guardar = st.form_submit_button("💾 Guardar", type="primary", use_container_width=True)
-        with c2:
+   
             descartar = st.form_submit_button("↩️ Descartar cambios", use_container_width=True)
 
     
