@@ -292,7 +292,7 @@ def main():
         if chosen_key != st.session_state["page"]:
             _go(chosen_key)
 
-    with st.container(height=200):
+    with st.container(height=600):
 
         # Render page
         page_key = st.session_state["page"]
