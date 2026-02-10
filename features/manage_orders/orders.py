@@ -1134,7 +1134,7 @@ def _render_workflow_actions(*, venue_id: int, order: Order, role: Optional[str]
 
 
 def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: list[Product], lines: list[OrderLine]) -> None:
-    st.subheader("🧾 Líneas del pedido")
+
     # Use cached product index (major speedup on reruns)
     products, products_by_id, label_by_id, cat_by_pid, prov_by_pid, all_categories, all_providers, base_pids = _product_ui_index_cached(get_session, venue_id)
     editor_key = f"order_editor_{int(order.id)}"
