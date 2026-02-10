@@ -81,7 +81,7 @@ button{
   font-weight:900;
 }
 
-/* --- Bottom Tab Bar --- */
+/* --- Bottom Tab Bar (original, keep as-is) --- */
 .voi-tabbar{
   position: fixed;
   bottom: 0;
@@ -95,7 +95,6 @@ button{
 
   backdrop-filter: saturate(180%) blur(12px);
 }
-
 
 .voi-tabs{
   display:flex;
@@ -131,15 +130,65 @@ button{
   box-shadow:0 6px 18px rgba(2,6,23,.06);
 }
 
-
 @media (min-width: 900px){
-  /* On desktop, keep it but make it slightly tighter */
   .voi-tab .tx{font-size:.82rem;}
+}
+
+/* =========================================================
+   STREAMLIT RADIO → LOOKS LIKE BOTTOM TAB BAR (NO RELOAD)
+   ========================================================= */
+
+div[data-testid="stRadio"]{
+  position: fixed;
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 9999;
+
+  padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
+  background: rgba(255,255,255,.96);
+  border-top: 1px solid rgba(148,163,184,.35);
+
+  backdrop-filter: saturate(180%) blur(12px);
+}
+
+div[data-testid="stRadio"] > div{
+  max-width:1100px;
+  margin:0 auto;
+  display:flex;
+  gap:8px;
+}
+
+div[data-testid="stRadio"] label{
+  flex:1 1 0;
+  border:1px solid rgba(148,163,184,.35);
+  border-radius:16px;
+  padding:10px 8px;
+  background:#fff;
+  text-align:center;
+  font-weight:900;
+  min-height:48px;
+  line-height:1.05;
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+}
+
+/* Hide default radio circle */
+div[data-testid="stRadio"] label > div:first-child{
+  display:none;
+}
+
+/* Active state */
+div[data-testid="stRadio"] input:checked + div{
+  border-color: rgba(37,99,235,.45) !important;
+  box-shadow:0 6px 18px rgba(2,6,23,.06);
 }
 </style>
 """,
         unsafe_allow_html=True,
     )
+
 
 
 #  -------------------------------
@@ -160,24 +209,30 @@ def _bottom_tabbar(current_page: str) -> None:
         ("catalog", "🧾", "Catalog"),
     ]
 
-    items = []
-    for key, icon, label in tabs:
-        active = "active" if key == current_page else ""
-        href = f"?page={key}"
-        items.append(
-f"""<a class="voi-tab {active}" href="{href}" target="_self">
-  <div class="ic">{icon}</div>
-  <div class="tx">{label}</div>
-</a>"""
-        )
+    # Build label like your UI: icon + text
+    options = [k for (k, _ic, _tx) in tabs]
+    label_by_key = {k: f"{ic}\n{tx}" for (k, ic, tx) in tabs}
 
-    html = f"""<div class="voi-tabbar">
-  <div class="voi-tabs">
-    {''.join(items)}
-  </div>
-</div>"""
+    # Default selection = current page
+    st.session_state.setdefault("_voi_nav", current_page)
+    if st.session_state["_voi_nav"] not in options:
+        st.session_state["_voi_nav"] = current_page
 
-    st.markdown(html, unsafe_allow_html=True)
+    # Render a radio that we can style to look identical
+    chosen = st.radio(
+        "nav",
+        options=options,
+        index=options.index(st.session_state["_voi_nav"]),
+        format_func=lambda k: label_by_key.get(k, k),
+        horizontal=True,
+        label_visibility="collapsed",
+        key="_voi_nav",
+    )
+
+    # If changed -> navigate via Streamlit (keeps same session/auth_ctx)
+    if chosen != current_page:
+        _go(chosen)
+
 
 
 
