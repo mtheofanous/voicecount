@@ -632,46 +632,6 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             tlabel = time.strftime("%H:%M", time.localtime(tsf)) if tsf else ""
 
             with st.container(horizontal=True):
-                
-                try:
-                    with st.popover("🌐", use_container_width=True, type="tertiary"):
-                        picked = st.radio(
-                            "Idioma",
-                            options=["auto", "es", "en", "el"],
-                            index=["auto", "es", "en", "el"].index(
-                                effective_lang_code if effective_lang_code in ["auto", "es", "en", "el"] else "auto"
-                            ),
-                            format_func=lambda v: {
-                                "auto": "🌐",
-                                "es": "🇪🇸",
-                                "en": "🇬🇧",
-                                "el": "🇬🇷",
-                            }.get(v, v),
-                            key=K("lang_picker_radio"),
-                        )
-                        st.session_state[S("lang_code_ui")] = picked
-                        effective_lang_code = picked
-                except Exception:
-                    with st.expander("🌐", expanded=False):
-                        picked = st.radio(
-                            "Idioma",
-                            options=["auto", "es", "en", "el"],
-                            index=["auto", "es", "en", "el"].index(
-                                effective_lang_code if effective_lang_code in ["auto", "es", "en", "el"] else "auto"
-                            ),
-                            format_func=lambda v: {
-                                "auto": "🌐",
-                                "es": "🇪🇸",
-                                "en": "🇬🇧",
-                                "el": "🇬🇷",
-                            }.get(v, v),
-                            key=K("lang_picker_radio_fallback"),
-                        )
-                        st.session_state[S("lang_code_ui")] = picked
-                        effective_lang_code = picked
-                else:
-                    st.session_state.pop(S("lang_code_ui"), None)
-                    effective_lang_code = lang_code or "auto"
 
                 st.markdown(
                     f"""
@@ -712,21 +672,61 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     st.session_state.setdefault(S("audio_input_key"), "audio_input_main")
     st.session_state.setdefault(S("audio_bytes"), b"")
 
-    audio_file = st.audio_input("", key=K("audio_msg"))
-    if audio_file is not None:
-        st.session_state[S("audio_bytes")] = audio_file.read()
+    
+    with st.container(horizontal=True):
+        effective_lang_code = lang_code or "auto"
 
-    # bar = st.columns([1.2, 7.6], vertical_alignment="center")
-    # lang_col, type_col = bar
+        if not bool(cfg_cached.get("hide_user_controls", True)):
+            st.session_state.setdefault(S("lang_code_ui"), None)
+            if st.session_state.get(S("lang_code_ui")) is None:
+                st.session_state[S("lang_code_ui")] = lang_code or "auto"
 
-    effective_lang_code = lang_code or "auto"
+        effective_lang_code = st.session_state.get(S("lang_code_ui")) or lang_code or "auto"
+        try:
+            with st.popover("🌐", use_container_width=True, type="tertiary"):
+                picked = st.radio(
+                    "Idioma",
+                    options=["auto", "es", "en", "el"],
+                    index=["auto", "es", "en", "el"].index(
+                        effective_lang_code if effective_lang_code in ["auto", "es", "en", "el"] else "auto"
+                    ),
+                    format_func=lambda v: {
+                        "auto": "🌐",
+                        "es": "🇪🇸",
+                        "en": "🇬🇧",
+                        "el": "🇬🇷",
+                    }.get(v, v),
+                    key=K("lang_picker_radio"),
+                )
+                st.session_state[S("lang_code_ui")] = picked
+                effective_lang_code = picked
+        except Exception:
+            with st.expander("🌐", expanded=False):
+                picked = st.radio(
+                    "Idioma",
+                    options=["auto", "es", "en", "el"],
+                    index=["auto", "es", "en", "el"].index(
+                        effective_lang_code if effective_lang_code in ["auto", "es", "en", "el"] else "auto"
+                    ),
+                    format_func=lambda v: {
+                        "auto": "🌐",
+                        "es": "🇪🇸",
+                        "en": "🇬🇧",
+                        "el": "🇬🇷",
+                    }.get(v, v),
+                    key=K("lang_picker_radio_fallback"),
+                )
+                st.session_state[S("lang_code_ui")] = picked
+                effective_lang_code = picked
+        else:
+            st.session_state.pop(S("lang_code_ui"), None)
+            effective_lang_code = lang_code or "auto"
+    
+        
+        audio_file = st.audio_input("", key=K("audio_msg"))
+        if audio_file is not None:
+            st.session_state[S("audio_bytes")] = audio_file.read()
 
-    if not bool(cfg_cached.get("hide_user_controls", True)):
-        st.session_state.setdefault(S("lang_code_ui"), None)
-        if st.session_state.get(S("lang_code_ui")) is None:
-            st.session_state[S("lang_code_ui")] = lang_code or "auto"
-
-    effective_lang_code = st.session_state.get(S("lang_code_ui")) or lang_code or "auto"
 
     with st.container(horizontal=True):
 
