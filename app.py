@@ -276,7 +276,7 @@ def main():
 
     with top_r:
         
-        with st.container(border=False, gap="xsmall"):
+        with st.container(border=False, gap="xxsmall"):
             # Segmented control feel via horizontal radio
             labels = [PAGES[k][0] for k in PAGE_KEYS]
             key_to_label = {k: PAGES[k][0] for k in PAGE_KEYS}
