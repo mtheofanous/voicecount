@@ -1,4 +1,3 @@
-# fast_app.py
 # Mobile-first, fast navigation shell for Streamlit Cloud
 # - avoids st.tabs (heavy DOM)
 # - lazy-loads page modules only when needed
@@ -74,9 +73,9 @@ def _css():
     st.markdown(
         """
 <style>
-/* Mobile-first spacing: leave room for bottom bar */
+/* Mobile-first spacing: leave room for TOP bar + bottom bar */
 .block-container{
-  padding:0.75rem 0.75rem 5.5rem;
+  padding: 4.75rem 0.75rem 5.5rem;  /* top, sides, bottom */
   max-width:100%;
 }
 
@@ -87,18 +86,16 @@ button{
   font-weight:900;
 }
 
-
-/* ================================
-   Fixed TOP bar (NEW)
-================================ */
-#app-topbar{
+/* --- Fixed TOP bar (REAL fixed Streamlit block) --- */
+/* This pins the Streamlit block that CONTAINS our marker */
+div[data-testid="stVerticalBlock"] > div:has(#app-topbar-marker){
   position: fixed;
-  top: 0;
+  top: 3.25rem;
   left: 0;
   right: 0;
   z-index: 9998;
 
-  padding: 8px 12px;
+  padding: 10px 12px;
   background: rgba(255,255,255,0.72);
   border-bottom: 1px solid rgba(49,51,63,0.12);
 
@@ -120,7 +117,6 @@ button{
 
   backdrop-filter: saturate(180%) blur(12px);
 }
-
 
 .voi-tabs{
   display:flex;
@@ -156,15 +152,14 @@ button{
   box-shadow:0 6px 18px rgba(2,6,23,.06);
 }
 
-
 @media (min-width: 900px){
-  /* On desktop, keep it but make it slightly tighter */
   .voi-tab .tx{font-size:.82rem;}
 }
 </style>
 """,
         unsafe_allow_html=True,
     )
+
 
 
 #  -------------------------------
@@ -371,60 +366,58 @@ def main():
     logging.debug(f"Resolved page_key after deep-link sync: {st.session_state['page']}")
     
     # Top bar (moved out of auth_gate)
-    # ===== ONE-LINE FIXED MOBILE TOP BAR =====
-    st.markdown('<div id="app-topbar">', unsafe_allow_html=True)
+    # ===== ONE-LINE FIXED MOBILE TOP BAR (ACTUALLY FIXED) =====
+    # ===== ONE-LINE FIXED MOBILE TOP BAR (identity · venue · logout) =====
+    topbar = st.container()
+    with topbar:
+        # Marker used by CSS to pin this entire Streamlit block
+        st.markdown('<div id="app-topbar-marker"></div>', unsafe_allow_html=True)
 
-    u = current_user()
-    acc = current_account()
+        u = current_user() or {}
+        acc = current_account() or {}
 
-    name = (u or {}).get("full_name") or "—"
-    acc_name = (acc or {}).get("name") or "—"
+        name = u.get("full_name") or "—"
+        acc_name = acc.get("name") or "—"
 
-    bar_l, bar_c, bar_r = st.columns([4.5, 3.5, 1], vertical_alignment="center")
+        bar_l, bar_c, bar_r = st.columns([4.6, 3.6, 1.8], vertical_alignment="center")
 
-    # LEFT: identity pill
-    with bar_l:
-        st.markdown(
-            f"""
-            <div style="
-                display:inline-flex;
-                align-items:center;
-                gap:6px;
-                padding:6px 10px;
-                border:1px solid rgba(49,51,63,0.18);
-                border-radius:999px;
-                font-size:0.85rem;
-                line-height:1;
-                white-space:nowrap;
-                overflow:hidden;
-                text-overflow:ellipsis;
-                max-width:100%;
-            ">
-                <span style="opacity:0.75;">👤</span>
-                <span style="font-weight:600; overflow:hidden; text-overflow:ellipsis;">{name}</span>
-                <span style="opacity:0.4;">•</span>
-                <span style="opacity:0.7; overflow:hidden; text-overflow:ellipsis;">{acc_name}</span>
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
+        with bar_l:
+            st.markdown(
+                f"""
+                <div style="
+                    display:inline-flex;
+                    align-items:center;
+                    gap:6px;
+                    padding:6px 10px;
+                    border:1px solid rgba(49,51,63,0.18);
+                    border-radius:999px;
+                    font-size:0.85rem;
+                    line-height:1;
+                    white-space:nowrap;
+                    overflow:hidden;
+                    text-overflow:ellipsis;
+                    max-width:100%;
+                ">
+                    <span style="opacity:0.75;">👤</span>
+                    <span style="font-weight:700; overflow:hidden; text-overflow:ellipsis;">{name}</span>
+                    <span style="opacity:0.4;">•</span>
+                    <span style="opacity:0.7; overflow:hidden; text-overflow:ellipsis;">{acc_name}</span>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
 
-    # CENTER: venue selector + role resolution
-    with bar_c:
-        venue_id = _venue_selector_compact()
+        with bar_c:
+            venue_id = _venue_selector_compact()
+            _venues = current_venues_for_user() or []
+            _role_by_id = {int(v["id"]): role for (v, role) in _venues}
+            venue_role = _role_by_id.get(int(venue_id))
 
-        _venues = current_venues_for_user() or []
-        _role_by_id = {int(v["id"]): role for (v, role) in _venues}
-        venue_role = _role_by_id.get(int(venue_id))
-
-    # RIGHT: logout icon
-    with bar_r:
-        if st.button("⎋", key="logout_btn_app", help="Logout", use_container_width=True):
-            clear_auth()
-            st.rerun()
-
-    st.markdown("</div>", unsafe_allow_html=True)
-
+        with bar_r:
+            # Visible on all sizes, no “almost hidden” icon
+            if st.button("🚪 Logout", key="logout_btn_app", use_container_width=True):
+                clear_auth()
+                st.rerun()
 
 
     # Render page (no fixed-height container)
