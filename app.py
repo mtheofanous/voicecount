@@ -185,8 +185,7 @@ def _bottom_tabbar(current_page: str) -> None:
         ("new", "➕", "New"),
         ("orders", "📦", "Orders"),
         ("tracking", "✅", "Receive"),
-        ("history", "🗂️", "History"),
-        ("reports", "📈", "Reports"),
+        ("history", "📈", "History"),
         ("catalog", "🧾", "Catalog"),
         ("manage_org", "⚙️", "Manage Org"),
     ]
@@ -267,26 +266,21 @@ def _page_tracking():
     return tracking_dashboard
 
 def _page_history():
-    from features.manage_orders.history import _render_history_tab
-    return _render_history_tab
-
-def _page_reports():
-    from features.manage_orders.reports import reports_page
-    return reports_page
+    from features.manage_orders.history_reports import history_reports_page
+    return history_reports_page
 
 
 PAGES = {
     "new": ("➕ New order", _page_new_order),
     "orders": ("📦 Orders", _page_orders),
     "tracking": ("✅ Receive / Tracking", _page_tracking),
-    "history": ("🗂️ History", _page_history),
-    "reports": ("📈 Reports", _page_reports),
+    "history": ("📈  History", _page_history),
     "catalog": ("🧾 Catalog", _page_catalog),
     "manage_org": ("⚙️ Manage Org", _page_manage_org),
 }
 
 # Preferred order for the segmented control
-PAGE_KEYS = ["new", "orders", "tracking", "history", "reports", "catalog", "manage_org"]
+PAGE_KEYS = ["new", "orders", "tracking", "history", "catalog", "manage_org"]
 
 
 def _home_card():
@@ -418,6 +412,8 @@ def main():
         _call_page(page_fn, venue_id, venue_role=venue_role, deep_order_id=deep_order_id, deep_provider=(deep_provider or None))
     elif page_key == "orders":
         _call_page(page_fn, venue_id, venue_role=venue_role, deep_order_id=deep_order_id, deep_provider=(deep_provider or None), deep_status=(deep_status or None))
+    elif page_key == "history":
+        _call_page(page_fn, venue_id, venue_role=venue_role, deep_provider=deep_provider)
     else:
         _call_page(page_fn, venue_id, venue_role=venue_role)
 
