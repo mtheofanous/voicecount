@@ -603,79 +603,6 @@ def find_alternative_providers(*, ctx: Any, ticket: Any, line: Optional[OrderLin
     return out
 
 
-# def _get_or_create_draft_for_op_missing(*, venue_id: int, actor: str) -> int:
-#     """Return an existing draft order id or create a new one."""
-#     with get_session() as s:
-#         o = s.exec(
-#             select(Order)
-#             .where(Order.venue_id == int(venue_id), Order.status == "draft")
-#             .order_by(Order.created_at.desc())
-#         ).first()
-#         if o and getattr(o, "id", None) is not None:
-#             return int(o.id)
-
-#         new_o = Order(
-#             venue_id=int(venue_id),
-#             status="draft",
-#             created_at=_now(),
-#             updated_at=_now(),
-#             created_by=actor,
-#             updated_by=actor,
-#             title="Operational missing (draft)",
-#             note="Auto-created draft for non-urgent operational missing.",
-#         )
-#         s.add(new_o)
-#         s.commit()
-#         s.refresh(new_o)
-#         return int(new_o.id)
-
-
-# def _add_product_to_order(*, venue_id: int, order_id: int, actor: str, product_id: Optional[int], qty: float, unit: str, provider_name: str, spoken_name: str = "") -> None:
-#     """Add (or increment) a product line in an order.
-
-#     Simplicity rules:
-#     - If same product_id already exists in order, increment qty.
-#     - We never create invoices here (new order => new invoice later).
-#     """
-#     qty = _safe_float(qty, 0.0)
-#     if qty <= 0:
-#         return
-#     now = _now()
-#     provider_name = norm_provider(provider_name)
-#     with get_session() as s:
-#         ln = None
-#         if product_id is not None:
-#             ln = s.exec(
-#                 select(OrderLine).where(OrderLine.order_id == int(order_id), OrderLine.product_id == int(product_id))
-#             ).first()
-#         if ln:
-#             ln.quantity = float(_safe_float(getattr(ln, "quantity", 0.0), 0.0) + qty)
-#             ln.updated_at = now
-#             ln.updated_by = actor
-#             s.add(ln)
-#         else:
-#             s.add(
-#                 OrderLine(
-#                     venue_id=int(venue_id),
-#                     order_id=int(order_id),
-#                     product_id=(int(product_id) if product_id is not None else None),
-#                     spoken_name=_s(spoken_name),
-#                     quantity=float(qty),
-#                     unit=(_s(unit) or "unit"),
-#                     provider=(provider_name or None),
-#                     updated_at=now,
-#                     updated_by=actor,
-#                 )
-#             )
-
-#         o = s.exec(select(Order).where(Order.id == int(order_id))).first()
-#         if o:
-#             o.updated_at = now
-#             o.updated_by = actor
-#             s.add(o)
-#         s.commit()
-
-
 def _create_urgent_order_from_cart(
     *,
     venue_id: int,
@@ -817,37 +744,7 @@ def _parse_delivery_schedule(raw: Any) -> Dict[str, List[str]]:
     except Exception:
         return {}
 
-# def _next_delivery_datetime(provider: Optional[Provider], now: Optional[datetime] = None) -> Optional[datetime]:
-#     """Return the next delivery datetime based on provider.delivery_schedule_json."""
-#     if now is None:
-#         now = _now()
-#     if not provider:
-#         return None
-#     sched = _parse_delivery_schedule(getattr(provider, "delivery_schedule_json", None))
-#     if not sched:
-#         return None
 
-#     def _slot_start(slot: str) -> Optional[Tuple[int, int]]:
-#         m = re.match(r"^\s*(\d{1,2}):(\d{2})\s*-", slot or "")
-#         if not m:
-#             return None
-#         return int(m.group(1)), int(m.group(2))
-
-#     best: Optional[datetime] = None
-#     for add_days in range(0, 8):
-#         d = now.date() + timedelta(days=add_days)
-#         key = _WEEKDAY_KEYS[(now.weekday() + add_days) % 7]
-#         slots = sched.get(key) or []
-#         for slot in slots:
-#             hm = _slot_start(slot)
-#             if not hm:
-#                 continue
-#             cand = datetime.combine(d, datetime.min.time()).replace(hour=hm[0], minute=hm[1])
-#             if cand < now:
-#                 continue
-#             if best is None or cand < best:
-#                 best = cand
-#     return best
 
 def _fmt_eta(now: datetime, dt: Optional[datetime]) -> str:
     if not dt:
@@ -1227,96 +1124,6 @@ def _upsert_provider_send_status(
         s.commit()
 
 
-# def _move_urgent_items_into_order(
-#     *, venue_id: int, order_id: int, provider_name: str, items: List[Dict[str, Any]], actor: str
-# ) -> None:
-#     """Create OrderLines in this same order, so they appear in Receive."""
-#     prov = norm_provider(provider_name)
-#     now = _now()
-
-#     with get_session() as s:
-#         for it in (items or []):
-#             pid = it.get("product_id")
-#             pid_i = None
-#             try:
-#                 if pid is not None:
-#                     pid_i = int(pid)
-#             except Exception:
-#                 pid_i = None
-
-#             qty = float(it.get("qty") or 0.0)
-#             if qty <= 0:
-#                 continue
-
-#             unit = _s(it.get("unit")) or "unit"
-#             name = _s(it.get("name")) or "Urgent item"
-
-#             # If same product already exists for same provider in this order, increment qty
-#             existing = None
-#             if pid_i is not None:
-#                 existing = s.exec(
-#                     select(OrderLine).where(
-#                         OrderLine.order_id == int(order_id),
-#                         OrderLine.product_id == int(pid_i),
-#                         OrderLine.provider == prov,
-#                     )
-#                 ).first()
-
-#             if existing:
-#                 existing.quantity = float(_safe_float(getattr(existing, "quantity", 0.0), 0.0) + qty)
-#                 existing.updated_at = now
-#                 existing.updated_by = actor
-#                 s.add(existing)
-#             else:
-#                 s.add(
-#                     OrderLine(
-#                         venue_id=int(venue_id),
-#                         order_id=int(order_id),
-#                         product_id=pid_i,
-#                         provider=prov,
-#                         spoken_name=f"{name} [URGENT]",
-#                         quantity=float(qty),
-#                         unit=unit,
-#                         updated_at=now,
-#                         updated_by=actor,
-#                     )
-#                 )
-
-#         # ensure workflow exists (Receive uses it)
-#         wf = s.exec(
-#             select(OrderWorkflow).where(
-#                 OrderWorkflow.order_id == int(order_id),
-#                 OrderWorkflow.provider_name == prov,
-#             )
-#         ).first()
-#         if not wf:
-#             wf = OrderWorkflow(
-#                 venue_id=int(venue_id),
-#                 order_id=int(order_id),
-#                 provider_name=prov,
-#                 state="ORDER_SENT",
-#                 updated_at=now,
-#                 updated_by=actor,
-#             )
-#             s.add(wf)
-
-#         s.commit()
-
-# def _ensure_order_pending_receive(*, order_id: int, actor: str) -> None:
-#     """Make sure the order is visible in Receive/Track Order."""
-#     now = _now()
-#     with get_session() as s:
-#         o = s.exec(select(Order).where(Order.id == int(order_id))).first()
-#         if not o:
-#             return
-
-#         # Only bump from draft -> pending_receive (do not downgrade other states)
-#         if (_s(getattr(o, "status", "")).lower() in {"draft", "borrador"}):
-#             o.status = "pending_receive"
-#             o.updated_at = now
-#             o.updated_by = actor or "venue"
-#             s.add(o)
-#             s.commit()
 
 def _render_urgent_tab(ctx: 'OrderContext') -> None:
     st.markdown("### ⚡ Urgent reorders")
@@ -2198,19 +2005,6 @@ def _load_timeline(order_id: int, provider: str) -> List[OrderWorkflowEvent]:
             ).all()
         )
 
-
-# def _render_timeline(ctx: OrderContext, provider: str) -> None:
-#     events = _load_timeline(int(ctx.order.id), provider)
-#     if not events:
-#         st.caption("No timeline yet.")
-#         return
-#     for e in events:
-#         at = e.at.strftime("%Y-%m-%d %H:%M") if getattr(e, "at", None) else ""
-#         note = _s(getattr(e, "note", None))
-#         frm = _s(getattr(e, "from_state", None))
-#         to = _s(getattr(e, "to_state", None))
-#         who = f"{_s(getattr(e, 'actor_role', None))}:{_s(getattr(e, 'actor', None))}".strip(":")
-#         st.markdown(f"- **{at}** · `{who}` · {frm} → {to}" + (f" · {note}" if note else ""))
 
 
 # =============================
@@ -3331,25 +3125,7 @@ def supplier_decision_from_venue(ctx: OrderContext, provider: str, decision: str
 
     return "ok"
 
-# def _derive_workflow_state_from_open_resolutions(open_rows: list[ProviderResolution]) -> str:
-#     """
-#     Keep your existing workflow states, but derive them from what's still OPEN.
-#     Priority: supplementary > credit_note > reject
-#     """
-#     types = {(_s(r.resolution_type).strip().lower()) for r in (open_rows or [])}
 
-#     if "supplementary_delivery" in types:
-#         return "SUPPLEMENTARY_DELIVERY_SENT"
-
-#     if "credit_note" in types:
-#         # if any open credit_note has invoice, treat as ISSUED else PENDING
-#         has_invoice = any(_s(getattr(r, "credit_note_invoice", None)).strip() for r in open_rows if _s(getattr(r, "resolution_type", "")).lower() == "credit_note")
-#         return "SUPPLIER_CREDIT_NOTE_ISSUED" if has_invoice else "SUPPLIER_CREDIT_NOTE_PENDING"
-
-#     if "reject" in types:
-#         return "SUPPLIER_REJECTED"
-
-#     return "CLOSED"
 
 
 def venue_verify_and_close(*, ctx: OrderContext, provider: str, mode: str, credit_note_invoice: Optional[str] = None) -> str:
@@ -3640,96 +3416,6 @@ def _close_ticket(*, ticket_id: int, new_state: str, note: str, actor: str = "ve
         s.add(t)
         s.commit()
 
-
-# def _get_or_create_draft_order(*, venue_id: int, actor: str = "venue") -> int:
-#     """Return a draft order id for the venue (creates one if missing)."""
-#     vid = int(venue_id)
-#     with get_session() as s:
-#         # best-effort: find latest draft
-#         q = (
-#             select(Order)
-#             .where(Order.venue_id == vid)
-#             .where((Order.status == "draft") | (Order.status == "borrador"))
-#             .order_by(Order.created_at.desc())
-#         )
-#         o = s.exec(q).first()
-#         if o and getattr(o, "id", None) is not None:
-#             return int(o.id)
-
-#         # create new draft
-#         o = Order(
-#             venue_id=vid,
-#             status="draft",
-#             title="Borrador",
-#             created_at=_now(),
-#             created_by=actor,
-#         )
-#         s.add(o)
-#         s.commit()
-#         s.refresh(o)
-#         return int(o.id)
-
-
-# def _create_new_draft_order(*, venue_id: int, actor: str, title: str) -> int:
-#     vid = int(venue_id)
-#     with get_session() as s:
-#         o = Order(
-#             venue_id=vid,
-#             status="draft",
-#             title=title or "Nuevo pedido",
-#             created_at=_now(),
-#             created_by=actor,
-#         )
-#         s.add(o)
-#         s.commit()
-#         s.refresh(o)
-#         return int(o.id)
-
-
-# def _add_line_to_order(
-#     *, venue_id: int, order_id: int, product_id: int | None,
-#     provider: str, name: str, qty: float, unit: str, actor: str = "venue",
-#     chip: str = ""
-# ) -> None:
-#     with get_session() as s:
-#         chip_txt = f" [{chip}]" if chip else ""
-#         ln = OrderLine(
-#             venue_id=int(venue_id),
-#             order_id=int(order_id),
-#             product_id=int(product_id) if product_id else None,
-#             provider=_s(provider) or None,
-#             spoken_name=(_s(name) + chip_txt).strip() or None,
-#             quantity=float(qty or 0.0),
-#             unit=_s(unit) or None,
-#             updated_at=_now(),
-#             updated_by=actor,
-#         )
-#         s.add(ln)
-#         s.commit()
-
-
-
-# def _search_similar_products(*, venue_id: int, query_name: str, limit: int = 50) -> list[Product]:
-#     """Best-effort similarity search by name (simple contains tokens)."""
-#     qn = (_s(query_name) or "").strip().lower()
-#     if not qn:
-#         return []
-#     tokens = [t for t in re.split(r"\W+", qn) if len(t) >= 3][:4]
-#     if not tokens:
-#         tokens = [qn[:6]]
-#     with get_session() as s:
-#         # Start broad: venue products
-#         ps = list(s.exec(select(Product).where(Product.venue_id == int(venue_id))).all())
-#     def score(p: Product) -> float:
-#         nm = (_s(getattr(p, 'name', ''))).lower()
-#         if not nm:
-#             return 0.0
-#         hits = sum(1 for t in tokens if t in nm)
-#         return hits / max(1, len(tokens))
-#     ranked = [(score(p), p) for p in ps]
-#     ranked = [rp for rp in ranked if rp[0] > 0]
-#     ranked.sort(key=lambda x: x[0], reverse=True)
-#     return [p for _, p in ranked[:limit]]
 
 
 # =============================

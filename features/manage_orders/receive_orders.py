@@ -101,3 +101,47 @@ def venue_verify_and_close(*args: Any, **kwargs: Any):
 
 def resolve_operational_missing(*args: Any, **kwargs: Any):
     return _mod().resolve_operational_missing(*args, **kwargs)
+
+
+# -----------------------------
+# Lazy re-exports for internal helpers (used by history/reports)
+# -----------------------------
+# -----------------------------
+# Lazy re-exports for internal helpers (used by history/reports)
+# -----------------------------
+# -----------------------------
+# Lazy re-exports for internal helpers (used by history/reports)
+# -----------------------------
+from typing import TYPE_CHECKING
+import importlib
+
+_IMPL_MODULE = None
+
+def _mod():
+    global _IMPL_MODULE
+    if _IMPL_MODULE is None:
+        _IMPL_MODULE = importlib.import_module(
+            "features.manage_orders.receive_orders_page"
+        )
+    return _IMPL_MODULE
+
+
+if TYPE_CHECKING:
+    from .receive_orders_page import OrderContext as OrderContext  # noqa: F401
+
+
+def __getattr__(name: str):
+    """
+    Lazily forward any attribute to receive_orders_page, if it exists there.
+    """
+    m = _mod()
+    if hasattr(m, name):
+        return getattr(m, name)
+    raise AttributeError(f"module {__name__!r} has no attribute {name!r}")
+
+
+def __dir__():
+    m = _mod()
+    return sorted(set(globals().keys()) | set(dir(m)))
+
+

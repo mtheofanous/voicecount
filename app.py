@@ -188,6 +188,7 @@ def _bottom_tabbar(current_page: str) -> None:
         ("history", "🗂️", "History"),
         ("reports", "📈", "Reports"),
         ("catalog", "🧾", "Catalog"),
+        ("manage_org", "⚙️", "Manage Org"),
     ]
 
     # Get session token to include in links
@@ -256,6 +257,10 @@ def _page_orders():
     from features.manage_orders.orders import orders_tab
     return orders_tab
 
+def _page_manage_org():
+    from features.auth_and_manage import manage_organization_ui
+    return manage_organization_ui
+
 def _page_tracking():
     # wrapper lazily imports heavy implementation
     from features.manage_orders.receive_orders import tracking_dashboard
@@ -277,10 +282,11 @@ PAGES = {
     "history": ("🗂️ History", _page_history),
     "reports": ("📈 Reports", _page_reports),
     "catalog": ("🧾 Catalog", _page_catalog),
+    "manage_org": ("⚙️ Manage Org", _page_manage_org),
 }
 
 # Preferred order for the segmented control
-PAGE_KEYS = ["new", "orders", "tracking", "history", "reports", "catalog"]
+PAGE_KEYS = ["new", "orders", "tracking", "history", "reports", "catalog", "manage_org"]
 
 
 def _home_card():
@@ -292,20 +298,36 @@ def _home_card():
 
 
 def _call_page(fn, venue_id: int, **kwargs):
-    """Call a page function but only pass kwargs it actually accepts.
-
-    This prevents TypeError when some pages don't support deep-link params.
+    """
+    Call a page function, passing only the arguments it actually accepts.
+    Supports pages WITH or WITHOUT venue_id.
     """
     import inspect
+
     try:
         sig = inspect.signature(fn)
     except (TypeError, ValueError):
-        # Builtins / callables without signature: best effort
-        return fn(venue_id)
+        # Fallback: try venue_id first, then no args
+        try:
+            return fn(venue_id)
+        except TypeError:
+            return fn()
 
     params = sig.parameters
-    accepted = {k: v for k, v in kwargs.items() if k in params}
-    return fn(venue_id, **accepted)
+
+    call_kwargs = {}
+
+    # Pass venue_id only if accepted
+    if "venue_id" in params:
+        call_kwargs["venue_id"] = venue_id
+
+    # Pass other kwargs only if accepted
+    for k, v in kwargs.items():
+        if k in params:
+            call_kwargs[k] = v
+
+    return fn(**call_kwargs)
+
 
 
 def main():
