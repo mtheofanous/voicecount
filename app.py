@@ -49,6 +49,8 @@ from features.auth_and_manage.auth_multi_tenant import (
     auth_gate,
     require_login,
     current_user,
+    current_account,
+    clear_auth,
     current_active_venue,
     current_venues_for_user,
     manage_organization_ui,
@@ -83,6 +85,25 @@ button{
   min-height:44px;
   border-radius:14px;
   font-weight:900;
+}
+
+
+/* ================================
+   Fixed TOP bar (NEW)
+================================ */
+#app-topbar{
+  position: fixed;
+  top: 0;
+  left: 0;
+  right: 0;
+  z-index: 9998;
+
+  padding: 8px 12px;
+  background: rgba(255,255,255,0.72);
+  border-bottom: 1px solid rgba(49,51,63,0.12);
+
+  backdrop-filter: blur(10px);
+  -webkit-backdrop-filter: blur(10px);
 }
 
 /* --- Bottom Tab Bar --- */
@@ -348,21 +369,63 @@ def main():
 
     # Debug log for resolved page
     logging.debug(f"Resolved page_key after deep-link sync: {st.session_state['page']}")
+    
+    # Top bar (moved out of auth_gate)
+    # ===== ONE-LINE FIXED MOBILE TOP BAR =====
+    st.markdown('<div id="app-topbar">', unsafe_allow_html=True)
 
-    # Top: venue selector + quick nav
-    top_l, top_r = st.columns([.8, 2.4], vertical_alignment="center")
-    with top_l:
+    u = current_user()
+    acc = current_account()
+
+    name = (u or {}).get("full_name") or "—"
+    acc_name = (acc or {}).get("name") or "—"
+
+    bar_l, bar_c, bar_r = st.columns([4.5, 3.5, 1], vertical_alignment="center")
+
+    # LEFT: identity pill
+    with bar_l:
+        st.markdown(
+            f"""
+            <div style="
+                display:inline-flex;
+                align-items:center;
+                gap:6px;
+                padding:6px 10px;
+                border:1px solid rgba(49,51,63,0.18);
+                border-radius:999px;
+                font-size:0.85rem;
+                line-height:1;
+                white-space:nowrap;
+                overflow:hidden;
+                text-overflow:ellipsis;
+                max-width:100%;
+            ">
+                <span style="opacity:0.75;">👤</span>
+                <span style="font-weight:600; overflow:hidden; text-overflow:ellipsis;">{name}</span>
+                <span style="opacity:0.4;">•</span>
+                <span style="opacity:0.7; overflow:hidden; text-overflow:ellipsis;">{acc_name}</span>
+            </div>
+            """,
+            unsafe_allow_html=True,
+        )
+
+    # CENTER: venue selector + role resolution
+    with bar_c:
         venue_id = _venue_selector_compact()
 
-        # Resolve role for the selected venue (needed by some pages like orders_tab)
         _venues = current_venues_for_user() or []
         _role_by_id = {int(v["id"]): role for (v, role) in _venues}
         venue_role = _role_by_id.get(int(venue_id))
 
-    with top_r:
-        # Bottom tab bar handles navigation now.
-        # Keep this area light so the top row stays compact on mobile.
-        st.empty()
+    # RIGHT: logout icon
+    with bar_r:
+        if st.button("⎋", key="logout_btn_app", help="Logout", use_container_width=True):
+            clear_auth()
+            st.rerun()
+
+    st.markdown("</div>", unsafe_allow_html=True)
+
+
 
     # Render page (no fixed-height container)
     page_key = st.session_state["page"]
