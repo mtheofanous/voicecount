@@ -164,20 +164,19 @@ def _bottom_tabbar(current_page: str) -> None:
         active = "active" if key == current_page else ""
         href = f"?page={key}"
         items.append(
-f"""<a class="voi-tab {active}" href="{href}">
+f"""<a class="voi-tab {active}" href="{href}" target="_self">
   <div class="ic">{icon}</div>
   <div class="tx">{label}</div>
 </a>"""
         )
 
-    st.markdown(
-f"""<div class="voi-tabbar">
+    html = f"""<div class="voi-tabbar">
   <div class="voi-tabs">
     {''.join(items)}
   </div>
-</div>""",
-        unsafe_allow_html=True,
-    )
+</div>"""
+
+    st.markdown(html, unsafe_allow_html=True)
 
 
 
