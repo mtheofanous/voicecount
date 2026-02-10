@@ -675,10 +675,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     if audio_file is not None:
         st.session_state[S("audio_bytes")] = audio_file.read()
 
-    # bar = st.columns([1.2, 7.6], vertical_alignment="center")
-    # lang_col, type_col = bar
-
-
+ 
     with st.container(horizontal=True):
         effective_lang_code = lang_code or "auto"
 
