@@ -622,8 +622,6 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         chat = st.session_state.get(S("order_chat"), [])
         
 
-        st.markdown('<div class="notes-wrap">', unsafe_allow_html=True)
-
         for i, msg in enumerate(list(chat)):
             role_msg = safe_str(msg.get("role"))
             txt = safe_str(msg.get("text", ""))
@@ -635,37 +633,37 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
             bubble_col, del_col = st.columns([20, 2], vertical_alignment="top")
             with st.container(horizontal=True):
-                with bubble_col:
-                    st.markdown(
-                        f"""
-                        <div class="note-row">
-                            <div class="note-bubble {cls}">
-                            <div class="note-meta">
-                                <div class="note-text"><strong>{who}:</strong> {txt}</div>
-                                <div class="note-time">{tlabel}</div>
-                            </div>
-                            </div>
+
+                st.markdown(
+                    f"""
+                    <div class="note-row">
+                        <div class="note-bubble {cls}">
+                        <div class="note-meta">
+                            <div class="note-text"><strong>{who}:</strong> {txt}</div>
+                            <div class="note-time">{tlabel}</div>
                         </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+                        </div>
+                    </div>
+                    """,
+                    unsafe_allow_html=True,
+                )
 
-                with del_col:
-                    msg_key = f"{int(tsf * 1000)}" if tsf else f"idx_{i}"
-                    if st.button(
-                        "🗑️",
-                        key=K(f"del_msg_{msg_key}"),
-                        help="Eliminar esta nota",
-                        type="secondary",
-                    ):
-                        st.session_state[S("order_chat")].pop(i)
-                        _rebuild_transcript_from_chat()
 
-                        st.session_state[S("auto_parse_pending")] = True
-                        st.session_state.pop(S("parsed_df"), None)
-                        st.session_state.pop(S("parse_candidates_df"), None)
-                        st.session_state.pop(S("finalize_parse_pending"), None)
-                        st.rerun()
+                msg_key = f"{int(tsf * 1000)}" if tsf else f"idx_{i}"
+                if st.button(
+                    "🗑️",
+                    key=K(f"del_msg_{msg_key}"),
+                    help="Eliminar esta nota",
+                    type="secondary",
+                ):
+                    st.session_state[S("order_chat")].pop(i)
+                    _rebuild_transcript_from_chat()
+
+                    st.session_state[S("auto_parse_pending")] = True
+                    st.session_state.pop(S("parsed_df"), None)
+                    st.session_state.pop(S("parse_candidates_df"), None)
+                    st.session_state.pop(S("finalize_parse_pending"), None)
+                    st.rerun()
 
             st.markdown("</div>", unsafe_allow_html=True)
 
