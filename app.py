@@ -340,6 +340,27 @@ def main():
         deep_status = st.query_params.get("status", "").strip().lower() or None
     except:
         deep_status = None
+        
+    # -------------------------------
+    # URL action: logout (no st.button)
+    # -------------------------------
+    try:
+        url_logout = (st.query_params.get("logout", "") or "").strip()
+    except Exception:
+        url_logout = ""
+
+    if url_logout == "1":
+        clear_auth()
+        # Remove logout from URL to avoid rerun loops; keep current page if possible
+        # IMPORTANT: clear the logout flag (and token) from the URL to stop rerun loop
+        set_query_params(
+            page=st.session_state.get("page", "orders"),
+            logout="",   # this deletes the param in core.url_nav.set_query_params
+            st="",       # optional: also remove session token from URL
+        )
+        st.rerun()
+
+
 
     # Auth gate (now preserves URL params across reruns)
     auth_gate(show_manage_org=True, show_venue_selector=False)
@@ -414,42 +435,33 @@ def main():
             venue_role = _role_by_id.get(int(venue_id))
 
         with bar_r:
+            token = st.session_state.get("_session_token", "")
+            token_param = f"&st={token}" if token else ""
+            href = f"?page={st.session_state.get('page','orders')}{token_param}&logout=1"
+
             st.markdown(
-                """
-                <style>
-                .logout-badge {
-                    display: inline-flex;
-                    align-items: center;
-                    justify-content: center;
-                    gap: 6px;
-                    padding: 8px 14px;
-                    background: linear-gradient(135deg, rgba(239,68,68,0.12), rgba(220,38,38,0.08));
-                    border: 1px solid rgba(220,38,38,0.35);
-                    border-radius: 12px;
-                    font-size: 0.9rem;
-                    font-weight: 600;
-                    color: rgba(127,29,29,1);
-                    cursor: pointer;
-                    transition: all 0.2s ease;
-                    width: 100%;
-                    white-space: nowrap;
-                }
-                .logout-badge:hover {
-                    background: linear-gradient(135deg, rgba(239,68,68,0.2), rgba(220,38,38,0.12));
-                    border-color: rgba(220,38,38,0.5);
-                    box-shadow: 0 2px 8px rgba(220,38,38,0.15);
-                }
-                .logout-badge:active {
-                    transform: scale(0.98);
-                }
-                </style>
+                f"""
+                <a href="{href}" target="_self"
+                   style="
+                     display:inline-flex;
+                     align-items:center;
+                     justify-content:center;
+                     width:100%;
+                     min-height:44px;
+                     padding:10px 10px;
+                     border-radius:14px;
+                     font-weight:900;
+                     text-decoration:none;
+                     color:#0f172a;
+                     border:1px solid rgba(148,163,184,.35);
+                     background:#fff;
+                   ">
+                  🚪 Logout
+                </a>
                 """,
                 unsafe_allow_html=True,
             )
-            st.markdown(
-                '<div class="logout-badge">🚪 Logout</div>',
-                unsafe_allow_html=True,
-            )
+
 
 
     # Render page (no fixed-height container)
