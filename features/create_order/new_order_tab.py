@@ -631,7 +631,6 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             cls = "note-user" if role_msg == "user" else "note-asr"
             tlabel = time.strftime("%H:%M", time.localtime(tsf)) if tsf else ""
 
-            bubble_col, del_col = st.columns([20, 2], vertical_alignment="top")
             with st.container(horizontal=True):
 
                 st.markdown(
@@ -677,8 +676,8 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     if audio_file is not None:
         st.session_state[S("audio_bytes")] = audio_file.read()
 
-    bar = st.columns([1.2, 7.6], vertical_alignment="center")
-    lang_col, type_col = bar
+    # bar = st.columns([1.2, 7.6], vertical_alignment="center")
+    # lang_col, type_col = bar
 
     effective_lang_code = lang_code or "auto"
 
@@ -689,7 +688,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
         effective_lang_code = st.session_state.get(S("lang_code_ui")) or lang_code or "auto"
 
-        with lang_col:
+        with st.container(horizontal=True):
             try:
                 with st.popover("🌐", use_container_width=True):
                     picked = st.radio(
@@ -726,6 +725,10 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                     )
                     st.session_state[S("lang_code_ui")] = picked
                     effective_lang_code = picked
+            typed = st.chat_input("Escribe un ítem… (ej: 3 cajas cerveza)", key=K("chat_input"))
+            if typed:
+                append_message("user", typed)
+                st.rerun()
     else:
         st.session_state.pop(S("lang_code_ui"), None)
         effective_lang_code = lang_code or "auto"
@@ -752,12 +755,6 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             st.rerun()
         except Exception as e:
             st.error(f"Error transcribiendo: {e}")
-
-    with type_col:
-        typed = st.chat_input("Escribe un ítem… (ej: 3 cajas cerveza)", key=K("chat_input"))
-        if typed:
-            append_message("user", typed)
-            st.rerun()
 
     # =========================================================
     # Convert df -> order lines
