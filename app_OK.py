@@ -151,17 +151,7 @@ button{
 def _go(page_key: str, **extra_qp: str) -> None:
     """Navigate to a page and sync URL (?page=...)."""
     st.session_state["page"] = page_key
-    
-    # Preserve session token in URL
-    params = {"page": page_key}
-    token = st.session_state.get("_session_token")
-    if token:
-        params["st"] = token
-    
-    # Add any extra query params
-    params.update({k: str(v) for k, v in extra_qp.items() if v is not None and str(v).strip()})
-    
-    set_query_params(**params)
+    set_query_params(page=page_key, **{k: str(v) for k, v in extra_qp.items() if v is not None and str(v).strip()})
     st.rerun()
     
 def _bottom_tabbar(current_page: str) -> None:
@@ -174,14 +164,10 @@ def _bottom_tabbar(current_page: str) -> None:
         ("catalog", "🧾", "Catalog"),
     ]
 
-    # Get session token to include in links
-    token = st.session_state.get("_session_token", "")
-    token_param = f"&st={token}" if token else ""
-
     items = []
     for key, icon, label in tabs:
         active = "active" if key == current_page else ""
-        href = f"?page={key}{token_param}"
+        href = f"?page={key}"
         items.append(
 f"""<a class="voi-tab {active}" href="{href}" target="_self">
   <div class="ic">{icon}</div>
@@ -296,34 +282,7 @@ def main():
     bootstrap_once()
     _css()
 
-    # Read page from URL (auth_gate now preserves these params)
-    try:
-        url_page = st.query_params.get("page", "").strip().lower()
-    except:
-        url_page = ""
-    
-    if url_page and url_page in PAGES:
-        st.session_state["page"] = url_page
-    elif "page" not in st.session_state:
-        st.session_state["page"] = "orders"
-    
-    # Read other deep-link params
-    try:
-        deep_order_id = int(st.query_params.get("order_id", 0)) or None
-    except:
-        deep_order_id = None
-    
-    try:
-        deep_provider = st.query_params.get("provider", "").strip() or None
-    except:
-        deep_provider = None
-        
-    try:
-        deep_status = st.query_params.get("status", "").strip().lower() or None
-    except:
-        deep_status = None
-
-    # Auth gate (now preserves URL params across reruns)
+    # Auth gate (no global venue selector; we render our own compact one)
     auth_gate(show_manage_org=True, show_venue_selector=False)
     require_login()
 
@@ -345,6 +304,19 @@ def main():
         else:
             st.info("Ask an admin to grant you access.")
         return
+
+    # Sync deep-link params
+    deep_page = (qp_str("page", "").strip().lower() or "")
+    deep_order_id = qp_int("order_id")
+    deep_provider = (qp_str("provider", "").strip() or "")
+    deep_status = (qp_str("status", "").strip().lower() or "")
+
+    # Resolve initial page
+    if "page" not in st.session_state:
+        st.session_state["page"] = deep_page if deep_page in PAGES else "orders"
+    elif deep_page in PAGES and deep_page != st.session_state["page"]:
+        # URL changed externally
+        st.session_state["page"] = deep_page
 
     # Debug log for resolved page
     logging.debug(f"Resolved page_key after deep-link sync: {st.session_state['page']}")

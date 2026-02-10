@@ -358,76 +358,13 @@ class AuthContext:
     account_id: int
 
 
-import secrets
-
-
-# Store active sessions in memory (survives across Streamlit reruns within same Python process)
-_active_sessions = {}
-
-
-def _create_session_token(user_id: int, account_id: int) -> str:
-    """Create a session token and store it in memory"""
-    token = secrets.token_urlsafe(32)
-    _active_sessions[token] = {
-        "user_id": int(user_id),
-        "account_id": int(account_id),
-        "created_at": datetime.utcnow()
-    }
-    return token
-
-
-def _get_session_from_token(token: str) -> Optional[dict]:
-    """Retrieve session data from token"""
-    return _active_sessions.get(token)
-
-
-def _invalidate_session_token(token: str) -> None:
-    """Remove a session token"""
-    _active_sessions.pop(token, None)
-
-
 def _set_auth(user_id: int, account_id: int) -> None:
     st.session_state["auth_ctx"] = {"user_id": int(user_id), "account_id": int(account_id)}
-    # Create and store session token
-    token = _create_session_token(user_id, account_id)
-    st.session_state["_session_token"] = token
-
-
-def _restore_auth_from_url() -> bool:
-    """Restore auth from session token in URL"""
-    if is_logged_in():
-        return True
-    
-    # Check if we have a session token in URL or session state
-    token = st.session_state.get("_session_token")
-    if not token:
-        try:
-            token = st.query_params.get("st", "").strip()
-        except:
-            token = ""
-    
-    if token:
-        session_data = _get_session_from_token(token)
-        if session_data:
-            st.session_state["auth_ctx"] = {
-                "user_id": session_data["user_id"],
-                "account_id": session_data["account_id"]
-            }
-            st.session_state["_session_token"] = token
-            return True
-    
-    return False
 
 
 def clear_auth() -> None:
-    # Invalidate session token
-    token = st.session_state.get("_session_token")
-    if token:
-        _invalidate_session_token(token)
-    
     st.session_state.pop("auth_ctx", None)
     st.session_state.pop("active_venue_id", None)
-    st.session_state.pop("_session_token", None)
     # Clear auth caches
     _cached_user_dict.clear()
     _cached_account_dict.clear()
@@ -817,17 +754,6 @@ def auth_gate(
     """
     # Initialize once
     init_auth_db()
-    
-    # Restore auth from session token (survives page reloads)
-    _restore_auth_from_url()
-
-    # PRESERVE URL QUERY PARAMS across auth reruns
-    try:
-        current_params = dict(st.query_params)
-        if current_params:
-            st.session_state["_auth_preserved_params"] = current_params
-    except:
-        pass
 
     # Anti-flicker guard
     rerun_key = "auth_rerun_guard"
@@ -865,13 +791,6 @@ def auth_gate(
                         st.success("Logged in ✅")
                         st.session_state[rerun_key] = True
                         time.sleep(0.5)
-                        # Restore query params before rerun
-                        preserved = st.session_state.get("_auth_preserved_params", {})
-                        if preserved:
-                            try:
-                                st.query_params.update(preserved)
-                            except:
-                                pass
                         st.rerun()
 
         with t_signup:
@@ -899,13 +818,6 @@ def auth_gate(
                         st.success("Account created ✅")
                         st.session_state[rerun_key] = True
                         time.sleep(0.5)
-                        # Restore query params before rerun
-                        preserved = st.session_state.get("_auth_preserved_params", {})
-                        if preserved:
-                            try:
-                                st.query_params.update(preserved)
-                            except:
-                                pass
                         st.rerun()
 
                     except Exception as e:
