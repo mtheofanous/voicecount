@@ -620,7 +620,6 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     # =========================================================
     with st.container(border=True):
         chat = st.session_state.get(S("order_chat"), [])
-        
 
         for i, msg in enumerate(list(chat)):
             role_msg = safe_str(msg.get("role"))
@@ -669,11 +668,22 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     # =========================================================
     # Input bar (voice + typed)
     # =========================================================
-    st.session_state.setdefault(S("audio_input_key"), "audio_input_main")
-    st.session_state.setdefault(S("audio_bytes"), b"")
 
-    
+
+    # bar = st.columns([1.2, 7.6], vertical_alignment="center")
+    # lang_col, type_col = bar
+
+
+
     with st.container(horizontal=True):
+        
+        st.session_state.setdefault(S("audio_input_key"), "audio_input_main")
+        st.session_state.setdefault(S("audio_bytes"), b"")
+
+        audio_file = st.audio_input("", key=K("audio_msg"))
+        if audio_file is not None:
+            st.session_state[S("audio_bytes")] = audio_file.read()
+        
         effective_lang_code = lang_code or "auto"
 
         if not bool(cfg_cached.get("hide_user_controls", True)):
@@ -721,15 +731,6 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         else:
             st.session_state.pop(S("lang_code_ui"), None)
             effective_lang_code = lang_code or "auto"
-    
-        
-        audio_file = st.audio_input("", key=K("audio_msg"))
-        if audio_file is not None:
-            st.session_state[S("audio_bytes")] = audio_file.read()
-
-
-    with st.container(horizontal=True):
-
         typed = st.chat_input("Escribe un ítem… (ej: 3 cajas cerveza)", key=K("chat_input"))
         if typed:
             append_message("user", typed)
