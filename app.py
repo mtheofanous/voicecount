@@ -103,6 +103,27 @@ div[data-testid="stVerticalBlock"] > div:has(#app-topbar-marker){
   -webkit-backdrop-filter: blur(10px);
 }
 
+/* --- Topbar: force columns to stay on one line on mobile --- */
+div:has(#app-topbar-marker) [data-testid="stHorizontalBlock"]{
+  flex-wrap: nowrap !important;
+  align-items: center !important;
+  gap: 10px !important;
+}
+
+/* Prevent the selectbox from stretching too tall */
+div:has(#app-topbar-marker) [data-testid="stSelectbox"] > div{
+  min-width: 180px;          /* tweak: 160–220 */
+}
+
+/* Make the logout button compact and not “steal” width */
+div:has(#app-topbar-marker) button[kind="secondary"],
+div:has(#app-topbar-marker) button[kind="primary"]{
+  min-width: 44px !important;
+  padding: 0.35rem 0.5rem !important;
+  border-radius: 14px !important;
+}
+
+
 /* --- Bottom Tab Bar --- */
 .voi-tabbar{
   position: fixed;
@@ -367,36 +388,26 @@ def main():
     
     # Top bar (moved out of auth_gate)
     # ===== ONE-LINE FIXED MOBILE TOP BAR (ACTUALLY FIXED) =====
-    # ===== ONE-LINE FIXED MOBILE TOP BAR (identity · venue · logout) =====
+        # ===== ONE-LINE FIXED MOBILE TOP BAR (identity · venue · logout) =====
     topbar = st.container()
     with topbar:
-        # Marker used by CSS to pin this entire Streamlit block
-        st.markdown('<div id="app-topbar-marker"></div>', unsafe_allow_html=True)
+        st.markdown('<div id="app-topbar-marker" style="height:1px;"></div>', unsafe_allow_html=True)
 
         u = current_user() or {}
         acc = current_account() or {}
-
         name = u.get("full_name") or "—"
         acc_name = acc.get("name") or "—"
 
-        bar_l, bar_c, bar_r = st.columns([4.6, 3.6, 1.8], vertical_alignment="center")
+        bar_l, bar_c, bar_r = st.columns([5.2, 3.8, 0.9], vertical_alignment="center")
 
         with bar_l:
             st.markdown(
                 f"""
                 <div style="
-                    display:inline-flex;
-                    align-items:center;
-                    gap:6px;
-                    padding:6px 10px;
-                    border:1px solid rgba(49,51,63,0.18);
-                    border-radius:999px;
-                    font-size:0.85rem;
-                    line-height:1;
-                    white-space:nowrap;
-                    overflow:hidden;
-                    text-overflow:ellipsis;
-                    max-width:100%;
+                    display:inline-flex;align-items:center;gap:6px;
+                    padding:6px 10px;border:1px solid rgba(49,51,63,0.18);
+                    border-radius:999px;font-size:0.85rem;line-height:1;
+                    white-space:nowrap;overflow:hidden;text-overflow:ellipsis;max-width:100%;
                 ">
                     <span style="opacity:0.75;">👤</span>
                     <span style="font-weight:700; overflow:hidden; text-overflow:ellipsis;">{name}</span>
@@ -414,10 +425,10 @@ def main():
             venue_role = _role_by_id.get(int(venue_id))
 
         with bar_r:
-            # Visible on all sizes, no “almost hidden” icon
-            if st.button("🚪 Logout", key="logout_btn_app", use_container_width=True):
+            if st.button("⎋", key="logout_btn_app", help="Logout", use_container_width=True):
                 clear_auth()
                 st.rerun()
+
 
 
     # Render page (no fixed-height container)
