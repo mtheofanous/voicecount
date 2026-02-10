@@ -83,14 +83,19 @@ button{
 
 /* --- Bottom Tab Bar --- */
 .voi-tabbar{
-  position:fixed;
-  left:0; right:0; bottom:0;
-  z-index:9999;
-  padding:10px 10px calc(10px + env(safe-area-inset-bottom));
-  background:rgba(255,255,255,.96);
-  border-top:1px solid rgba(148,163,184,.35);
-  backdrop-filter:saturate(180%) blur(12px);
+  position: sticky;              /* ✅ Streamlit-safe */
+  bottom: 0;
+  left: 0;
+  right: 0;
+  z-index: 9999;
+
+  padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
+  background: rgba(255,255,255,.96);
+  border-top: 1px solid rgba(148,163,184,.35);
+
+  backdrop-filter: saturate(180%) blur(12px);
 }
+
 
 .voi-tabs{
   display:flex;
@@ -157,7 +162,6 @@ def _bottom_tabbar(current_page: str) -> None:
     for key, icon, label in tabs:
         active = "active" if key == current_page else ""
         href = f"?page={key}"
-        # IMPORTANT: no leading indentation before <a ...>
         items.append(
 f"""<a class="voi-tab {active}" href="{href}">
   <div class="ic">{icon}</div>
@@ -165,13 +169,15 @@ f"""<a class="voi-tab {active}" href="{href}">
 </a>"""
         )
 
-    html = f"""<div class="voi-tabbar">
+    st.markdown(
+f"""<div class="voi-tabbar">
   <div class="voi-tabs">
     {''.join(items)}
   </div>
-</div>"""
+</div>""",
+        unsafe_allow_html=True,
+    )
 
-    st.markdown(html, unsafe_allow_html=True)
 
 
 
