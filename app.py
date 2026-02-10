@@ -83,7 +83,7 @@ button{
 
 /* --- Bottom Tab Bar --- */
 .voi-tabbar{
-  position: sticky;              /* ✅ Streamlit-safe */
+  position: fixed;
   bottom: 0;
   left: 0;
   right: 0;
@@ -141,7 +141,8 @@ button{
     )
 
 
-
+#  -------------------------------
+# 5) Navigation + venue selector (URL-sync, mobile-friendly)
 def _go(page_key: str, **extra_qp: str) -> None:
     """Navigate to a page and sync URL (?page=...)."""
     st.session_state["page"] = page_key
