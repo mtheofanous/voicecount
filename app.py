@@ -48,7 +48,6 @@ from features.auth_and_manage.auth_multi_tenant import (
     init_auth_db,
     auth_gate,
     require_login,
-    restore_auth_from_cookie,
     current_user,
     current_active_venue,
     current_venues_for_user,
@@ -279,9 +278,6 @@ def _call_page(fn, venue_id: int, **kwargs):
 def main():
     bootstrap_once()
     _css()
-
-    # Restore persisted login (Streamlit Cloud-safe for <a href> navigation)
-    restore_auth_from_cookie()
 
     # Auth gate (no global venue selector; we render our own compact one)
     auth_gate(show_manage_org=True, show_venue_selector=False)

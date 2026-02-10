@@ -6,7 +6,7 @@ Optimized for performance with minimal reruns.
 """
 
 from __future__ import annotations
-import json
+
 import os
 import base64
 import hmac
@@ -365,140 +365,11 @@ def _set_auth(user_id: int, account_id: int) -> None:
 def clear_auth() -> None:
     st.session_state.pop("auth_ctx", None)
     st.session_state.pop("active_venue_id", None)
-    # Also clear persisted auth cookie (keeps VOI-tab <a href> navigation from logging users out)
-    _cookie_del("voi_auth")
     # Clear auth caches
     _cached_user_dict.clear()
     _cached_account_dict.clear()
     _cached_venues_for_user.clear()
 
-
-
-
-# -------------------------------
-# Persistent auth (Streamlit Cloud-safe)
-# - Streamlit session_state is tied to a websocket; plain <a href> navigation can create a new session.
-# - We persist a signed token in a cookie so auth can be restored after a reconnect.
-# -------------------------------
-
-def _auth_secret() -> bytes:
-    # Configure in Streamlit Cloud → App → Settings → Secrets:
-    # AUTH_SECRET = "a-long-random-string"
-    secret = (os.getenv("AUTH_SECRET") or "").strip()
-    if not secret:
-        # Dev fallback (NOT secure); set AUTH_SECRET in production.
-        secret = "dev-insecure-secret-change-me"
-    return secret.encode("utf-8")
-
-
-def _sign(payload: str) -> str:
-    return hmac.new(_auth_secret(), payload.encode("utf-8"), hashlib.sha256).hexdigest()
-
-
-def _make_token(user_id: int, account_id: int, *, ttl_hours: int = 72) -> str:
-    exp = int(time.time() + ttl_hours * 3600)
-    data = {"user_id": int(user_id), "account_id": int(account_id), "exp": exp}
-    payload = json.dumps(data, separators=(",", ":"), ensure_ascii=False)
-    sig = _sign(payload)
-    b64 = base64.urlsafe_b64encode(payload.encode("utf-8")).decode("ascii")
-    return f"{b64}.{sig}"
-
-
-def _parse_token(token: str) -> Optional[dict]:
-    try:
-        b64, sig = token.split(".", 1)
-        payload = base64.urlsafe_b64decode(b64.encode("ascii")).decode("utf-8")
-        if not hmac.compare_digest(_sign(payload), sig):
-            return None
-        data = json.loads(payload)
-        if int(data.get("exp", 0)) < int(time.time()):
-            return None
-        return data
-    except Exception:
-        return None
-
-
-def _cookie_manager():
-    """Return a CookieManager instance (client-side cookies via a component).
-
-    Notes:
-    - Streamlit's built-in st.context.cookies is READ-ONLY and, on Community Cloud,
-      cookies are often filtered at the proxy layer, so it may be empty.
-    - extra_streamlit_components.CookieManager works on Cloud because it interacts
-      with cookies client-side via a Streamlit component.
-    """
-    try:
-        import extra_streamlit_components as stx
-    except Exception:
-        return None
-
-    cm_key = "__voi_cookie_manager__"
-    if cm_key not in st.session_state:
-        # Creating the component can trigger one rerun; we do it once.
-        st.session_state[cm_key] = stx.CookieManager()
-    return st.session_state[cm_key]
-
-
-def _cookie_get(name: str) -> Optional[str]:
-    cm = _cookie_manager()
-    if cm is None:
-        return None
-    try:
-        return cm.get(name)
-    except Exception:
-        return None
-
-
-def _cookie_set(name: str, value: str, *, max_age_seconds: int = 72 * 3600) -> None:
-    cm = _cookie_manager()
-    if cm is None:
-        return
-    try:
-        cm.set(name, value, max_age=max_age_seconds)
-    except Exception:
-        return
-
-
-def _cookie_del(name: str) -> None:
-    cm = _cookie_manager()
-    if cm is None:
-        return
-    try:
-        # CookieManager supports delete in recent versions; if not, overwrite with short expiry.
-        if hasattr(cm, "delete"):
-            cm.delete(name)
-        else:
-            cm.set(name, "", max_age=1)
-    except Exception:
-        return
-
-
-def restore_auth_from_cookie() -> None:
-    """Restore st.session_state['auth_ctx'] from a signed cookie, if present.
-
-    This prevents 'random' logouts on Streamlit Cloud when the user navigates using
-    plain HTML links (e.g., bottom VOI tabs using <a href="?page=...">).
-    """
-    if is_logged_in():
-        return
-
-    tok = _cookie_get("voi_auth")
-    if not tok:
-        return
-
-    data = _parse_token(tok)
-    if not data:
-        return
-
-    user_id = int(data["user_id"])
-    account_id = int(data["account_id"])
-
-    # Safety: user must exist and belong to the same account
-    u = _cached_user_dict(user_id)
-    if not u or int(u.get("account_id", 0)) != account_id:
-        return
-
-    _set_auth(user_id, account_id)
 
 def is_logged_in() -> bool:
     ctx = st.session_state.get("auth_ctx")
@@ -917,7 +788,6 @@ def auth_gate(
                     else:
                         user_id, account_id = res
                         _set_auth(user_id, account_id)
-                        _cookie_set("voi_auth", _make_token(user_id, account_id))
                         st.success("Logged in ✅")
                         st.session_state[rerun_key] = True
                         time.sleep(0.5)
@@ -944,7 +814,6 @@ def auth_gate(
 
                         acc_id, user_id = create_account_with_owner(acc_name, full_name, email, pwd)
                         _set_auth(user_id, acc_id)
-                        _cookie_set("voi_auth", _make_token(user_id, acc_id))
                         invalidate_auth_caches()
                         st.success("Account created ✅")
                         st.session_state[rerun_key] = True
