@@ -610,7 +610,6 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     hL, hR = st.columns([3, 1])
     with hL:
         st.subheader("📝 Notas de faltantes")
-        st.caption("Modo notas · nada se envía · puedes corregir luego")
         if active_draft_id:
             st.caption(f"📦 Pedido en preparación: #{int(active_draft_id)} (borrador)")
         else:
@@ -621,33 +620,31 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     # =========================================================
     with st.container(border=True):
         chat = st.session_state.get(S("order_chat"), [])
+        
 
-        if not chat:
-            st.info("Empieza escribiendo abajo o graba un audio 👇")
-        else:
-            st.markdown('<div class="notes-wrap">', unsafe_allow_html=True)
+        st.markdown('<div class="notes-wrap">', unsafe_allow_html=True)
 
-            for i, msg in enumerate(list(chat)):
-                role_msg = safe_str(msg.get("role"))
-                txt = safe_str(msg.get("text", ""))
-                tsf = float(msg.get("ts") or 0.0)
+        for i, msg in enumerate(list(chat)):
+            role_msg = safe_str(msg.get("role"))
+            txt = safe_str(msg.get("text", ""))
+            tsf = float(msg.get("ts") or 0.0)
 
-                who = "Tú" if role_msg == "user" else "Audio"
-                cls = "note-user" if role_msg == "user" else "note-asr"
-                tlabel = time.strftime("%H:%M", time.localtime(tsf)) if tsf else ""
+            who = "Tú" if role_msg == "user" else "Audio"
+            cls = "note-user" if role_msg == "user" else "note-asr"
+            tlabel = time.strftime("%H:%M", time.localtime(tsf)) if tsf else ""
 
-                bubble_col, del_col = st.columns([20, 2], vertical_alignment="top")
-
+            bubble_col, del_col = st.columns([20, 2], vertical_alignment="top")
+            with st.container(horizontal=True):
                 with bubble_col:
                     st.markdown(
                         f"""
                         <div class="note-row">
-                          <div class="note-bubble {cls}">
+                            <div class="note-bubble {cls}">
                             <div class="note-meta">
-                              <div class="note-text"><strong>{who}:</strong> {txt}</div>
-                              <div class="note-time">{tlabel}</div>
+                                <div class="note-text"><strong>{who}:</strong> {txt}</div>
+                                <div class="note-time">{tlabel}</div>
                             </div>
-                          </div>
+                            </div>
                         </div>
                         """,
                         unsafe_allow_html=True,
