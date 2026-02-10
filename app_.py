@@ -75,7 +75,7 @@ def _css():
 <style>
 /* Mobile-first spacing: leave room for TOP bar + bottom bar */
 .block-container{
-  padding: 4.75rem 0.75rem 5.5rem;  /* top, sides, bottom */
+  padding: 8.25rem 0.75rem 5.5rem;  /* top, sides, bottom */
   max-width:100%;
 }
 
@@ -90,10 +90,14 @@ button{
 /* This pins the Streamlit block that CONTAINS our marker */
 div[data-testid="stVerticalBlock"] > div:has(#app-topbar-marker){
   position: fixed;
-  top: 3.25rem;
+  top: 3.25rem;                /* below Streamlit header */
   left: 0;
   right: 0;
   z-index: 9998;
+
+  width: 100%;
+  max-width: 1100px;
+  margin: 0 auto;
 
   padding: 10px 12px;
   background: rgba(255,255,255,0.72);
@@ -103,6 +107,16 @@ div[data-testid="stVerticalBlock"] > div:has(#app-topbar-marker){
   -webkit-backdrop-filter: blur(10px);
 }
 
+
+/* Prevent horizontal scrolling caused by fixed bars / wide widgets */
+html, body {
+  overflow-x: hidden;
+}
+
+/* Make everything calculate width including padding/border */
+*, *::before, *::after {
+  box-sizing: border-box;
+}
 
 
 /* --- Bottom Tab Bar --- */
@@ -216,31 +230,6 @@ f"""<a class="voi-tab {active}" href="{href}" target="_self">
     st.markdown(html, unsafe_allow_html=True)
 
 
-
-
-def _venue_selector_compact() -> int:
-    """Compact venue selector (fast on mobile)."""
-    venues = current_venues_for_user()
-    if not venues:
-        st.warning("You don't have access to any venue yet.")
-        st.stop()
-
-    labels, ids = [], []
-    for v, role in venues:
-        labels.append(f"{v['name']} — {role}")
-        ids.append(int(v["id"]))
-
-    st.session_state.setdefault("active_venue_id", ids[0])
-    if int(st.session_state["active_venue_id"]) not in ids:
-        st.session_state["active_venue_id"] = ids[0]
-
-    idx = ids.index(int(st.session_state["active_venue_id"]))
-    chosen = st.selectbox("Venue", options=labels, index=idx, label_visibility="collapsed")
-    chosen_id = ids[labels.index(chosen)]
-    if chosen_id != int(st.session_state["active_venue_id"]):
-        st.session_state["active_venue_id"] = chosen_id
-        st.rerun()
-    return chosen_id
 
 
 # -------------------------------
@@ -368,8 +357,7 @@ def main():
     logging.debug(f"Resolved page_key after deep-link sync: {st.session_state['page']}")
     
     # Top bar (moved out of auth_gate)
-    # ===== ONE-LINE FIXED MOBILE TOP BAR (ACTUALLY FIXED) =====
-    # ===== ONE-LINE FIXED MOBILE TOP BAR (identity · venue · logout) =====
+    # ===== ONE-LINE FIXED MOBILE TOP BAR (HTML-based for mobile) =====
     topbar = st.container()
     with topbar:
         # Marker used by CSS to pin this entire Streamlit block
@@ -377,79 +365,138 @@ def main():
 
         u = current_user() or {}
         acc = current_account() or {}
+        acc_name = acc.get("name") or "–"
 
-        name = u.get("full_name") or "—"
-        acc_name = acc.get("name") or "—"
+        # Get venues for selector
+        venues = current_venues_for_user()
+        if not venues:
+            st.warning("You don't have access to any venue yet.")
+            st.stop()
 
-        bar_l, bar_c, bar_r = st.columns([4.6, 3.6, 1.8], vertical_alignment="center")
+        # Ensure active_venue_id is set
+        venue_ids = [int(v["id"]) for v, _ in venues]
+        st.session_state.setdefault("active_venue_id", venue_ids[0])
+        if int(st.session_state["active_venue_id"]) not in venue_ids:
+            st.session_state["active_venue_id"] = venue_ids[0]
 
-        with bar_l:
-            st.markdown(
-                f"""
-                <div style="
-                    display:inline-flex;
-                    align-items:center;
-                    gap:6px;
-                    padding:6px 10px;
-                    border:1px solid rgba(49,51,63,0.18);
-                    border-radius:999px;
-                    font-size:0.85rem;
-                    line-height:1;
-                    white-space:nowrap;
-                    overflow:hidden;
-                    text-overflow:ellipsis;
-                    max-width:100%;
-                ">
-                    <span style="opacity:0.75;">👤</span>
-                    <span style="opacity:0.7; overflow:hidden; text-overflow:ellipsis;">{acc_name}</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
+        venue_id = int(st.session_state["active_venue_id"])
+        _role_by_id = {int(v["id"]): role for (v, role) in venues}
+        venue_role = _role_by_id.get(venue_id)
 
-        with bar_c:
-            venue_id = _venue_selector_compact()
-            _venues = current_venues_for_user() or []
-            _role_by_id = {int(v["id"]): role for (v, role) in _venues}
-            venue_role = _role_by_id.get(int(venue_id))
+        # Get session token for URL preservation
+        token = st.session_state.get("_session_token", "")
+        token_param = f"&st={token}" if token else ""
+        current_page = st.session_state.get("page", "orders")
 
-        with bar_r:
-            st.markdown(
-                """
-                <style>
-                .logout-badge {
-                    display: inline-flex;
-                    align-items: center;
-                    justify-content: center;
-                    gap: 6px;
-                    padding: 8px 14px;
-                    background: linear-gradient(135deg, rgba(239,68,68,0.12), rgba(220,38,38,0.08));
-                    border: 1px solid rgba(220,38,38,0.35);
+        # Build venue options HTML
+        venue_options = []
+        for v, role in venues:
+            vid = int(v["id"])
+            selected = "selected" if vid == venue_id else ""
+            venue_options.append(f'<option value="{vid}" {selected}>{v["name"]} — {role}</option>')
+            
+        from textwrap import dedent
+
+
+        # HTML top bar with native select and link
+        topbar_html = dedent(f"""
+            <div style="
+                display:flex;
+                align-items:center;
+                gap:8px;
+                width:100%;
+                min-width:0;
+                max-width:1100px;
+                margin:0 auto;
+            ">
+
+            <!-- Account badge -->
+            <div style="
+                display: inline-flex;
+                align-items: center;
+                gap: 6px;
+                padding: 6px 10px;
+                border: 1px solid rgba(49,51,63,0.18);
+                border-radius: 999px;
+                font-size: 0.85rem;
+                line-height: 1;
+                white-space: nowrap;
+                overflow: hidden;
+                text-overflow: ellipsis;
+                flex-shrink: 1;
+                min-width: 0;
+            ">
+                <span style="opacity:0.75;">👤</span>
+                <span style="opacity:0.7; overflow:hidden; text-overflow:ellipsis;">{acc_name}</span>
+            </div>
+
+            <!-- Venue selector -->
+            <select 
+                id="venue-selector-top"
+                style="
+                    flex: 1;
+                    min-width: 0;
+                    padding: 8px 10px;
+                    border: 1px solid rgba(49,51,63,0.18);
                     border-radius: 12px;
-                    font-size: 0.9rem;
-                    font-weight: 600;
-                    color: rgba(127,29,29,1);
+                    font-size: 0.85rem;
+                    background: white;
                     cursor: pointer;
-                    transition: all 0.2s ease;
-                    width: 100%;
-                    white-space: nowrap;
-                }
-                .logout-badge:hover {
-                    background: linear-gradient(135deg, rgba(239,68,68,0.2), rgba(220,38,38,0.12));
-                    border-color: rgba(220,38,38,0.5);
-                    box-shadow: 0 2px 8px rgba(220,38,38,0.15);
-                }
-                .logout-badge:active {
-                    transform: scale(0.98);
-                }
-                </style>
-                """,
-                unsafe_allow_html=True,
-            )
-            st.markdown(
-                '<div class="logout-badge">🚪 Logout</div>',
-                unsafe_allow_html=True,
-            )
+                    font-weight: 600;
+                "
+                onchange="window.location.href='?page={current_page}&venue_id='+this.value+'{token_param}'"
+            >
+                {''.join(venue_options)}
+            </select>
+
+    
+            <!-- Logout link -->
+            <a
+            href="?logout=1{token_param}"
+            style="
+                display:inline-flex;
+                align-items:center;
+                justify-content:center;
+                width:44px;
+                height:44px;
+                border:1px solid rgba(49,51,63,0.18);
+                border-radius:12px;
+                text-decoration:none;
+                font-size:1.1rem;
+                background:white;
+                flex:0 0 auto;
+            "
+            >🚪</a>
+
+
+        </div>
+        """)
+        
+        st.markdown(topbar_html, unsafe_allow_html=True)
+
+        # Handle venue change from URL
+        try:
+            url_venue_id = st.query_params.get("venue_id", "").strip()
+            if url_venue_id and int(url_venue_id) in venue_ids:
+                new_venue_id = int(url_venue_id)
+                if new_venue_id != venue_id:
+                    st.session_state["active_venue_id"] = new_venue_id
+                    # Clean up the URL
+                    params = {"page": current_page}
+                    if token:
+                        params["st"] = token
+                    set_query_params(**params)
+                    st.rerun()
+        except:
+            pass
+
+        # Handle logout from URL
+        try:
+            if st.query_params.get("logout") == "1":
+                clear_auth()
+                st.rerun()
+        except:
+            pass
 
 
     # Render page (no fixed-height container)
