@@ -686,11 +686,11 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         if st.session_state.get(S("lang_code_ui")) is None:
             st.session_state[S("lang_code_ui")] = lang_code or "auto"
 
-        effective_lang_code = st.session_state.get(S("lang_code_ui")) or lang_code or "auto"
+    effective_lang_code = st.session_state.get(S("lang_code_ui")) or lang_code or "auto"
 
     with st.container(horizontal=True):
         try:
-            with st.popover("🌐", use_container_width=True):
+            with st.popover("🌐", use_container_width=True, type="tertiary"):
                 picked = st.radio(
                     "Idioma",
                     options=["auto", "es", "en", "el"],
@@ -698,10 +698,10 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                         effective_lang_code if effective_lang_code in ["auto", "es", "en", "el"] else "auto"
                     ),
                     format_func=lambda v: {
-                        "auto": "🌐 Auto",
-                        "es": "🇪🇸 Español",
-                        "en": "🇬🇧 English",
-                        "el": "🇬🇷 Ελληνικά",
+                        "auto": "🌐",
+                        "es": "🇪🇸",
+                        "en": "🇬🇧",
+                        "el": "🇬🇷",
                     }.get(v, v),
                     key=K("lang_picker_radio"),
                 )
@@ -716,10 +716,10 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                         effective_lang_code if effective_lang_code in ["auto", "es", "en", "el"] else "auto"
                     ),
                     format_func=lambda v: {
-                        "auto": "🌐 Auto",
-                        "es": "🇪🇸 Español",
-                        "en": "🇬🇧 English",
-                        "el": "🇬🇷 Ελληνικά",
+                        "auto": "🌐",
+                        "es": "🇪🇸",
+                        "en": "🇬🇧",
+                        "el": "🇬🇷",
                     }.get(v, v),
                     key=K("lang_picker_radio_fallback"),
                 )
