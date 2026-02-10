@@ -1100,19 +1100,18 @@ def _chip_for_send(sent: bool, last_error: str) -> tuple[str, str]:
 
 
 def _render_header(order: Order) -> None:
-    c1, c2 = st.columns([2.2, 1], vertical_alignment="center")
-    with c1:
-        st.caption(f"{_status_chip(order.status)} · Creado: {getattr(order,'created_at',None).strftime('%Y-%m-%d %H:%M') if getattr(order,'created_at',None) else '—'}")
-    with c2:
+    with st.container(horizontal=True):
         st.markdown(f"<div class='voi-chip'>{_status_chip(order.status)}</div>", unsafe_allow_html=True)
+        st.caption(f"Creado: {getattr(order,'created_at',None).strftime('%Y-%m-%d %H:%M') if getattr(order,'created_at',None) else '—'}")
+    
+ 
 
 
 def _render_workflow_actions(*, venue_id: int, order: Order, role: Optional[str], actor: str) -> None:
     st.markdown("<div class='voi-divider'></div>", unsafe_allow_html=True)
-    c1, c2, c3 = st.columns([1.4, 1.4, 1.2], vertical_alignment="center")
     status = (_s(order.status)).lower()
     can_manage = (_s(role)).lower() in {"owner", "manager"}
-    with c1:
+    with st.container(horizontal=True):
         if status == "draft":
             if st.button("✅ Pasar a Listo", type="primary", use_container_width=True):
                 _set_order_status(int(order.id), "ready_to_send", actor)
@@ -1124,11 +1123,11 @@ def _render_workflow_actions(*, venue_id: int, order: Order, role: Optional[str]
         elif status == "ready_to_send":
             if st.button("↩️ Volver a Borrador", use_container_width=True):
                 _set_order_status(int(order.id), "draft", actor); _bump_refresh(venue_id); st.rerun()
-    with c2:
+
         if status == "pending_receive":
             if st.button("✅ Cerrar (Historial)", type="primary", use_container_width=True):
                 _set_order_status(int(order.id), "final", actor); _bump_refresh(venue_id); st.rerun()
-    with c3:
+
         if status == "draft" and can_manage:
             if st.button("🗑️ Eliminar", use_container_width=True):
                 _delete_order(int(order.id)); _bump_refresh(venue_id); st.session_state.pop(f"orders_active_order_id_{venue_id}", None); st.rerun()
@@ -2089,50 +2088,7 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
     # Build once (used by sending message builder)
     products_by_id = {int(p.id): p for p in products if getattr(p, "id", None) is not None}
 
-    # # -----------------------------
-    # # Smart basket expander (optional). Kept for transparency, but NOT required for sending anymore.
-    # # -----------------------------
-    # with st.expander("🧠 Cesta inteligente (opcional: revisar alternativas)", expanded=False):
-    #     st.caption(
-    #         "Este panel es opcional. Con **🧠 Aplicar precios inteligentes** activo, el envío ya funciona sin aplicar nada aquí."
-    #     )
-    #     df_curr = _sanitize_editor_df(_editor_df_from_lines(lines, products_by_id))
 
-    #     csc1, csc2 = st.columns([1.0, 1.0], vertical_alignment="center")
-    #     with csc1:
-    #         min_rel = st.slider(
-    #             "Similitud mínima (más alto = más estricta)",
-    #             0.0, 1.0, 0.45, 0.05,
-    #             key=f"smart_ready_rel_{int(order.id)}",
-    #             help="Sube este valor si te sugiere productos que no son realmente equivalentes."
-    #         )
-    #     with csc2:
-    #         min_save_pct = (
-    #             st.slider(
-    #                 "Ahorro mínimo (%)",
-    #                 0.0, 25.0, 2.0, 0.5,
-    #                 key=f"smart_ready_save_{int(order.id)}",
-    #                 help="Ignora alternativas con ahorro pequeño."
-    #             ) / 100.0
-    #         )
-
-    #     try:
-    #         sugg = _smart_cesta_suggestions(
-    #             venue_id=int(venue_id),
-    #             providers_by_name=provider_dir,
-    #             products_by_id=products_by_id,
-    #             draft_df=df_curr,
-    #             min_rel=float(min_rel),
-    #             min_saving_pct=float(min_save_pct),
-    #             top_k=3,
-    #         )
-    #     except Exception:
-    #         sugg = []
-
-    #     if not sugg:
-    #         st.success("✅ No hay alternativas más baratas (con descuentos aplicados) para este pedido.")
-    #     else:
-    #         st.caption(f"Se encontraron {len(sugg)} oportunidades (vista previa).")
     # -----------------------------
     # Send settings (mobile-friendly)
     # -----------------------------
