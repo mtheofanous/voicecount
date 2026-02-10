@@ -64,64 +64,72 @@ def bootstrap_once():
     init_auth_db()
     return True
 
-
-# -------------------------------
-# 5) Micro-UX CSS (mobile-first & fast)
-# -------------------------------
 def _css():
     st.markdown(
         """
 <style>
-
-/* ---- Global spacing (mobile first) ---- */
+/* Mobile-first spacing: leave room for bottom bar */
 .block-container{
-  padding:0.75rem 0.75rem 4.5rem;
+  padding:0.75rem 0.75rem 5.5rem;
   max-width:100%;
 }
 
-/* ---- Big, fast tap targets ---- */
+/* Big taps everywhere */
 button{
   min-height:44px;
   border-radius:14px;
   font-weight:900;
 }
 
-/* ---- NAV: swipeable pill bar (key fix) ---- */
-div[role="radiogroup"]{
+/* --- Bottom Tab Bar --- */
+.voi-tabbar{
+  position:fixed;
+  left:0; right:0; bottom:0;
+  z-index:9999;
+  padding:10px 10px calc(10px + env(safe-area-inset-bottom));
+  background:rgba(255,255,255,.96);
+  border-top:1px solid rgba(148,163,184,.35);
+  backdrop-filter:saturate(180%) blur(12px);
+}
+
+.voi-tabs{
   display:flex;
-  flex-wrap:nowrap;
-  overflow-x:auto;
   gap:8px;
-  padding-bottom:4px;
-  -webkit-overflow-scrolling:touch;
+  justify-content:space-between;
+  max-width:1100px;
+  margin:0 auto;
 }
 
-div[role="radiogroup"] > label{
-  flex:0 0 auto;
-  white-space:nowrap;
-  padding:0.35rem 0.7rem;
-  border-radius:999px;
-  border:1px solid rgba(148,163,184,.5);
-}
-
-/* hide scrollbar but keep swipe */
-div[role="radiogroup"]::-webkit-scrollbar{
-  display:none;
-}
-
-/* ---- Cards ---- */
-.voi-card{
-  border:1px solid rgba(148,163,184,.3);
+.voi-tab{
+  flex:1 1 0;
+  text-decoration:none !important;
+  color:#0f172a !important;
+  border:1px solid rgba(148,163,184,.35);
   border-radius:16px;
-  padding:14px;
+  padding:10px 8px;
   background:#fff;
+  text-align:center;
+  font-weight:900;
+  line-height:1.05;
+  min-height:48px;
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  gap:4px;
 }
 
-.voi-muted{
-  color:#64748b;
-  font-size:.9rem;
+.voi-tab .ic{font-size:1.05rem;}
+.voi-tab .tx{font-size:.78rem; opacity:.9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+
+.voi-tab.active{
+  border-color: rgba(37,99,235,.45);
+  box-shadow:0 6px 18px rgba(2,6,23,.06);
 }
 
+@media (min-width: 900px){
+  /* On desktop, keep it but make it slightly tighter */
+  .voi-tab .tx{font-size:.82rem;}
+}
 </style>
 """,
         unsafe_allow_html=True,
@@ -134,6 +142,37 @@ def _go(page_key: str, **extra_qp: str) -> None:
     st.session_state["page"] = page_key
     set_query_params(page=page_key, **{k: str(v) for k, v in extra_qp.items() if v is not None and str(v).strip()})
     st.rerun()
+    
+def _bottom_tabbar(current_page: str) -> None:
+    tabs = [
+        ("new", "➕", "New"),
+        ("orders", "📦", "Orders"),
+        ("tracking", "✅", "Receive"),
+        ("history", "🗂️", "History"),
+        ("reports", "📈", "Reports"),
+        ("catalog", "🧾", "Catalog"),
+    ]
+
+    items = []
+    for key, icon, label in tabs:
+        active = "active" if key == current_page else ""
+        href = f"?page={key}"
+        # IMPORTANT: no leading indentation before <a ...>
+        items.append(
+f"""<a class="voi-tab {active}" href="{href}">
+  <div class="ic">{icon}</div>
+  <div class="tx">{label}</div>
+</a>"""
+        )
+
+    html = f"""<div class="voi-tabbar">
+  <div class="voi-tabs">
+    {''.join(items)}
+  </div>
+</div>"""
+
+    st.markdown(html, unsafe_allow_html=True)
+
 
 
 def _venue_selector_compact() -> int:
@@ -275,52 +314,24 @@ def main():
         venue_role = _role_by_id.get(int(venue_id))
 
     with top_r:
-        
-        with st.container(border=False, gap="xxsmall"):
-            # Segmented control feel via horizontal radio
-            labels = [PAGES[k][0] for k in PAGE_KEYS]
-            key_to_label = {k: PAGES[k][0] for k in PAGE_KEYS}
-            label_to_key = {v: k for k, v in key_to_label.items()}
+        # Bottom tab bar handles navigation now.
+        # Keep this area light so the top row stays compact on mobile.
+        st.empty()
 
-            current_label = key_to_label.get(st.session_state["page"], PAGES["orders"][0])
-            sel = st.radio(
-                "Navigation",
-                options=labels,
-                index=labels.index(current_label),
-                horizontal=True,
-                label_visibility="collapsed",
-            )
-            chosen_key = label_to_key.get(sel, "orders")
-            if chosen_key != st.session_state["page"]:
-                _go(chosen_key)
+    # Render page (no fixed-height container)
+    page_key = st.session_state["page"]
+    title, loader = PAGES.get(page_key, PAGES["orders"])
+    page_fn = loader()
 
-    with st.container(height=600):
+    if page_key == "tracking":
+        _call_page(page_fn, venue_id, venue_role=venue_role, deep_order_id=deep_order_id, deep_provider=(deep_provider or None))
+    elif page_key == "orders":
+        _call_page(page_fn, venue_id, venue_role=venue_role, deep_order_id=deep_order_id, deep_provider=(deep_provider or None), deep_status=(deep_status or None))
+    else:
+        _call_page(page_fn, venue_id, venue_role=venue_role)
 
-        # Render page
-        page_key = st.session_state["page"]
-        title, loader = PAGES.get(page_key, PAGES["orders"])
-        page_fn = loader()
+    _bottom_tabbar(st.session_state["page"])
 
-        # Page call signatures differ; pass only supported kwargs (prevents TypeError)
-        if page_key == "tracking":
-            _call_page(
-                page_fn,
-                venue_id,
-                venue_role=venue_role,
-                deep_order_id=deep_order_id,
-                deep_provider=(deep_provider or None),
-            )
-        elif page_key == "orders":
-            _call_page(
-                page_fn,
-                venue_id,
-                venue_role=venue_role,
-                deep_order_id=deep_order_id,
-                deep_provider=(deep_provider or None),
-                deep_status=(deep_status or None),
-            )
-        else:
-            _call_page(page_fn, venue_id, venue_role=venue_role)
 
 
 if __name__ == "__main__":
