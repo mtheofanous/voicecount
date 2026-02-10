@@ -6,7 +6,7 @@ Optimized for performance with minimal reruns.
 """
 
 from __future__ import annotations
-import json
+
 import os
 import base64
 import hmac
@@ -418,29 +418,59 @@ def _parse_token(token: str) -> Optional[dict]:
         return None
 
 
-def _cookie_get(name: str) -> Optional[str]:
-    # Available on newer Streamlit versions
-    ctx = getattr(st, "context", None)
-    cookies = getattr(ctx, "cookies", None) if ctx else None
-    if cookies is None:
+def _cookie_manager():
+    """Return a CookieManager instance (client-side cookies via a component).
+
+    Notes:
+    - Streamlit's built-in st.context.cookies is READ-ONLY and, on Community Cloud,
+      cookies are often filtered at the proxy layer, so it may be empty.
+    - extra_streamlit_components.CookieManager works on Cloud because it interacts
+      with cookies client-side via a Streamlit component.
+    """
+    try:
+        import extra_streamlit_components as stx
+    except Exception:
         return None
-    return cookies.get(name)
+
+    cm_key = "__voi_cookie_manager__"
+    if cm_key not in st.session_state:
+        # Creating the component can trigger one rerun; we do it once.
+        st.session_state[cm_key] = stx.CookieManager()
+    return st.session_state[cm_key]
 
 
-def _cookie_set(name: str, value: str) -> None:
-    ctx = getattr(st, "context", None)
-    cookies = getattr(ctx, "cookies", None) if ctx else None
-    if cookies is None:
+def _cookie_get(name: str) -> Optional[str]:
+    cm = _cookie_manager()
+    if cm is None:
+        return None
+    try:
+        return cm.get(name)
+    except Exception:
+        return None
+
+
+def _cookie_set(name: str, value: str, *, max_age_seconds: int = 72 * 3600) -> None:
+    cm = _cookie_manager()
+    if cm is None:
         return
-    cookies[name] = value
+    try:
+        cm.set(name, value, max_age=max_age_seconds)
+    except Exception:
+        return
 
 
 def _cookie_del(name: str) -> None:
-    ctx = getattr(st, "context", None)
-    cookies = getattr(ctx, "cookies", None) if ctx else None
-    if cookies is None:
+    cm = _cookie_manager()
+    if cm is None:
         return
-    cookies[name] = ""
+    try:
+        # CookieManager supports delete in recent versions; if not, overwrite with short expiry.
+        if hasattr(cm, "delete"):
+            cm.delete(name)
+        else:
+            cm.set(name, "", max_age=1)
+    except Exception:
+        return
 
 
 def restore_auth_from_cookie() -> None:
