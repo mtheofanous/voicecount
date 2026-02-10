@@ -130,6 +130,26 @@ button{
   border-color: rgba(37,99,235,.45);
   box-shadow:0 6px 18px rgba(2,6,23,.06);
 }
+/* make the tabbar buttons look like your <a> pills */
+.voi-tabbar .stButton > button{
+  width:100%;
+  border-radius:16px;
+  border:1px solid rgba(148,163,184,.35);
+  background:#fff;
+  font-weight:900;
+  min-height:48px;
+  padding:10px 8px;
+}
+
+.voi-tabbar .stButton > button:hover{
+  border-color: rgba(37,99,235,.35);
+}
+
+.voi-tabbar .voi-active .stButton > button{
+  border-color: rgba(37,99,235,.45) !important;
+  box-shadow:0 6px 18px rgba(2,6,23,.06);
+}
+
 
 @media (min-width: 900px){
   /* On desktop, keep it but make it slightly tighter */
@@ -159,24 +179,23 @@ def _bottom_tabbar(current_page: str) -> None:
         ("catalog", "🧾", "Catalog"),
     ]
 
-    items = []
-    for key, icon, label in tabs:
-        active = "active" if key == current_page else ""
-        href = f"?page={key}"
-        items.append(
-f"""<a class="voi-tab {active}" href="{href}" target="_self">
-  <div class="ic">{icon}</div>
-  <div class="tx">{label}</div>
-</a>"""
-        )
+    # Create a fixed/sticky container using HTML wrapper,
+    # but navigation is done via Streamlit buttons (session-safe).
+    st.markdown("<div class='voi-tabbar'><div class='voi-tabs'>", unsafe_allow_html=True)
 
-    html = f"""<div class="voi-tabbar">
-  <div class="voi-tabs">
-    {''.join(items)}
-  </div>
-</div>"""
+    cols = st.columns(len(tabs), gap="small")
+    for i, (key, icon, label) in enumerate(tabs):
+        with cols[i]:
+            wrap_cls = "voi-active" if key == current_page else ""
+            st.markdown(f"<div class='{wrap_cls}'>", unsafe_allow_html=True)
 
-    st.markdown(html, unsafe_allow_html=True)
+            if st.button(f"{icon}\n{label}", key=f"tab_{key}", use_container_width=True):
+                _go(key)  # ✅ session-safe navigation (keeps login)
+
+            st.markdown("</div>", unsafe_allow_html=True)
+
+    st.markdown("</div></div>", unsafe_allow_html=True)
+
 
 
 
