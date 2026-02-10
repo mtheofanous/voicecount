@@ -48,6 +48,7 @@ from features.auth_and_manage.auth_multi_tenant import (
     init_auth_db,
     auth_gate,
     require_login,
+    restore_auth_from_cookie,
     current_user,
     current_active_venue,
     current_venues_for_user,
@@ -86,8 +87,7 @@ button{
 }
 
 /* --- Bottom Tab Bar --- */
-/* We pin the Streamlit block that contains #voi-tabbar-marker (no raw <a href> navigation). */
-div[data-testid="stVerticalBlock"]:has(#voi-tabbar-marker){
+.voi-tabbar{
   position: fixed;
   bottom: 0;
   left: 0;
@@ -97,50 +97,46 @@ div[data-testid="stVerticalBlock"]:has(#voi-tabbar-marker){
   padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
   background: rgba(255,255,255,.96);
   border-top: 1px solid rgba(148,163,184,.35);
+
   backdrop-filter: saturate(180%) blur(12px);
 }
 
-/* Layout inside the pinned block */
-div[data-testid="stVerticalBlock"]:has(#voi-tabbar-marker) div[data-testid="stHorizontalBlock"]{
-  gap: 8px;
-  justify-content: space-between;
-  max-width: 1100px;
-  margin: 0 auto;
+
+.voi-tabs{
+  display:flex;
+  gap:8px;
+  justify-content:space-between;
+  max-width:1100px;
+  margin:0 auto;
 }
 
-/* Skin buttons to match the old .voi-tab look */
-div[data-testid="stVerticalBlock"]:has(#voi-tabbar-marker) button{
-  width: 100%;
-  min-height: 52px;
-  border-radius: 16px;
-  padding: 10px 8px;
-  font-weight: 900;
-  line-height: 1.05;
-
-  /* allow "icon
-label" */
-  white-space: pre-line;
-
-  border: 1px solid rgba(148,163,184,.35) !important;
-  background: #fff !important;
-  color: #0f172a !important;
-
-  box-shadow: none !important;
+.voi-tab{
+  flex:1 1 0;
+  text-decoration:none !important;
+  color:#0f172a !important;
+  border:1px solid rgba(148,163,184,.35);
+  border-radius:16px;
+  padding:10px 8px;
+  background:#fff;
+  text-align:center;
+  font-weight:900;
+  line-height:1.05;
+  min-height:48px;
+  display:flex;
+  flex-direction:column;
+  justify-content:center;
+  gap:4px;
 }
 
-/* "secondary" buttons: slightly muted background to hint inactive state */
-div[data-testid="stVerticalBlock"]:has(#voi-tabbar-marker) button[kind="secondary"]{
-  background: rgba(241,245,249,.85) !important;
+.voi-tab .ic{font-size:1.05rem;}
+.voi-tab .tx{font-size:.78rem; opacity:.9; white-space:nowrap; overflow:hidden; text-overflow:ellipsis;}
+
+.voi-tab.active{
+  border-color: rgba(37,99,235,.45);
+  box-shadow:0 6px 18px rgba(2,6,23,.06);
 }
 
-/* Active state: Streamlit renders primary buttons with kind="primary" */
-div[data-testid="stVerticalBlock"]:has(#voi-tabbar-marker) button[kind="primary"]{
-  border-color: rgba(37,99,235,.45) !important;
-  box-shadow: 0 6px 18px rgba(2,6,23,.06) !important;
-}
 
-/* Make the marker itself take no space */
-#voi-tabbar-marker{display:none;}
 @media (min-width: 900px){
   /* On desktop, keep it but make it slightly tighter */
   .voi-tab .tx{font-size:.82rem;}
@@ -159,16 +155,7 @@ def _go(page_key: str, **extra_qp: str) -> None:
     set_query_params(page=page_key, **{k: str(v) for k, v in extra_qp.items() if v is not None and str(v).strip()})
     st.rerun()
     
-
 def _bottom_tabbar(current_page: str) -> None:
-    """
-    Bottom navigation bar (mobile-first) that preserves Streamlit session state on Streamlit Cloud.
-
-    IMPORTANT:
-    - Do NOT use raw <a href="?page=..."> links for in-app navigation on Streamlit Cloud, because it can
-      create a new websocket session and wipe st.session_state (including auth_ctx).
-    - We render Streamlit buttons but skin them with CSS to look like the original .voi-tab UI.
-    """
     tabs = [
         ("new", "➕", "New"),
         ("orders", "📦", "Orders"),
@@ -185,9 +172,8 @@ def _bottom_tabbar(current_page: str) -> None:
     for i, (key, icon, label) in enumerate(tabs):
         with cols[i]:
             is_active = key == current_page
-            # Use a newline so we can style icon + label in a column with CSS (white-space: pre-line).
             if st.button(
-                f"{icon}\n{label}",
+                f"{icon} {label}",
                 key=f"voi_nav_{key}",
                 type="primary" if is_active else "secondary",
                 use_container_width=True,
@@ -293,6 +279,9 @@ def _call_page(fn, venue_id: int, **kwargs):
 def main():
     bootstrap_once()
     _css()
+
+    # Restore persisted login (Streamlit Cloud-safe for <a href> navigation)
+    restore_auth_from_cookie()
 
     # Auth gate (no global venue selector; we render our own compact one)
     auth_gate(show_manage_org=True, show_venue_selector=False)
