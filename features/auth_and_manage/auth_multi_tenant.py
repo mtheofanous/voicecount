@@ -913,21 +913,21 @@ def auth_gate(
 
         st.stop()
 
-    # -------------------------
-    # Logged-in area
-    # -------------------------
-    u = current_user()
-    acc = current_account()
+    # # -------------------------
+    # # Logged-in area
+    # # -------------------------
+    # u = current_user()
+    # acc = current_account()
 
-    # # Top bar
-    # top_left, top_right = st.columns([3, 1])
-    # with top_left:
-    #     st.markdown(
-    #         f"**Logged in:** {u['full_name'] if u else '—'}  •  **Account:** {acc['name'] if acc else '—'}"
-    #     )
+    # # # Top bar
+    # # top_left, top_right = st.columns([3, 1])
+    # # with top_left:
+    # #     st.markdown(
+    # #         f"**Logged in:** {u['full_name'] if u else '—'}  •  **Account:** {acc['name'] if acc else '—'}"
+    # #     )
 
-    # with top_right:
-    #     if st.button("Logout", key="logout_btn_gat", use_container_width=True):
+    # # with top_right:
+    # #     if st.button("Logout", key="logout_btn_gat", use_container_width=True):
     #         clear_auth()
     #         st.session_state[rerun_key] = True
     #         st.rerun()

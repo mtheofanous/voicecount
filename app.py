@@ -1,3 +1,4 @@
+# fast_app.py
 # Mobile-first, fast navigation shell for Streamlit Cloud
 # - avoids st.tabs (heavy DOM)
 # - lazy-loads page modules only when needed
@@ -73,9 +74,9 @@ def _css():
     st.markdown(
         """
 <style>
-/* Mobile-first spacing: leave room for TOP bar + bottom bar */
+/* Mobile-first spacing: leave room for bottom bar */
 .block-container{
-  padding: 4.75rem 0.75rem 5.5rem;  /* top, sides, bottom */
+  padding:3.75rem 0.75rem 5.5rem;
   max-width:100%;
 }
 
@@ -85,25 +86,6 @@ button{
   border-radius:14px;
   font-weight:900;
 }
-
-/* --- Fixed TOP bar (REAL fixed Streamlit block) --- */
-/* This pins the Streamlit block that CONTAINS our marker */
-div[data-testid="stVerticalBlock"] > div:has(#app-topbar-marker){
-  position: fixed;
-  top: 3.25rem;
-  left: 0;
-  right: 0;
-  z-index: 9998;
-
-  padding: 10px 12px;
-  background: rgba(255,255,255,0.72);
-  border-bottom: 1px solid rgba(49,51,63,0.12);
-
-  backdrop-filter: blur(10px);
-  -webkit-backdrop-filter: blur(10px);
-}
-
-
 
 /* --- Bottom Tab Bar --- */
 .voi-tabbar{
@@ -119,6 +101,7 @@ div[data-testid="stVerticalBlock"] > div:has(#app-topbar-marker){
 
   backdrop-filter: saturate(180%) blur(12px);
 }
+
 
 .voi-tabs{
   display:flex;
@@ -154,14 +137,15 @@ div[data-testid="stVerticalBlock"] > div:has(#app-topbar-marker){
   box-shadow:0 6px 18px rgba(2,6,23,.06);
 }
 
+
 @media (min-width: 900px){
+  /* On desktop, keep it but make it slightly tighter */
   .voi-tab .tx{font-size:.82rem;}
 }
 </style>
 """,
         unsafe_allow_html=True,
     )
-
 
 
 #  -------------------------------
@@ -340,27 +324,6 @@ def main():
         deep_status = st.query_params.get("status", "").strip().lower() or None
     except:
         deep_status = None
-        
-    # -------------------------------
-    # URL action: logout (no st.button)
-    # -------------------------------
-    try:
-        url_logout = (st.query_params.get("logout", "") or "").strip()
-    except Exception:
-        url_logout = ""
-
-    if url_logout == "1":
-        clear_auth()
-        # Remove logout from URL to avoid rerun loops; keep current page if possible
-        # IMPORTANT: clear the logout flag (and token) from the URL to stop rerun loop
-        set_query_params(
-            page=st.session_state.get("page", "orders"),
-            logout="",   # this deletes the param in core.url_nav.set_query_params
-            st="",       # optional: also remove session token from URL
-        )
-        st.rerun()
-
-
 
     # Auth gate (now preserves URL params across reruns)
     auth_gate(show_manage_org=True, show_venue_selector=False)
@@ -389,78 +352,28 @@ def main():
     logging.debug(f"Resolved page_key after deep-link sync: {st.session_state['page']}")
     
     # Top bar (moved out of auth_gate)
-    # ===== ONE-LINE FIXED MOBILE TOP BAR (ACTUALLY FIXED) =====
-    # ===== ONE-LINE FIXED MOBILE TOP BAR (identity · venue · logout) =====
-    topbar = st.container()
-    with topbar:
-        # Marker used by CSS to pin this entire Streamlit block
-        st.markdown('<div id="app-topbar-marker"></div>', unsafe_allow_html=True)
+    u = current_user()
+    acc = current_account()
+    
+    with st.container(horizontal=True):
 
-        u = current_user() or {}
-        acc = current_account() or {}
 
-        name = u.get("full_name") or "—"
-        acc_name = acc.get("name") or "—"
+        st.markdown(
+            f"**Account:** {acc['name'] if acc else '—'}")
+        
+        
+        venue_id = _venue_selector_compact()
 
-        bar_l, bar_c, bar_r = st.columns([4.6, 3.6, 1.8], vertical_alignment="center")
+        # Resolve role for the selected venue (needed by some pages like orders_tab)
+        _venues = current_venues_for_user() or []
+        _role_by_id = {int(v["id"]): role for (v, role) in _venues}
+        venue_role = _role_by_id.get(int(venue_id))
 
-        with bar_l:
-            st.markdown(
-                f"""
-                <div style="
-                    display:inline-flex;
-                    align-items:center;
-                    gap:6px;
-                    padding:6px 10px;
-                    border:1px solid rgba(49,51,63,0.18);
-                    border-radius:999px;
-                    font-size:0.85rem;
-                    line-height:1;
-                    white-space:nowrap;
-                    overflow:hidden;
-                    text-overflow:ellipsis;
-                    max-width:100%;
-                ">
-                    <span style="opacity:0.75;">👤</span>
-                    <span style="opacity:0.7; overflow:hidden; text-overflow:ellipsis;">{acc_name}</span>
-                </div>
-                """,
-                unsafe_allow_html=True,
-            )
 
-        with bar_c:
-            venue_id = _venue_selector_compact()
-            _venues = current_venues_for_user() or []
-            _role_by_id = {int(v["id"]): role for (v, role) in _venues}
-            venue_role = _role_by_id.get(int(venue_id))
 
-        with bar_r:
-            token = st.session_state.get("_session_token", "")
-            token_param = f"&st={token}" if token else ""
-            href = f"?page={st.session_state.get('page','orders')}{token_param}&logout=1"
-
-            st.markdown(
-                f"""
-                <a href="{href}" target="_self"
-                   style="
-                     display:inline-flex;
-                     align-items:center;
-                     justify-content:center;
-                     width:100%;
-                     min-height:44px;
-                     padding:10px 10px;
-                     border-radius:14px;
-                     font-weight:900;
-                     text-decoration:none;
-                     color:#0f172a;
-                     border:1px solid rgba(148,163,184,.35);
-                     background:#fff;
-                   ">
-                  🚪 Logout
-                </a>
-                """,
-                unsafe_allow_html=True,
-            )
+        if st.button("Logout", key="logout_btn_app", use_container_width=True):
+            clear_auth()
+            st.rerun()
 
 
 
