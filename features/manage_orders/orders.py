@@ -22,7 +22,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 from datetime import datetime, date, timedelta
 from typing import Any, Optional
-import hashlib
+
 import re
 import unicodedata
 import urllib.parse as up
@@ -1217,61 +1217,61 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
                     st.session_state.pop(k, None)
             st.session_state.pop(legacy_reset_flag, None)
 
-        # ---------- ONE-LINE FILTER BAR ----------
-        f1, f2, f3, f4 = st.columns([2.6, 1.6, 1.6, 1.2], vertical_alignment="center")
 
-        with f1:
+        with st.container(horizontal=True):
             q = st.text_input(
                 "Buscar",
                 key=f"{editor_key}__qa_search",
                 placeholder="Producto…",
             ).strip().lower()
 
-        # Prepare order state for dependent options
-        df_current = _sanitize_editor_df(st.session_state[df_state_key])
-        qty_by_pid = _qty_by_product(df_current)
+            # Prepare order state for dependent options
+            df_current = _sanitize_editor_df(st.session_state[df_state_key])
+            qty_by_pid = _qty_by_product(df_current)
 
-        base_pids = sorted(label_by_id.keys())
-        if q:
-            base_pids = [pid for pid in base_pids if q in label_by_id.get(pid, "").lower()]
+            base_pids = sorted(label_by_id.keys())
+            if q:
+                base_pids = [pid for pid in base_pids if q in label_by_id.get(pid, "").lower()]
 
-        # Session keys
-        cat_key = f"{editor_key}__qa_cat"
-        prov_key = f"{editor_key}__qa_prov"
-        hide_key = f"{editor_key}__qa_hide"
+            # Session keys
+            cat_key = f"{editor_key}__qa_cat"
+            prov_key = f"{editor_key}__qa_prov"
+            hide_key = f"{editor_key}__qa_hide"
 
-        st.session_state.setdefault(cat_key, "Todas")
-        st.session_state.setdefault(prov_key, "Todos")
-        st.session_state.setdefault(hide_key, False)
+            st.session_state.setdefault(cat_key, "Todas")
+            st.session_state.setdefault(prov_key, "Todos")
+            
+            
+            hide_in_order = bool(st.session_state.get(hide_key, False))
 
-        current_cat = st.session_state[cat_key]
-        current_prov = st.session_state[prov_key]
+            current_cat = st.session_state[cat_key]
+            current_prov = st.session_state[prov_key]
 
-        # --- Compute cascading options ---
-        cats_for_prov = (
-            sorted({cat_by_pid.get(pid, "") for pid in base_pids if prov_by_pid.get(pid, "") == current_prov})
-            if current_prov != "Todos"
-            else sorted({cat_by_pid.get(pid, "") for pid in base_pids})
-        )
-        cats_for_prov = [c for c in cats_for_prov if c]
+            # --- Compute cascading options ---
+            cats_for_prov = (
+                sorted({cat_by_pid.get(pid, "") for pid in base_pids if prov_by_pid.get(pid, "") == current_prov})
+                if current_prov != "Todos"
+                else sorted({cat_by_pid.get(pid, "") for pid in base_pids})
+            )
+            cats_for_prov = [c for c in cats_for_prov if c]
 
-        provs_for_cat = (
-            sorted({prov_by_pid.get(pid, "") for pid in base_pids if cat_by_pid.get(pid, "") == current_cat})
-            if current_cat != "Todas"
-            else sorted({prov_by_pid.get(pid, "") for pid in base_pids})
-        )
-        provs_for_cat = [p for p in provs_for_cat if p]
+            provs_for_cat = (
+                sorted({prov_by_pid.get(pid, "") for pid in base_pids if cat_by_pid.get(pid, "") == current_cat})
+                if current_cat != "Todas"
+                else sorted({prov_by_pid.get(pid, "") for pid in base_pids})
+            )
+            provs_for_cat = [p for p in provs_for_cat if p]
 
-        # Reset invalid selections
-        if current_cat != "Todas" and current_cat not in cats_for_prov:
-            st.session_state[cat_key] = "Todas"
-            current_cat = "Todas"
+            # Reset invalid selections
+            if current_cat != "Todas" and current_cat not in cats_for_prov:
+                st.session_state[cat_key] = "Todas"
+                current_cat = "Todas"
 
-        if current_prov != "Todos" and current_prov not in provs_for_cat:
-            st.session_state[prov_key] = "Todos"
-            current_prov = "Todos"
+            if current_prov != "Todos" and current_prov not in provs_for_cat:
+                st.session_state[prov_key] = "Todos"
+                current_prov = "Todos"
 
-        with f2:
+
             selected_cat = st.selectbox(
                 "Categoría",
                 options=["Todas"] + cats_for_prov,
@@ -1279,7 +1279,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
                 key=cat_key,
             )
 
-        with f3:
+      
             # Re-evaluate providers after category selection
             prov_opts = (
                 sorted({prov_by_pid.get(pid, "") for pid in base_pids if cat_by_pid.get(pid, "") == selected_cat})
@@ -1295,37 +1295,30 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
                 key=prov_key,
             )
 
-        with f4:
-            hide_in_order = st.toggle(
-                "Ocultar en pedido",
-                key=hide_key,
-            )
+            # ---------- Reset paging when filters change ----------
+            filters_sig = (q, selected_cat, selected_prov, bool(hide_in_order))
+            sig_key = f"{editor_key}__qa_filters_sig"
+            page_key = f"{editor_key}__qa_page"
 
-        # ---------- Reset paging when filters change ----------
-        filters_sig = (q, selected_cat, selected_prov, bool(hide_in_order))
-        sig_key = f"{editor_key}__qa_filters_sig"
-        page_key = f"{editor_key}__qa_page"
+            if st.session_state.get(sig_key) != filters_sig:
+                st.session_state[sig_key] = filters_sig
+                st.session_state[page_key] = 1
 
-        if st.session_state.get(sig_key) != filters_sig:
-            st.session_state[sig_key] = filters_sig
-            st.session_state[page_key] = 1
+            # ---------- Apply filters ----------
+            pids = base_pids
 
-        # ---------- Apply filters ----------
-        pids = base_pids
+            if selected_cat != "Todas":
+                pids = [pid for pid in pids if cat_by_pid.get(pid, "") == selected_cat]
 
-        if selected_cat != "Todas":
-            pids = [pid for pid in pids if cat_by_pid.get(pid, "") == selected_cat]
+            if selected_prov != "Todos":
+                pids = [pid for pid in pids if prov_by_pid.get(pid, "") == selected_prov]
 
-        if selected_prov != "Todos":
-            pids = [pid for pid in pids if prov_by_pid.get(pid, "") == selected_prov]
+            if hide_in_order:
+                pids = [pid for pid in pids if float(qty_by_pid.get(pid, 0.0) or 0.0) <= 0.0]
 
-        if hide_in_order:
-            pids = [pid for pid in pids if float(qty_by_pid.get(pid, 0.0) or 0.0) <= 0.0]
-
-        total = len(pids)
+            total = len(pids)
 
         # ---------- Paging ----------
-        p1, p2, p3, p4 = st.columns([1.2, 1.2, 1.6, 2.0], vertical_alignment="center")
 
         page_size = 60
 
@@ -1333,18 +1326,25 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
         total_pages = max(1, (total + page_size - 1) // page_size)
         st.session_state[page_key] = min(st.session_state[page_key], total_pages)
 
-        with p1:
+        with st.container(horizontal=True):
+            
             if st.button("⬅️", disabled=st.session_state[page_key] <= 1):
                 st.session_state[page_key] -= 1
                 st.rerun()
 
-        with p2:
+
             if st.button("➡️", disabled=st.session_state[page_key] >= total_pages):
                 st.session_state[page_key] += 1
                 st.rerun()
 
-        with p4:
+
             st.caption(f"{total} resultados · Página {st.session_state[page_key]} / {total_pages}")
+            
+            hide_in_order = st.toggle(
+                "Ocultar en pedido",
+                key=hide_key,
+            )
+
 
         # ---------- Grid ----------
         start_i = (st.session_state[page_key] - 1) * page_size
