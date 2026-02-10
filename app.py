@@ -265,7 +265,7 @@ def main():
         st.session_state["page"] = deep_page
 
     # Top: venue selector + quick nav
-    top_l, top_r = st.columns([1.2, 2.0], vertical_alignment="center")
+    top_l, top_r = st.columns([.8, 2.4], vertical_alignment="center")
     with top_l:
         venue_id = _venue_selector_compact()
 
@@ -275,22 +275,24 @@ def main():
         venue_role = _role_by_id.get(int(venue_id))
 
     with top_r:
-        # Segmented control feel via horizontal radio
-        labels = [PAGES[k][0] for k in PAGE_KEYS]
-        key_to_label = {k: PAGES[k][0] for k in PAGE_KEYS}
-        label_to_key = {v: k for k, v in key_to_label.items()}
+        
+        with st.container(border=False, gap=xsmall):
+            # Segmented control feel via horizontal radio
+            labels = [PAGES[k][0] for k in PAGE_KEYS]
+            key_to_label = {k: PAGES[k][0] for k in PAGE_KEYS}
+            label_to_key = {v: k for k, v in key_to_label.items()}
 
-        current_label = key_to_label.get(st.session_state["page"], PAGES["orders"][0])
-        sel = st.radio(
-            "Navigation",
-            options=labels,
-            index=labels.index(current_label),
-            horizontal=True,
-            label_visibility="collapsed",
-        )
-        chosen_key = label_to_key.get(sel, "orders")
-        if chosen_key != st.session_state["page"]:
-            _go(chosen_key)
+            current_label = key_to_label.get(st.session_state["page"], PAGES["orders"][0])
+            sel = st.radio(
+                "Navigation",
+                options=labels,
+                index=labels.index(current_label),
+                horizontal=True,
+                label_visibility="collapsed",
+            )
+            chosen_key = label_to_key.get(sel, "orders")
+            if chosen_key != st.session_state["page"]:
+                _go(chosen_key)
 
     with st.container(height=600):
 
