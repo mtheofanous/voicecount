@@ -788,15 +788,9 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     # =========================================================
     # HEADER (notes mindset) + Active draft display
     # =========================================================
-    hL, hR = st.columns([3, 1])
-    with hL:
-        st.subheader("📝 Notas de faltantes")
-        st.caption("Modo notas · nada se envía · puedes corregir luego")
-        if active_draft_id:
-            st.caption(f"📦 Pedido en preparación: #{int(active_draft_id)} (borrador)")
-        else:
-            st.caption("📦 Pedido en preparación: (ninguno aún) — se creará al guardar")
-            
+    
+    st.subheader("📝 Notas de faltantes")
+
             
     # =========================================================
     # Timeline (living notes) — mobile friendly + aligned
@@ -804,58 +798,58 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     # =========================================================
     # Timeline (living notes) — mobile friendly + aligned
     # =========================================================
-    with st.container(border=True):
-        chat = st.session_state.get(S("order_chat"), [])
+    # with st.container(border=True):
+    #     chat = st.session_state.get(S("order_chat"), [])
 
-        if not chat:
-            st.info("Empieza escribiendo abajo o graba un audio 👇")
-        else:
-            st.markdown('<div class="notes-wrap">', unsafe_allow_html=True)
+    #     if not chat:
+    #         st.info("Empieza escribiendo abajo o graba un audio 👇")
+    #     else:
+    #         st.markdown('<div class="notes-wrap">', unsafe_allow_html=True)
 
-            for i, msg in enumerate(list(chat)):
-                role_msg = safe_str(msg.get("role"))
-                txt = safe_str(msg.get("text", ""))
-                tsf = float(msg.get("ts") or 0.0)
+    #         for i, msg in enumerate(list(chat)):
+    #             role_msg = safe_str(msg.get("role"))
+    #             txt = safe_str(msg.get("text", ""))
+    #             tsf = float(msg.get("ts") or 0.0)
 
-                who = "Tú" if role_msg == "user" else "Audio"
-                cls = "note-user" if role_msg == "user" else "note-asr"
-                tlabel = time.strftime("%H:%M", time.localtime(tsf)) if tsf else ""
+    #             who = "Tú" if role_msg == "user" else "Audio"
+    #             cls = "note-user" if role_msg == "user" else "note-asr"
+    #             tlabel = time.strftime("%H:%M", time.localtime(tsf)) if tsf else ""
 
-                bubble_col, del_col = st.columns([20, 2], vertical_alignment="top")
+    #             bubble_col, del_col = st.columns([20, 2], vertical_alignment="top")
 
-                with bubble_col:
-                    st.markdown(
-                        f"""
-                        <div class="note-row">
-                        <div class="note-bubble {cls}">
-                            <div class="note-meta">
-                            <div class="note-text"><strong>{who}:</strong> {txt}</div>
-                            <div class="note-time">{tlabel}</div>
-                            </div>
-                        </div>
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+    #             with bubble_col:
+    #                 st.markdown(
+    #                     f"""
+    #                     <div class="note-row">
+    #                     <div class="note-bubble {cls}">
+    #                         <div class="note-meta">
+    #                         <div class="note-text"><strong>{who}:</strong> {txt}</div>
+    #                         <div class="note-time">{tlabel}</div>
+    #                         </div>
+    #                     </div>
+    #                     </div>
+    #                     """,
+    #                     unsafe_allow_html=True,
+    #                 )
 
-                with del_col:
-                    msg_key = f"{int(tsf * 1000)}" if tsf else f"idx_{i}"
-                    if st.button(
-                        "🗑️",
-                        key=K(f"del_msg_{msg_key}"),
-                        help="Eliminar esta nota",
-                        type="secondary",
-                    ):
-                        st.session_state[S("order_chat")].pop(i)
-                        _rebuild_transcript_from_chat()
+    #             with del_col:
+    #                 msg_key = f"{int(tsf * 1000)}" if tsf else f"idx_{i}"
+    #                 if st.button(
+    #                     "🗑️",
+    #                     key=K(f"del_msg_{msg_key}"),
+    #                     help="Eliminar esta nota",
+    #                     type="secondary",
+    #                 ):
+    #                     st.session_state[S("order_chat")].pop(i)
+    #                     _rebuild_transcript_from_chat()
 
-                        st.session_state[S("auto_parse_pending")] = True
-                        st.session_state.pop(S("parsed_df"), None)
-                        st.session_state.pop(S("parse_candidates_df"), None)
-                        st.session_state.pop(S("finalize_parse_pending"), None)
-                        st.rerun()
+    #                     st.session_state[S("auto_parse_pending")] = True
+    #                     st.session_state.pop(S("parsed_df"), None)
+    #                     st.session_state.pop(S("parse_candidates_df"), None)
+    #                     st.session_state.pop(S("finalize_parse_pending"), None)
+    #                     st.rerun()
 
-            st.markdown("</div>", unsafe_allow_html=True)
+    #         st.markdown("</div>", unsafe_allow_html=True)
 
     # =========================================================
     # Convert df -> order lines
@@ -1128,11 +1122,11 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
                         badges = []
                         if cheapest_pid is not None and int(pid) == int(cheapest_pid):
-                            badges.append("💶")
+                            badges.append("💰")
                         if last_sent_pid is not None and int(pid) == int(last_sent_pid):
                             badges.append("🕒")
                         if most_freq_pid is not None and int(pid) == int(most_freq_pid):
-                            badges.append("🔁")
+                            badges.append("🔥")
 
                         badge_txt = ("".join(badges) + " ") if badges else ""
                         return badge_txt + label2
@@ -1634,21 +1628,21 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             label_visibility="collapsed",
         )
 
-        b1, b2, b3, b4 = st.columns([1, 2, 1, 1], vertical_alignment="center")
+        # b1, b2, b3, b4 = st.columns([1, 2, 1, 1], vertical_alignment="center")
         
-        with b1:
+        with st.container(horizontal=True):
             # ✅ AUDIO INPUT NOW LIVES HERE (in the "Dictar" slot)
             audio_file = st.audio_input("", key=K("audio_msg"), label_visibility="collapsed")
             if audio_file is not None:
                 st.session_state[S("audio_bytes")] = audio_file.read()
                 
-        with b2:
+        # with b2:
             add_clicked = st.form_submit_button("Añadir nota", use_container_width=True, type="primary", key=K("btn_add_note"))
 
-        with b3:
+        # with b3:
             limpiar_clicked = st.form_submit_button("Limpiar texto", use_container_width=True, key=K("btn_clear_text"))
             
-        with b4:
+        # with b4:
             reset_clicked = st.form_submit_button("Reiniciar todo", use_container_width=True, key=K("btn_reset_all"))
 
     st.markdown("</div></div>", unsafe_allow_html=True)
