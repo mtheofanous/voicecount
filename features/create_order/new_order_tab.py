@@ -1477,9 +1477,9 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 is_striked = product_key in striked_products
                 
                 # Create columns for product and delete button
-                col_product, col_delete = st.columns([11, 1])
+                # col_product, col_delete = st.columns([11, 1])
                 
-                with col_product:
+                with st.container(horizontal=True):
                     # Product name with quantity
                     strike_style = "text-decoration: line-through; text-decoration-color: #c41e3a; text-decoration-thickness: 2px; opacity: 0.4;" if is_striked else ""
                     
@@ -1513,7 +1513,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                     else:
                         st.markdown('<div style="height: 8px;"></div>', unsafe_allow_html=True)
                 
-                with col_delete:
+                # with col_delete:
                     # Delete button
                     btn_label = "↺" if is_striked else "✗"
                     if st.button(
