@@ -1642,12 +1642,14 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         # with b3:
             limpiar_clicked = st.form_submit_button("🗑️", use_container_width=True, key=K("btn_clear_text"))
             
+        # # with b4:
+        #     reset_clicked = st.form_submit_button("🔄", use_container_width=True, key=K("btn_reset_all"))
 
     st.markdown("</div></div>", unsafe_allow_html=True)
 
     # Style the submit button using your existing helper
     style_button(
-        "Añadir nota",
+        "Add",
         font_color="#ffffff",
         background_color="#3b82f6",
         hover_background_color="#2563eb",
@@ -1738,10 +1740,10 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         st.success("Texto limpiado.")
         st.rerun()
 
-    if reset_clicked:
-        reset_notes_only(clear_resolved_picks=True)
-        st.success("Todo reiniciado.")
-        st.rerun()
+    # if reset_clicked:
+    #     reset_notes_only(clear_resolved_picks=True)
+    #     st.success("Todo reiniciado.")
+    #     st.rerun()
 
 
     # =========================================================
