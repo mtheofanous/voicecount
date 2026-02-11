@@ -1640,10 +1640,10 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             add_clicked = st.form_submit_button("Añadir nota", use_container_width=True, type="primary", key=K("btn_add_note"))
 
         # with b3:
-            limpiar_clicked = st.form_submit_button("Limpiar texto", use_container_width=True, key=K("btn_clear_text"))
+            limpiar_clicked = st.form_submit_button("🗑️", use_container_width=True, key=K("btn_clear_text"))
             
         # with b4:
-            reset_clicked = st.form_submit_button("Reiniciar todo", use_container_width=True, key=K("btn_reset_all"))
+            reset_clicked = st.form_submit_button("🔄", use_container_width=True, key=K("btn_reset_all"))
 
     st.markdown("</div></div>", unsafe_allow_html=True)
 
