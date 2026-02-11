@@ -609,7 +609,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         """
     <style>
     /* Google Font for handwriting */
-    @import url('https://fonts.googleapis.com/css2?family=Caveat:wght@400;500;600;700&display=swap');
+    @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&display=swap');
     
     /* ---------- Unified Notebook Design ---------- */
     .voi-notebook-unified {
@@ -620,7 +620,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
       border-left: 3px solid #c41e3a;
       border-radius: 4px 4px 0 0;
       padding: 16px 16px 12px 40px;
-      font-family: 'Caveat', cursive;
+      font-family: 'Inter', sans-serif;
     }
     
     .voi-notebook-unified::before {
@@ -643,14 +643,14 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     }
     
     .voi-notebook-title {
-      font-family: 'Caveat', cursive;
+      font-family: 'Inter', sans-serif;
       font-size: 1.3rem;
       font-weight: 600;
       color: #1a1a1a;
     }
     
     .voi-notebook-time {
-      font-family: 'Caveat', cursive;
+      font-family: 'Inter', sans-serif;
       font-size: 1.1rem;
       font-weight: 500;
       color: #4a4a4a;
@@ -691,7 +691,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     
     /* Make buttons look integrated */
     .voi-notebook-products button {
-      font-family: 'Caveat', cursive !important;
+      font-family: 'Inter', sans-serif !important;
       font-size: 1.3rem !important;
       font-weight: 700 !important;
       padding: 2px 8px !important;
@@ -712,7 +712,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
       display: flex;
       align-items: center;
       gap: 10px;
-      font-family: 'Caveat', cursive;
+      font-family: 'Inter', sans-serif;
       font-size: 1.15rem;
       font-weight: 500;
       color: #4a4a4a;
@@ -1492,7 +1492,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                             pass
                     
                     st.markdown(
-                        f'<div style="font-family: \'Caveat\', cursive; font-size: 0.85rem; font-weight: 600; color: #1a1a1a; padding-top: 8px; {strike_style}">{qty_badge}{name}</div>',
+                        f'<div style="font-family: \'Inter\', sans-serif; font-size: 0.85rem; font-weight: 600; color: #1a1a1a; padding-top: 8px; {strike_style}">{qty_badge}{name}</div>',
                         unsafe_allow_html=True
                     )
                     
@@ -1507,7 +1507,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                     
                     if details_parts:
                         st.markdown(
-                            f'<div style="font-family: \'Caveat\', cursive; font-size: 1.05rem; color: #4a4a4a; padding: 4px 0 8px 0; {strike_style}">{" · ".join(details_parts)}</div>',
+                            f'<div style="font-family: \'Inter\', sans-serif; font-size: 0.75rem; color: #4a4a4a; padding: 4px 0 8px 0; {strike_style}">{" · ".join(details_parts)}</div>',
                             unsafe_allow_html=True
                         )
                     else:
