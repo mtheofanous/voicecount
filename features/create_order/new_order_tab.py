@@ -1503,7 +1503,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                     if description:
                         details_parts.append(f'<span style="font-weight: 600; color: #2a2a2a;"></span> {description}')
                     if provider:
-                        details_parts.append(f'<span style="font-weight: 600; color: #2a2a2a;">Proveedor:</span> {provider}')
+                        details_parts.append(f'<span style="font-weight: 600; color: #2a2a2a;"></span> {provider}')
                     
                     if details_parts:
                         st.markdown(
