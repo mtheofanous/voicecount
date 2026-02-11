@@ -1501,7 +1501,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                     if unit and unit != "unit":
                         details_parts.append(f'<span style="font-weight: 600; color: #2a2a2a;">Unidad:</span> {unit}')
                     if description:
-                        details_parts.append(f'<span style="font-weight: 600; color: #2a2a2a;">Descripción:</span> {description}')
+                        details_parts.append(f'<span style="font-weight: 600; color: #2a2a2a;"></span> {description}')
                     if provider:
                         details_parts.append(f'<span style="font-weight: 600; color: #2a2a2a;">Proveedor:</span> {provider}')
                     
@@ -1532,18 +1532,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 # Separator line
                 st.markdown('<div style="border-bottom: 1px dotted rgba(0,0,0,0.1); margin: 0;"></div>', unsafe_allow_html=True)
 
-            
-            # # Footer with status
-        # st.markdown(
-        #     f'''
-        #     <div class="voi-notebook-footer">
-        #         <div class="voi-dot"></div>
-        #         <div>{status_text}</div>
-        #     </div>
-        #     </div>
-        #     ''',
-        #     unsafe_allow_html=True
-        # )
+        
 
 
     # Spacer so the fixed bottom bar doesn't cover the resolver
