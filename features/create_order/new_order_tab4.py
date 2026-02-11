@@ -611,53 +611,12 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     /* Google Font for handwriting */
     @import url('https://fonts.googleapis.com/css2?family=Caveat:wght@400;500;600;700&display=swap');
     
-    /* ---------- Unified Notebook Design ---------- */
-    .voi-notebook-unified {
+    /* ---------- Lined notebook card preview ---------- */
+    .voi-preview-card{
       position: relative;
-      background: #fef9e7;
       border: 1px solid #d4af37;
-      border-bottom: none;
       border-left: 3px solid #c41e3a;
-      border-radius: 4px 4px 0 0;
-      padding: 16px 16px 12px 40px;
-      font-family: 'Caveat', cursive;
-    }
-    
-    .voi-notebook-unified::before {
-      content: '';
-      position: absolute;
-      left: 32px;
-      top: 0;
-      bottom: 0;
-      width: 2px;
-      background: #c41e3a;
-      opacity: 0.5;
-    }
-    
-    .voi-notebook-header {
-      display: flex;
-      justify-content: space-between;
-      align-items: center;
-      padding-bottom: 12px;
-      border-bottom: 1px dashed rgba(0,0,0,0.15);
-    }
-    
-    .voi-notebook-title {
-      font-family: 'Caveat', cursive;
-      font-size: 1.3rem;
-      font-weight: 600;
-      color: #1a1a1a;
-    }
-    
-    .voi-notebook-time {
-      font-family: 'Caveat', cursive;
-      font-size: 1.1rem;
-      font-weight: 500;
-      color: #4a4a4a;
-    }
-    
-    .voi-notebook-products {
-      position: relative;
+      border-radius: 4px;
       background: linear-gradient(
         to bottom,
         #fef9e7 0%,
@@ -671,14 +630,14 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         #b8b8b8 1.45rem
       );
       background-color: #fef9e7;
-      border: 1px solid #d4af37;
-      border-top: none;
-      border-bottom: none;
-      border-left: 3px solid #c41e3a;
-      padding: 8px 16px 8px 40px;
+      padding: 20px 16px 20px 40px;
+      box-shadow: 0 4px 12px rgba(0,0,0,0.15), inset 0 0 0 1px rgba(212,175,55,0.1);
+      margin: 8px 0 14px 0;
+      font-family: 'Caveat', cursive;
     }
     
-    .voi-notebook-products::before {
+    /* Red margin line */
+    .voi-preview-card::before {
       content: '';
       position: absolute;
       left: 32px;
@@ -689,55 +648,177 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
       opacity: 0.5;
     }
     
-    /* Make buttons look integrated */
-    .voi-notebook-products button {
-      font-family: 'Caveat', cursive !important;
-      font-size: 1.3rem !important;
-      font-weight: 700 !important;
-      padding: 2px 8px !important;
-      min-width: 32px !important;
-      height: 32px !important;
-      border-radius: 4px !important;
-      margin-top: 6px;
+    .voi-preview-top{
+      display:flex; 
+      align-items:flex-start; 
+      justify-content:space-between; 
+      gap:10px;
+      margin-bottom: 1rem;
+      padding-bottom: 0.5rem;
+      border-bottom: 1px dashed rgba(0,0,0,0.15);
     }
     
-    .voi-notebook-footer {
-      position: relative;
-      background: #fef9e7;
-      border: 1px solid #d4af37;
-      border-top: none;
-      border-left: 3px solid #c41e3a;
-      border-radius: 0 0 4px 4px;
-      padding: 12px 16px 16px 40px;
+    .voi-preview-title{
+      font-weight: 600;
+      color: #1a1a1a;
+      font-size: 1.3rem;
+      line-height: 1.5;
+      font-family: 'Caveat', cursive;
+    }
+    
+    .voi-preview-time{
+      color: #4a4a4a;
+      font-weight: 500;
+      font-size: 1.1rem;
+      white-space: nowrap;
+      font-family: 'Caveat', cursive;
+    }
+    
+    /* Vertical products list */
+    .voi-products-list{
+      display: flex;
+      flex-direction: column;
+      gap: 12px;
+      margin: 12px 0;
+    }
+    
+    .voi-product-item{
+      display: flex;
+      flex-direction: column;
+      gap: 4px;
+      padding: 8px 0;
+      border-bottom: 1px dotted rgba(0,0,0,0.1);
+      transition: opacity 0.3s ease;
+    }
+    
+    .voi-product-item:last-child{
+      border-bottom: none;
+    }
+    
+    /* Strikethrough effect */
+    .voi-product-striked {
+      opacity: 0.4;
+    }
+    
+    .voi-product-striked .voi-product-name,
+    .voi-product-striked .voi-product-details {
+      text-decoration: line-through;
+      text-decoration-color: #c41e3a;
+      text-decoration-thickness: 2px;
+    }
+    
+    /* Product header with checkbox */
+    .voi-product-header{
       display: flex;
       align-items: center;
       gap: 10px;
-      font-family: 'Caveat', cursive;
-      font-size: 1.15rem;
-      font-weight: 500;
-      color: #4a4a4a;
-      box-shadow: 0 4px 12px rgba(0,0,0,0.08);
-      margin-bottom: 14px;
     }
     
-    .voi-notebook-footer::before {
-      content: '';
+    /* Custom checkbox styling */
+    .voi-strike-checkbox {
+      display: flex;
+      align-items: center;
+      cursor: pointer;
+      position: relative;
+    }
+    
+    .voi-strike-checkbox input[type="checkbox"] {
       position: absolute;
-      left: 32px;
-      top: 0;
-      bottom: 0;
-      width: 2px;
-      background: #c41e3a;
-      opacity: 0.5;
+      opacity: 0;
+      cursor: pointer;
+      width: 0;
+      height: 0;
     }
     
-    .voi-dot {
-      width: 10px;
-      height: 10px;
+    .voi-checkbox-custom {
+      display: inline-block;
+      width: 24px;
+      height: 24px;
+      border: 2px solid #c41e3a;
+      border-radius: 4px;
+      background: rgba(255,255,255,0.6);
+      position: relative;
+      transition: all 0.2s ease;
+    }
+    
+    .voi-strike-checkbox:hover .voi-checkbox-custom {
+      background: rgba(196,30,58,0.1);
+      transform: scale(1.1);
+    }
+    
+    .voi-strike-checkbox input[type="checkbox"]:checked + .voi-checkbox-custom {
+      background: #c41e3a;
+    }
+    
+    .voi-strike-checkbox input[type="checkbox"]:checked + .voi-checkbox-custom::after {
+      content: '✓';
+      position: absolute;
+      top: 50%;
+      left: 50%;
+      transform: translate(-50%, -50%);
+      color: white;
+      font-size: 16px;
+      font-weight: bold;
+    }
+    
+    .voi-product-name{
+      font-family: 'Caveat', cursive;
+      font-weight: 600;
+      font-size: 1.25rem;
+      color: #1a1a1a;
+      line-height: 1.4;
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      flex: 1;
+    }
+    
+    .voi-qty{
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 28px;
+      padding: 2px 8px;
+      background: rgba(196,30,58,0.15);
+      border-radius: 4px;
+      font-weight: 700;
+      font-size: 1.15rem;
+      color: #c41e3a;
+    }
+    
+    .voi-product-details{
+      font-family: 'Caveat', cursive;
+      font-weight: 400;
+      font-size: 1.05rem;
+      color: #4a4a4a;
+      line-height: 1.5;
+      padding-left: 34px;
+    }
+    
+    .voi-detail-label{
+      font-weight: 600;
+      color: #2a2a2a;
+    }
+    
+    .voi-status{
+      display: flex; 
+      align-items: center; 
+      gap: 10px;
+      margin-top: 14px;
+      padding-top: 10px;
+      border-top: 1px dashed rgba(0,0,0,0.15);
+      color: #4a4a4a;
+      font-weight: 500;
+      font-size: 1.15rem;
+      font-family: 'Caveat', cursive;
+    }
+    
+    .voi-dot{
+      width: 10px; 
+      height: 10px; 
       border-radius: 50%;
       background: #f59e0b;
       box-shadow: 0 0 4px rgba(245,158,11,0.5);
-      flex-shrink: 0;
     }
 
     /* ---------- Bottom WhatsApp-like bar ---------- */
@@ -1416,7 +1497,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
 
     # =========================================================
-    # Parsed summary preview card (Unified notebook with delete buttons)
+    # Parsed summary preview card (FIXED with HTML escaping)
     # =========================================================
     parsed_df = st.session_state.get(S("parsed_df"))
     order_chat = st.session_state.get(S("order_chat"), []) or []
@@ -1426,124 +1507,210 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     striked_products = st.session_state.get(S("striked_products"), set())
 
     if isinstance(parsed_df, pd.DataFrame) and not parsed_df.empty:
-        # Count non-striked products for status
+        # Helper to escape HTML
+        def esc(text):
+            if not text:
+                return ""
+            return str(text).replace("&", "&amp;").replace("<", "&lt;").replace(">", "&gt;")
+
+        # Build product list with details
         any_needs_review = False
-        active_products = 0
-        
+        product_items = []
+
         for idx, r in parsed_df.iterrows():
+            name = safe_str(r.get("matched_name") or r.get("spoken_name") or "").strip()
+            qty = r.get("quantity", None)
             pid = r.get("matched_product_id", None)
             status = safe_str(r.get("status") or "").lower()
+            unit = safe_str(r.get("unit") or "unit").strip()
+            provider = safe_str(r.get("provider") or "").strip()
+            
+            # Create unique identifier for this product row
+            product_key = f"{idx}_{name}_{qty}"
+            is_striked = product_key in striked_products
+            
+            # Get description from products_by_id
+            description = ""
+            if pid is not None and not (isinstance(pid, float) and pd.isna(pid)):
+                try:
+                    prod = products_by_id.get(int(pid))
+                    if prod:
+                        description = safe_str(getattr(prod, "description", "") or "").strip()
+                except Exception:
+                    pass
+
+            if not name:
+                continue
+
+            qtxt = ""
+            try:
+                if qty is not None and str(qty).strip() != "":
+                    qtxt = f"{float(qty):g}"
+            except Exception:
+                qtxt = ""
+
+            if pid is None or (isinstance(pid, float) and pd.isna(pid)) or ("revis" in status):
+                any_needs_review = True
+
+            # Build product item HTML with strikethrough option
+            striked_class = " voi-product-striked" if is_striked else ""
+            product_html = f'<div class="voi-product-item{striked_class}" data-product-key="{esc(product_key)}">'
+            
+            # Checkbox for strikethrough
+            checkbox_id = f"strike_{esc(product_key)}"
+            checked_attr = "checked" if is_striked else ""
+            product_html += f'''
+                <div class="voi-product-header">
+                    <label class="voi-strike-checkbox">
+                        <input type="checkbox" id="{checkbox_id}" {checked_attr} 
+                               onchange="toggleStrike('{esc(product_key)}')">
+                        <span class="voi-checkbox-custom"></span>
+                    </label>
+            '''
+            
+            # Product name with quantity
+            if qtxt:
+                product_html += f'<div class="voi-product-name"><span class="voi-qty">{esc(qtxt)}</span> {esc(name)}</div>'
+            else:
+                product_html += f'<div class="voi-product-name">{esc(name)}</div>'
+            
+            product_html += '</div>'  # Close voi-product-header
+            
+            # Product details (unit, description, supplier)
+            details_parts = []
+            if unit and unit != "unit":
+                details_parts.append(f'<span class="voi-detail-label">Unidad:</span> {esc(unit)}')
+            if description:
+                details_parts.append(f'<span class="voi-detail-label">Descripción:</span> {esc(description)}')
+            if provider:
+                details_parts.append(f'<span class="voi-detail-label">Proveedor:</span> {esc(provider)}')
+            
+            if details_parts:
+                product_html += f'<div class="voi-product-details">{" · ".join(details_parts)}</div>'
+            
+            product_html += '</div>'
+            product_items.append(product_html)
+
+        # Build title (summary of first few products)
+        summary_parts = []
+        for idx, r in parsed_df.head(2).iterrows():
             name = safe_str(r.get("matched_name") or r.get("spoken_name") or "").strip()
             qty = r.get("quantity", None)
             product_key = f"{idx}_{name}_{qty}"
             
-            if product_key not in striked_products:
-                active_products += 1
-            
-            if pid is None or (isinstance(pid, float) and pd.isna(pid)) or ("revis" in status):
-                any_needs_review = True
-        
-        # Product list with delete buttons
-        # st.markdown('<div class="voi-notebook-products">', unsafe_allow_html=True)
-        css = """
-        .st-key-my_blue_container {
-            background-color: rgba(254, 249, 231, 1);
-        }
-        """
-
-        st.html(f"<style>{css}</style>")
-        with st.container(border=True, key="my_blue_container"):
-            for row_idx, r in parsed_df.iterrows():
-                name = safe_str(r.get("matched_name") or r.get("spoken_name") or "").strip()
-                qty = r.get("quantity", None)
-                pid = r.get("matched_product_id", None)
-                unit = safe_str(r.get("unit") or "unit").strip()
-                provider = safe_str(r.get("provider") or "").strip()
-                
-                # Get description
-                description = ""
-                if pid is not None and not (isinstance(pid, float) and pd.isna(pid)):
-                    try:
-                        prod = products_by_id.get(int(pid))
-                        if prod:
-                            description = safe_str(getattr(prod, "description", "") or "").strip()
-                    except Exception:
-                        pass
-                
-                if not name:
-                    continue
-                
-                product_key = f"{row_idx}_{name}_{qty}"
-                is_striked = product_key in striked_products
-                
-                # Create columns for product and delete button
-                col_product, col_delete = st.columns([11, 1])
-                
-                with col_product:
-                    # Product name with quantity
-                    strike_style = "text-decoration: line-through; text-decoration-color: #c41e3a; text-decoration-thickness: 2px; opacity: 0.4;" if is_striked else ""
-                    
-                    qty_badge = ""
-                    if qty:
-                        try:
-                            qty_display = f"{float(qty):g}"
-                            qty_badge = f'<span style="display: inline-flex; align-items: center; justify-content: center; min-width: 28px; padding: 2px 8px; background: rgba(196,30,58,0.15); border-radius: 4px; font-weight: 700; font-size: 1.15rem; color: #c41e3a; margin-right: 8px;">{qty_display}</span>'
-                        except:
-                            pass
-                    
-                    st.markdown(
-                        f'<div style="font-family: \'Caveat\', cursive; font-size: 1.25rem; font-weight: 600; color: #1a1a1a; padding-top: 8px; {strike_style}">{qty_badge}{name}</div>',
-                        unsafe_allow_html=True
-                    )
-                    
-                    # Product details
-                    details_parts = []
-                    if unit and unit != "unit":
-                        details_parts.append(f'<span style="font-weight: 600; color: #2a2a2a;">Unidad:</span> {unit}')
-                    if description:
-                        details_parts.append(f'<span style="font-weight: 600; color: #2a2a2a;">Descripción:</span> {description}')
-                    if provider:
-                        details_parts.append(f'<span style="font-weight: 600; color: #2a2a2a;">Proveedor:</span> {provider}')
-                    
-                    if details_parts:
-                        st.markdown(
-                            f'<div style="font-family: \'Caveat\', cursive; font-size: 1.05rem; color: #4a4a4a; padding: 4px 0 8px 0; {strike_style}">{" · ".join(details_parts)}</div>',
-                            unsafe_allow_html=True
-                        )
+            if name and product_key not in striked_products:
+                try:
+                    if qty is not None and str(qty).strip() != "":
+                        qtxt = f"{float(qty):g}"
+                        summary_parts.append(f"{qtxt} {name}")
                     else:
-                        st.markdown('<div style="height: 8px;"></div>', unsafe_allow_html=True)
-                
-                with col_delete:
-                    # Delete button
-                    btn_label = "↺" if is_striked else "✗"
-                    if st.button(
-                        btn_label,
-                        key=K(f"strike_{product_key}"),
-                        help=f"{'Restaurar' if is_striked else 'Tachar'} {name[:20]}",
-                        type="secondary"
-                    ):
-                        if is_striked:
-                            striked_products.discard(product_key)
-                        else:
-                            striked_products.add(product_key)
-                        st.session_state[S("striked_products")] = striked_products
-                        st.rerun()
-                
-                # Separator line
-                st.markdown('<div style="border-bottom: 1px dotted rgba(0,0,0,0.1); margin: 0;"></div>', unsafe_allow_html=True)
+                        summary_parts.append(name)
+                except Exception:
+                    summary_parts.append(name)
+        
+        total_products = len([idx for idx, r in parsed_df.iterrows() 
+                             if f"{idx}_{safe_str(r.get('matched_name') or r.get('spoken_name') or '').strip()}_{r.get('quantity', None)}" 
+                             not in striked_products])
+        active_count = len(summary_parts)
+        
+        if total_products > 2:
+            title = f"{', '.join(summary_parts)}… (+{total_products - 2} más)"
+        else:
+            title = ", ".join(summary_parts) if summary_parts else "—"
+        title = esc(title) if title else "—"
 
+        last_ts = order_chat[-1].get("ts") if order_chat else None
+        ttxt = ""
+        try:
+            if last_ts:
+                ttxt = datetime.fromtimestamp(float(last_ts)).strftime("%H:%M")
+        except Exception:
+            ttxt = ""
+
+        products_html = "".join(product_items)
+        status_text = 'Pendiente de revisar' if any_needs_review else 'Listo para guardar'
+
+        preview_html = f"""
+    <script>
+    function toggleStrike(productKey) {{
+        const checkbox = document.getElementById('strike_' + productKey);
+        const item = document.querySelector('[data-product-key="' + productKey + '"]');
+        
+        if (checkbox && checkbox.checked) {{
+            item.classList.add('voi-product-striked');
             
-            # # Footer with status
-        # st.markdown(
-        #     f'''
-        #     <div class="voi-notebook-footer">
-        #         <div class="voi-dot"></div>
-        #         <div>{status_text}</div>
-        #     </div>
-        #     </div>
-        #     ''',
-        #     unsafe_allow_html=True
-        # )
+            // Send to Streamlit via query params
+            const params = new URLSearchParams(window.location.search);
+            params.set('strike_product', productKey);
+            window.parent.postMessage({{
+                type: 'streamlit:setComponentValue',
+                value: {{ action: 'toggle_strike', product_key: productKey, striked: true }}
+            }}, '*');
+        }} else {{
+            item.classList.remove('voi-product-striked');
+            
+            // Send to Streamlit via query params
+            const params = new URLSearchParams(window.location.search);
+            params.set('unstrike_product', productKey);
+            window.parent.postMessage({{
+                type: 'streamlit:setComponentValue',
+                value: {{ action: 'toggle_strike', product_key: productKey, striked: false }}
+            }}, '*');
+        }}
+    }}
+    </script>
+    
+    <div class="voi-preview-card">
+        <div class="voi-preview-top">
+            <div class="voi-preview-title">{title}</div>
+            <div class="voi-preview-time">{ttxt}</div>
+        </div>
+        <div class="voi-products-list">
+            {products_html}
+        </div>
+        <div class="voi-status">
+            <div class="voi-dot"></div>
+            <div>{status_text}</div>
+        </div>
+    </div>
+    """
+
+        # Try st.html first (Streamlit 1.31+), fallback to st.markdown
+        try:
+            st.html(preview_html)
+        except AttributeError:
+            st.markdown(preview_html, unsafe_allow_html=True)
+        
+        # Handle strikethrough toggles via buttons below the card
+        st.markdown('<div style="margin-top: 8px;">', unsafe_allow_html=True)
+        cols = st.columns(len(parsed_df) if len(parsed_df) <= 5 else 5)
+        for idx, ((row_idx, r), col) in enumerate(zip(parsed_df.iterrows(), cols)):
+            if idx >= 5:  # Limit to 5 buttons for mobile
+                break
+            name = safe_str(r.get("matched_name") or r.get("spoken_name") or "").strip()
+            qty = r.get("quantity", None)
+            product_key = f"{row_idx}_{name}_{qty}"
+            
+            with col:
+                is_striked = product_key in striked_products
+                button_label = "✓" if is_striked else "☐"
+                button_type = "secondary" if is_striked else "primary"
+                
+                if st.button(
+                    button_label,
+                    key=K(f"toggle_strike_{product_key}"),
+                    help=f"{'Reactivar' if is_striked else 'Tachar'} {name[:20]}",
+                    type=button_type,
+                    use_container_width=True
+                ):
+                    if is_striked:
+                        striked_products.discard(product_key)
+                    else:
+                        striked_products.add(product_key)
+                    st.session_state[S("striked_products")] = striked_products
+                    st.rerun()
+        
+        st.markdown('</div>', unsafe_allow_html=True)
 
 
     # Spacer so the fixed bottom bar doesn't cover the resolver
