@@ -1492,18 +1492,18 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                             pass
                     
                     st.markdown(
-                        f'<div style="font-family: \'Caveat\', cursive; font-size: 1.25rem; font-weight: 600; color: #1a1a1a; padding-top: 8px; {strike_style}">{qty_badge}{name}</div>',
+                        f'<div style="font-family: \'Caveat\', cursive; font-size: 0.85rem; font-weight: 600; color: #1a1a1a; padding-top: 8px; {strike_style}">{qty_badge}{name}</div>',
                         unsafe_allow_html=True
                     )
                     
                     # Product details
                     details_parts = []
                     if unit and unit != "unit":
-                        details_parts.append(f'<span style="font-weight: 400; color: #2a2a2a;"></span> {unit}')
+                        details_parts.append(f'<span style="font-weight: 600; color: #2a2a2a;"></span> {unit}')
                     if description:
-                        details_parts.append(f'<span style="font-weight: 400; color: #2a2a2a;"></span> {description}')
+                        details_parts.append(f'<span style="font-weight: 600; color: #2a2a2a;"></span> {description}')
                     if provider:
-                        details_parts.append(f'<span style="font-weight: 400; color: #2a2a2a;"></span> {provider}')
+                        details_parts.append(f'<span style="font-weight: 600; color: #2a2a2a;"></span> {provider}')
                     
                     if details_parts:
                         st.markdown(
