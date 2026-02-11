@@ -1728,6 +1728,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
         st.success(f"Preparación guardada ✅ (#{target_id})")
         
+        
         # Clear striked products after saving
         st.session_state[S("striked_products")] = set()
         
