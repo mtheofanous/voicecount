@@ -1361,8 +1361,8 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
     
     from streamlit_js_eval import streamlit_js_eval
     
-    CARD_MIN_PX = 260   # your “comfortable” card width
-    GAP_PX = 24         # approx gap between columns
+    CARD_MIN_PX = 220   # your “comfortable” card width
+    GAP_PX = 20         # approx gap between columns
 
     def compute_cols(viewport_w: int) -> int:
         if not viewport_w:
@@ -1403,9 +1403,9 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
                 css = f"""
                 .st-key-{card_key} {{
                     background-color: #ffffff;
-                    border: 1px solid #e2e8f0;
-                    border-radius: 18px;
-                    padding: 1rem;
+                    border: 0.5px solid #e2e8f0;
+                    border-radius: 9px;
+                    padding: 0.5rem;
                     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.04);
                     transition: all 0.2s ease-in-out;
                     width: 100%;
