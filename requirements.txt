@@ -1,4 +1,5 @@
 streamlit>=1.32
+streamlit-js-eval>=0.1.7
 sqlmodel==0.0.21
 sqlalchemy>=2.0.14,<2.1
 pydantic==2.10.1

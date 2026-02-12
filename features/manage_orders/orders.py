@@ -1358,7 +1358,20 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
     start_i = (st.session_state[page_key] - 1) * page_size
     end_i = start_i + page_size
     pids_page = pids[start_i:end_i]
+    
+    from streamlit_js_eval import streamlit_js_eval
+    
+    CARD_MIN_PX = 260   # your “comfortable” card width
+    GAP_PX = 24         # approx gap between columns
 
+    def compute_cols(viewport_w: int) -> int:
+        if not viewport_w:
+            return 2  # safe fallback
+        n = int(viewport_w // (CARD_MIN_PX + GAP_PX))
+        return max(1, min(n, 6))  # clamp (optional)
+    
+    viewport_w = streamlit_js_eval(js_expressions="window.innerWidth", key="viewport_w")
+    n_cols = compute_cols(int(viewport_w or 0))
     # ===== Main container (modern neutral background) =====
     css = """
     .st-key-my_blue_container {
@@ -1368,13 +1381,16 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
     }
     """
     st.html(f"<style>{css}</style>")
+    
+    
 
     with st.container(key="my_blue_container", height=550):
-        cols = st.columns(2, gap="medium")
+        cols = st.columns(n_cols, gap="medium")
 
         for i, pid in enumerate(pids_page):
-            col = cols[i % 2]
+            col = cols[i % n_cols]
             p = products_by_id.get(pid)
+
             unit_txt = (_s(getattr(p, "unit", "")) or "unidad").lower()
             label = label_by_id.get(pid, str(pid))
             parts = label.split(" — ", 1)
@@ -1392,24 +1408,25 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
                     padding: 1rem;
                     box-shadow: 0 4px 12px rgba(0, 0, 0, 0.04);
                     transition: all 0.2s ease-in-out;
+                    width: 100%;
+                    max-width: {CARD_MIN_PX}px;   /* keeps card nice */
+                    margin: 0 auto;              /* center inside column */
                 }}
-
                 .st-key-{card_key}:hover {{
                     transform: translateY(-2px);
                     box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
                 }}
                 """
                 st.html(f"<style>{css}</style>")
-                #200
-                with st.container(key=card_key, width=180):
 
+                # IMPORTANT: remove width=200 so the column can adapt
+                with st.container(key=card_key):
                     existing_qty = float(qty_by_pid.get(pid, 0.0) or 0.0)
                     in_order = existing_qty > 0
                     qty_txt = f"{existing_qty:g}"
                     bg = "rgba(33,150,243,0.08)" if in_order else "transparent"
                     border = "rgba(33,150,243,0.5)" if in_order else "rgba(49,51,63,.2)"
-                    
-                    # Compact badge for mobile
+
                     unit_row = (
                         f"""
                         <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;gap:4px">
@@ -1429,7 +1446,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
                         </div>
                         """
                     )
-                    
+
                     st.markdown(
                         f"""
                         <div style="
@@ -1448,10 +1465,9 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
                         """,
                         unsafe_allow_html=True,
                     )
-                    
+
                     form_key = f"{editor_key}__qa_form_{pid}"
                     with st.form(key=form_key, clear_on_submit=False):
-                        # Compact number input
                         qty_val = st.number_input(
                             "Qty",
                             min_value=0,
@@ -1466,7 +1482,6 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
                         )
                     if submitted:
                         _add_product_to_df(pid, qty_val)
-
     # Build the dataframe that will be shown in the editor
     df_for_editor = _sanitize_editor_df(st.session_state[df_state_key])
 
