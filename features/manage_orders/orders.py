@@ -1358,68 +1358,76 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
     start_i = (st.session_state[page_key] - 1) * page_size
     end_i = start_i + page_size
     pids_page = pids[start_i:end_i]
-    
     from streamlit_js_eval import streamlit_js_eval
-    
-    CARD_MIN_PX = 180   # your “comfortable” card width
-    GAP_PX = 1        # approx gap between columns
 
-    def compute_cols(viewport_w: int) -> int:
-        if not viewport_w:
-            return 2  # safe fallback
-        n = int(viewport_w // (CARD_MIN_PX + GAP_PX))
-        return max(1, min(n, 8))  # clamp (optional)
-    
+    CARD_MIN_PX = 180
+    GAP_PX = 12
+
     viewport_w = streamlit_js_eval(js_expressions="window.innerWidth", key="viewport_w")
-    n_cols = compute_cols(int(viewport_w or 0))
-    # ===== Main container (modern neutral background) =====
-    css = """
-    .st-key-my_blue_container {
-        background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
-        padding: 1.5rem;
-        border-radius: 20px;
+    vw = int(viewport_w or 0)
+
+    def compute_cols(vw: int) -> int:
+        # Force 2 columns on phone
+        if vw and vw <= 700:
+            return 2
+        if not vw:
+            return 2
+        n = int(vw // (CARD_MIN_PX + GAP_PX))
+        return max(2, min(n, 6))
+
+    n_cols = compute_cols(vw)
+
+    # ✅ Force 2 columns on mobile (Streamlit otherwise stacks them)
+    st.markdown(
+        """
+    <style>
+    @media (max-width: 700px) {
+    .st-key-my_blue_container [data-testid="stHorizontalBlock"]{
+        flex-wrap: wrap !important;
+        gap: 12px !important;
     }
-    """
-    st.html(f"<style>{css}</style>")
-    
-    
+    .st-key-my_blue_container [data-testid="column"]{
+        flex: 1 1 calc(50% - 12px) !important;
+        width: calc(50% - 12px) !important;
+        min-width: 0 !important;
+    }
+    }
+    </style>
+    """,
+        unsafe_allow_html=True,
+    )
 
     with st.container(key="my_blue_container", height=550):
-        cols = st.columns(n_cols, gap="medium")
+        cols = st.columns(n_cols, gap="small")  # small gap helps on mobile
 
         for i, pid in enumerate(pids_page):
             col = cols[i % n_cols]
             p = products_by_id.get(pid)
 
+            # ✅ DEFINE IT HERE
             unit_txt = (_s(getattr(p, "unit", "")) or "unidad").lower()
+
             label = label_by_id.get(pid, str(pid))
             parts = label.split(" — ", 1)
             name = parts[0]
             rest = parts[1] if len(parts) > 1 else ""
-
             with col:
                 card_key = f"my_product_{pid}"
 
-                css = f"""
-                .st-key-{card_key} {{
-                    background-color: #ffffff;
-                    border: 0.5px solid #e2e8f0;
-                    border-radius: 9px;
-                    padding: 0.5rem;
-                    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.04);
-                    transition: all 0.2s ease-in-out;
+                st.html(f"""
+                <style>
+                .st-key-{card_key}{{
+                    background:#fff;
+                    border:0.5px solid #e2e8f0;
+                    border-radius: 12px;
+                    padding: .6rem;
                     width: 100%;
-                    max-width: {CARD_MIN_PX}px;   /* keeps card nice */
-                    margin: 0 auto;              /* center inside column */
+                    max-width: none; /* IMPORTANT: allow full column width */
+                    margin: 0;
                 }}
-                .st-key-{card_key}:hover {{
-                    transform: translateY(-2px);
-                    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
-                }}
-                """
-                st.html(f"<style>{css}</style>")
+                </style>
+                """)
 
-                # IMPORTANT: remove width=200 so the column can adapt
                 with st.container(key=card_key):
                     existing_qty = float(qty_by_pid.get(pid, 0.0) or 0.0)
                     in_order = existing_qty > 0
