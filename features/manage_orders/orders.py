@@ -1401,7 +1401,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
                 """
                 st.html(f"<style>{css}</style>")
 
-                with st.container(key=card_key):
+                with st.container(key=card_key, width=200):
 
                     existing_qty = float(qty_by_pid.get(pid, 0.0) or 0.0)
                     in_order = existing_qty > 0
@@ -1461,7 +1461,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
                             label_visibility="collapsed",
                         )
                         submitted = st.form_submit_button(
-                            "+" if in_order else "Añadir",  # Shorter text for mobile
+                            "Sumar" if in_order else "Añadir",
                             use_container_width=True,
                         )
                     if submitted:
