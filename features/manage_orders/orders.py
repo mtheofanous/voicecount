@@ -1072,6 +1072,7 @@ def _inject_css() -> None:
     .voi-chiprow::-webkit-scrollbar{ height:6px; }
     .voi-chiprow::-webkit-scrollbar-thumb{ background: rgba(49,51,63,.25); border-radius:999px; }
     </style>
+    
 
     <style>
         .voi-card{border:1px solid rgba(49,51,63,.12);border-radius:18px;padding:14px 14px;margin:10px 0;background:rgba(255,255,255,.03);}
@@ -1222,6 +1223,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
             key=f"{editor_key}__qa_search",
             placeholder="Producto…",
         ).strip().lower()
+    
     with st.container(horizontal=True):
 
 
@@ -1357,82 +1359,113 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
     end_i = start_i + page_size
     pids_page = pids[start_i:end_i]
 
-    # Mobile-optimized: 2 columns instead of 3
-    with st.container(height=500):
-        cols = st.columns(2, gap="small")
+    # ===== Main container (modern neutral background) =====
+    css = """
+    .st-key-my_blue_container {
+        background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
+        padding: 1.2rem;
+        border-radius: 20px;
+    }
+    """
+    st.html(f"<style>{css}</style>")
+
+    with st.container(key="my_blue_container", height=550):
+        cols = st.columns(2, gap="medium")
+
         for i, pid in enumerate(pids_page):
-            col = cols[i % 2]  # Changed from 3 to 2
+            col = cols[i % 2]
             p = products_by_id.get(pid)
             unit_txt = (_s(getattr(p, "unit", "")) or "unidad").lower()
             label = label_by_id.get(pid, str(pid))
             parts = label.split(" — ", 1)
             name = parts[0]
             rest = parts[1] if len(parts) > 1 else ""
-            
+
             with col:
-                existing_qty = float(qty_by_pid.get(pid, 0.0) or 0.0)
-                in_order = existing_qty > 0
-                qty_txt = f"{existing_qty:g}"
-                bg = "rgba(33,150,243,0.08)" if in_order else "transparent"
-                border = "rgba(33,150,243,0.5)" if in_order else "rgba(49,51,63,.2)"
-                
-                # Compact badge for mobile
-                unit_row = (
-                    f"""
-                    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;gap:4px">
-                        <span style="font-size:0.85rem;font-weight:600;opacity:0.8">{unit_txt}</span>
-                        <span style="font-size:0.8rem;font-weight:700;
-                                    background:rgba(33,150,243,.95);
-                                    color:white;padding:2px 8px;
-                                    border-radius:12px;white-space:nowrap">
-                            ✓ {qty_txt}
-                        </span>
-                    </div>
-                    """
-                    if in_order
-                    else f"""
-                    <div style="margin-top:4px">
-                        <span style="font-size:0.85rem;font-weight:600;opacity:0.8">{unit_txt}</span>
-                    </div>
-                    """
-                )
-                
-                st.markdown(
-                    f"""
-                    <div style="
-                        padding:.5rem;
-                        border:1px solid {border};
-                        border-left:3px solid {'#2196F3' if in_order else border};
-                        border-radius:.5rem;
-                        background:{bg};
-                        line-height:1.2;
-                        min-height:80px
-                    ">
-                        <div style="font-weight:700;font-size:0.9rem">{name}</div>
-                        {'<div style="opacity:0.55;font-size:0.8rem;margin-top:2px">' + rest + '</div>' if rest else ''}
-                        {unit_row}
-                    </div>
-                    """,
-                    unsafe_allow_html=True,
-                )
-                
-                form_key = f"{editor_key}__qa_form_{pid}"
-                with st.form(key=form_key, clear_on_submit=False):
-                    # Compact number input
-                    qty_val = st.number_input(
-                        "Qty",
-                        min_value=0,
-                        step=1,
-                        value=0,
-                        key=f"{editor_key}__qa_qty_{pid}__{st.session_state[qa_nonce_key]}",
-                        label_visibility="collapsed",
+                card_key = f"my_product_{pid}"
+
+                css = f"""
+                .st-key-{card_key} {{
+                    background-color: #ffffff;
+                    border: 1px solid #e2e8f0;
+                    border-radius: 18px;
+                    padding: 1rem;
+                    box-shadow: 0 4px 12px rgba(0, 0, 0, 0.04);
+                    transition: all 0.2s ease-in-out;
+                }}
+
+                .st-key-{card_key}:hover {{
+                    transform: translateY(-2px);
+                    box-shadow: 0 8px 20px rgba(0, 0, 0, 0.08);
+                }}
+                """
+                st.html(f"<style>{css}</style>")
+
+                with st.container(key=card_key):
+
+                    existing_qty = float(qty_by_pid.get(pid, 0.0) or 0.0)
+                    in_order = existing_qty > 0
+                    qty_txt = f"{existing_qty:g}"
+                    bg = "rgba(33,150,243,0.08)" if in_order else "transparent"
+                    border = "rgba(33,150,243,0.5)" if in_order else "rgba(49,51,63,.2)"
+                    
+                    # Compact badge for mobile
+                    unit_row = (
+                        f"""
+                        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;gap:4px">
+                            <span style="font-size:0.75rem;font-weight:500;opacity:0.7">{unit_txt}</span>
+                            <span style="font-size:0.7rem;font-weight:600;
+                                        background:rgba(33,150,243,.95);
+                                        color:white;padding:2px 6px;
+                                        border-radius:10px;white-space:nowrap">
+                                ✓ {qty_txt}
+                            </span>
+                        </div>
+                        """
+                        if in_order
+                        else f"""
+                        <div style="margin-top:4px">
+                            <span style="font-size:0.75rem;font-weight:500;opacity:0.7">{unit_txt}</span>
+                        </div>
+                        """
                     )
-                    submitted = st.form_submit_button(
-                        "+" if in_order else "Añadir",  # Shorter text for mobile
-                        use_container_width=True,
+                    
+                    st.markdown(
+                        f"""
+                        <div style="
+                            padding:.4rem;
+                            border:1px solid {border};
+                            border-left:3px solid {'#2196F3' if in_order else border};
+                            border-radius:.5rem;
+                            background:{bg};
+                            line-height:1.10;
+                            min-height:60px
+                        ">
+                            <div style="font-weight:500;font-size:0.80rem">{name}</div>
+                            {'<div style="opacity:0.55;font-size:0.70rem;margin-top:2px">' + rest + '</div>' if rest else ''}
+                            {unit_row}
+                        </div>
+                        """,
+                        unsafe_allow_html=True,
                     )
-                if submitted:
-                    _add_product_to_df(pid, qty_val)
+                    
+                    form_key = f"{editor_key}__qa_form_{pid}"
+                    with st.form(key=form_key, clear_on_submit=False):
+                        # Compact number input
+                        qty_val = st.number_input(
+                            "Qty",
+                            min_value=0,
+                            step=1,
+                            value=0,
+                            key=f"{editor_key}__qa_qty_{pid}__{st.session_state[qa_nonce_key]}",
+                            label_visibility="collapsed",
+                        )
+                        submitted = st.form_submit_button(
+                            "+" if in_order else "Añadir",  # Shorter text for mobile
+                            use_container_width=True,
+                        )
+                    if submitted:
+                        _add_product_to_df(pid, qty_val)
 
     # Build the dataframe that will be shown in the editor
     df_for_editor = _sanitize_editor_df(st.session_state[df_state_key])

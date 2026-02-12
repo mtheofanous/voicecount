@@ -813,65 +813,6 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     
     st.subheader("📝 Notas de faltantes")
 
-            
-    # =========================================================
-    # Timeline (living notes) — mobile friendly + aligned
-    # =========================================================
-    # =========================================================
-    # Timeline (living notes) — mobile friendly + aligned
-    # =========================================================
-    # with st.container(border=True):
-    #     chat = st.session_state.get(S("order_chat"), [])
-
-    #     if not chat:
-    #         st.info("Empieza escribiendo abajo o graba un audio 👇")
-    #     else:
-    #         st.markdown('<div class="notes-wrap">', unsafe_allow_html=True)
-
-    #         for i, msg in enumerate(list(chat)):
-    #             role_msg = safe_str(msg.get("role"))
-    #             txt = safe_str(msg.get("text", ""))
-    #             tsf = float(msg.get("ts") or 0.0)
-
-    #             who = "Tú" if role_msg == "user" else "Audio"
-    #             cls = "note-user" if role_msg == "user" else "note-asr"
-    #             tlabel = time.strftime("%H:%M", time.localtime(tsf)) if tsf else ""
-
-    #             bubble_col, del_col = st.columns([20, 2], vertical_alignment="top")
-
-    #             with bubble_col:
-    #                 st.markdown(
-    #                     f"""
-    #                     <div class="note-row">
-    #                     <div class="note-bubble {cls}">
-    #                         <div class="note-meta">
-    #                         <div class="note-text"><strong>{who}:</strong> {txt}</div>
-    #                         <div class="note-time">{tlabel}</div>
-    #                         </div>
-    #                     </div>
-    #                     </div>
-    #                     """,
-    #                     unsafe_allow_html=True,
-    #                 )
-
-    #             with del_col:
-    #                 msg_key = f"{int(tsf * 1000)}" if tsf else f"idx_{i}"
-    #                 if st.button(
-    #                     "🗑️",
-    #                     key=K(f"del_msg_{msg_key}"),
-    #                     help="Eliminar esta nota",
-    #                     type="secondary",
-    #                 ):
-    #                     st.session_state[S("order_chat")].pop(i)
-    #                     _rebuild_transcript_from_chat()
-
-    #                     st.session_state[S("auto_parse_pending")] = True
-    #                     st.session_state.pop(S("parsed_df"), None)
-    #                     st.session_state.pop(S("parse_candidates_df"), None)
-    #                     st.session_state.pop(S("finalize_parse_pending"), None)
-    #                     st.rerun()
-
-    #         st.markdown("</div>", unsafe_allow_html=True)
 
     # =========================================================
     # Convert df -> order lines
@@ -1709,7 +1650,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             label_visibility="collapsed",
         )
 
-        # b1, b2, b3, b4 = st.columns([1, 2, 1, 1], vertical_alignment="center")
+
         
         with st.container(horizontal=True):
             # ✅ AUDIO INPUT NOW LIVES HERE (in the "Dictar" slot)
@@ -1724,9 +1665,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         # with b3:
             limpiar_clicked = st.form_submit_button("🗑️", use_container_width=True, key=K("btn_clear_text"))
             
-        # # with b4:
-        #     reset_clicked = st.form_submit_button("🔄", use_container_width=True, key=K("btn_reset_all"))
-
+  
     st.markdown("</div></div>", unsafe_allow_html=True)
 
     # ✅ IMPROVED: Style the button using CSS instead of JavaScript
@@ -1975,38 +1914,3 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         st.success("Texto limpiado.")
         st.rerun()
 
-    # if reset_clicked:
-    #     reset_notes_only(clear_resolved_picks=True)
-    #     st.success("Todo reiniciado.")
-    #     st.rerun()
-
-
-    # # =========================================================
-    # # Draft selector (optional)
-    # # =========================================================
-    # with st.expander("⚙️ Cambiar borrador destino (opcional)", expanded=False):
-    #     with get_session() as s:
-    #         drafts = s.exec(
-    #             select(Order)
-    #             .where(Order.venue_id == venue_id, Order.status == "draft")
-    #             .order_by(Order.created_at.desc())
-    #         ).all()
-
-    #     if not drafts:
-    #         st.caption("No hay borradores aún. Se creará uno al guardar.")
-    #     else:
-    #         draft_options = [(o.id, f"#{o.id} — {o.title or o.created_at.strftime('%Y-%m-%d %H:%M')}") for o in drafts]
-    #         labels = [lbl for _, lbl in draft_options]
-    #         ids = [oid for oid, _ in draft_options]
-
-    #         default_idx = 0
-    #         if active_draft_id in ids:
-    #             default_idx = ids.index(active_draft_id)
-
-    #         chosen_label = st.selectbox("Borrador destino", options=labels, index=default_idx, key=K("choose_draft_select"))
-    #         manual_target_id = int(ids[labels.index(chosen_label)])
-
-    #         if st.button("Usar este borrador como activo", key=K("btn_set_active_draft")):
-    #             _set_active_draft(manual_target_id)
-    #             st.success(f"Activo: #{manual_target_id}")
-    #             st.rerun()
