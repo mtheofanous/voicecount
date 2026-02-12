@@ -444,14 +444,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     def _go_orders(order_id: int) -> None:
         # matches app.py router: ?page=orders&order_id=...&status=draft
         st.session_state["page"] = "orders"
-        
-        # ✅ CRITICAL: Include session token in navigation
-        token = st.session_state.get("_session_token", "")
-        if token:
-            set_query_params(page="orders", order_id=int(order_id), status="draft", st=token)
-        else:
-            set_query_params(page="orders", order_id=int(order_id), status="draft")
-        
+        set_query_params(page="orders", order_id=int(order_id), status="draft")
         st.rerun()
 
     # =========================================================
@@ -1684,18 +1677,14 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             col1, col2 = st.columns(2)
             with col1:
                 if st.button("✓ Aquí", key=K("confirm_quick"), use_container_width=True, type="primary"):
-                    # Set the selected draft and trigger add action
                     st.session_state[S("selected_draft_id")] = draft_ids[chosen_idx]
                     st.session_state[S("show_draft_popover")] = False
-                    st.session_state[S("trigger_add")] = True  # Signal to process the add
                     st.rerun()
                     
             with col2:
                 if st.button("+ Nuevo", key=K("new_quick"), use_container_width=True):
-                    # Signal to create new draft
-                    st.session_state[S("selected_draft_id")] = -1
+                    st.session_state[S("selected_draft_id")] = -1  # Signal to create new
                     st.session_state[S("show_draft_popover")] = False
-                    st.session_state[S("trigger_add")] = True  # Signal to process the add
                     st.rerun()
 
     st.markdown('<div class="voi-bottom-wrap"><div class="voi-bottom-inner">', unsafe_allow_html=True)
@@ -1779,17 +1768,10 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         st.rerun()
 
     # =========================================================
-    # 🎯 ADD BUTTON LOGIC - Triggers discreet popover or processes selection
+    # 🎯 ADD BUTTON LOGIC - Triggers discreet popover
     # =========================================================
     
-    # Check if we should process the add (either from button click or from popover selection)
-    trigger_add = add_clicked or st.session_state.get(S("trigger_add"), False)
-    
-    if trigger_add:
-        # Clear the trigger flag
-        if st.session_state.get(S("trigger_add"), False):
-            st.session_state[S("trigger_add")] = False
-        
+    if add_clicked:
         parsed_df = st.session_state.get(S("parsed_df"))
 
         if not isinstance(parsed_df, pd.DataFrame) or parsed_df.empty:

@@ -441,9 +441,7 @@ def main():
     bootstrap_once()
     _css()
 
-    # ✅ CRITICAL FIX: ALWAYS restore auth from token if token exists
-    # Don't skip restoration just because auth_ctx exists - it might be stale!
-    
+    # ✅ BULLETPROOF TOKEN RESTORATION WITH LOGGING
     # Get token from URL (highest priority)
     token_from_url = None
     try:
@@ -461,35 +459,37 @@ def main():
         # Always update session with the active token
         st.session_state["_session_token"] = active_token
         
-        # ✅ CRITICAL: Restore auth EVERY TIME we have a token
-        # Don't check if auth_ctx exists - always validate the token!
-        logging.info(f"🔄 Validating token and restoring auth...")
-        try:
-            from features.auth_and_manage.auth_multi_tenant import _get_session_from_token
-            session_data = _get_session_from_token(active_token)
-            
-            if session_data:
-                # Always set/update auth_ctx
-                st.session_state["auth_ctx"] = {
-                    "user_id": session_data["user_id"],
-                    "account_id": session_data["account_id"]
-                }
-                logging.info(f"✅ Auth restored: user={session_data['user_id']}, account={session_data['account_id']}")
-            else:
-                logging.warning(f"⚠️ Invalid token - clearing session")
-                # Clear invalid token
+        # Check if we need to restore auth context
+        auth_ctx = st.session_state.get("auth_ctx")
+        
+        if not auth_ctx:
+            # No auth context - need to restore it from token
+            logging.info(f"🔄 Restoring auth from token...")
+            try:
+                from features.auth_and_manage.auth_multi_tenant import _get_session_from_token
+                session_data = _get_session_from_token(active_token)
+                
+                if session_data:
+                    st.session_state["auth_ctx"] = {
+                        "user_id": session_data["user_id"],
+                        "account_id": session_data["account_id"]
+                    }
+                    logging.info(f"✅ Auth restored successfully: user_id={session_data['user_id']}, account_id={session_data['account_id']}")
+                else:
+                    logging.warning(f"⚠️ Token validation failed - invalid or expired token")
+                    # Clear the invalid token
+                    st.session_state.pop("_session_token", None)
+                    st.session_state.pop("auth_ctx", None)
+                    
+            except Exception as e:
+                logging.error(f"❌ Error restoring auth from token: {e}")
+                # Clear potentially corrupted data
                 st.session_state.pop("_session_token", None)
                 st.session_state.pop("auth_ctx", None)
-                
-        except Exception as e:
-            logging.error(f"❌ Error validating token: {e}")
-            import traceback
-            logging.error(traceback.format_exc())
-            # Clear corrupted data
-            st.session_state.pop("_session_token", None)
-            st.session_state.pop("auth_ctx", None)
+        else:
+            logging.debug(f"✅ Auth context already present (user_id={auth_ctx.get('user_id')})")
     else:
-        logging.debug("No token found")
+        logging.debug("No token found in URL or session")
     
     # Handle logout / actions early
     _handle_actions_from_query_params()

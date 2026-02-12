@@ -444,14 +444,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     def _go_orders(order_id: int) -> None:
         # matches app.py router: ?page=orders&order_id=...&status=draft
         st.session_state["page"] = "orders"
-        
-        # ✅ CRITICAL: Include session token in navigation
-        token = st.session_state.get("_session_token", "")
-        if token:
-            set_query_params(page="orders", order_id=int(order_id), status="draft", st=token)
-        else:
-            set_query_params(page="orders", order_id=int(order_id), status="draft")
-        
+        set_query_params(page="orders", order_id=int(order_id), status="draft")
         st.rerun()
 
     # =========================================================
@@ -1640,64 +1633,6 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     # =========================================================
     st.session_state.setdefault(S("wa_text_input"), "")
 
-    # =========================================================
-    # 🎯 DISCREET DRAFT SELECTOR (only if multiple drafts)
-    # =========================================================
-    # Check if we need to show draft selector
-    show_draft_selector = False
-    drafts_list = []
-    
-    if st.session_state.get(S("show_draft_popover"), False):
-        with get_session() as s:
-            drafts_list = s.exec(
-                select(Order)
-                .where(Order.venue_id == venue_id, Order.status == "draft")
-                .order_by(Order.created_at.desc())
-            ).all()
-        
-        if len(drafts_list) > 1:
-            show_draft_selector = True
-    
-    # Show discreet draft selector if needed
-    if show_draft_selector:
-        with st.popover("📋 Seleccionar borrador", use_container_width=False):
-            st.caption("¿A qué borrador quieres añadir?")
-            
-            # Create compact options
-            draft_options = []
-            draft_ids = []
-            for draft in drafts_list:
-                title = draft.title or "Sin título"
-                date = draft.created_at.strftime('%d/%m %H:%M')
-                draft_options.append(f"#{draft.id} {title} · {date}")
-                draft_ids.append(int(draft.id))
-            
-            # Radio selection
-            chosen_idx = st.radio(
-                "Elige:",
-                range(len(draft_options)),
-                format_func=lambda i: draft_options[i],
-                key=K("draft_quick_select"),
-                label_visibility="collapsed"
-            )
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("✓ Aquí", key=K("confirm_quick"), use_container_width=True, type="primary"):
-                    # Set the selected draft and trigger add action
-                    st.session_state[S("selected_draft_id")] = draft_ids[chosen_idx]
-                    st.session_state[S("show_draft_popover")] = False
-                    st.session_state[S("trigger_add")] = True  # Signal to process the add
-                    st.rerun()
-                    
-            with col2:
-                if st.button("+ Nuevo", key=K("new_quick"), use_container_width=True):
-                    # Signal to create new draft
-                    st.session_state[S("selected_draft_id")] = -1
-                    st.session_state[S("show_draft_popover")] = False
-                    st.session_state[S("trigger_add")] = True  # Signal to process the add
-                    st.rerun()
-
     st.markdown('<div class="voi-bottom-wrap"><div class="voi-bottom-inner">', unsafe_allow_html=True)
 
     with st.form(key=K("wa_form"), clear_on_submit=True):
@@ -1779,114 +1714,133 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         st.rerun()
 
     # =========================================================
-    # 🎯 ADD BUTTON LOGIC - Triggers discreet popover or processes selection
+    # 🎯 IMPROVED ADD BUTTON LOGIC - Mobile-First UX
     # =========================================================
     
-    # Check if we should process the add (either from button click or from popover selection)
-    trigger_add = add_clicked or st.session_state.get(S("trigger_add"), False)
+    # Initialize draft selection state if needed
+    if S("awaiting_draft_selection") not in st.session_state:
+        st.session_state[S("awaiting_draft_selection")] = False
     
-    if trigger_add:
-        # Clear the trigger flag
-        if st.session_state.get(S("trigger_add"), False):
-            st.session_state[S("trigger_add")] = False
+    # If we're awaiting selection, show the modal-style selector FIRST
+    if st.session_state.get(S("awaiting_draft_selection"), False):
+        parsed_df = st.session_state.get(S("parsed_df_pending"))
+        df_to_use = st.session_state.get(S("df_to_use_pending"))
+        actor = st.session_state.get(S("actor_pending"))
         
-        parsed_df = st.session_state.get(S("parsed_df"))
-
-        if not isinstance(parsed_df, pd.DataFrame) or parsed_df.empty:
-            st.warning("Aún no hay nada parseado para guardar. Añade texto o audio y espera a que se genere el resumen.")
-            st.stop()
-
-        # Filter out striked products
-        striked_products = st.session_state.get(S("striked_products"), set())
-        df_filtered = parsed_df.copy()
-
-        if striked_products:
-            keep_mask = []
-            for idx, r in df_filtered.iterrows():
-                name = safe_str(r.get("matched_name") or r.get("spoken_name") or "").strip()
-                qty = r.get("quantity", None)
-                product_key = f"{idx}_{name}_{qty}"
-                keep_mask.append(product_key not in striked_products)
-            df_filtered = df_filtered[keep_mask]
-
-        if df_filtered.empty:
-            st.warning("Todos los productos están tachados. No hay nada que guardar.")
-            st.stop()
-
-        df_to_use = apply_unit_choice(df_filtered)
-        actor = current_actor()
-
-        # Get all drafts
         with get_session() as s:
             drafts = s.exec(
                 select(Order)
                 .where(Order.venue_id == venue_id, Order.status == "draft")
                 .order_by(Order.created_at.desc())
             ).all()
-
-        target_id: int = 0
         
-        # Check if user already selected from popover
-        selected_from_popover = st.session_state.get(S("selected_draft_id"))
+        st.markdown("---")
+        st.markdown("### 📋 Selecciona un borrador")
+        st.info("Tienes varios borradores abiertos. ¿A cuál quieres añadir estos productos?")
         
-        if selected_from_popover == -1:
-            # User clicked "Nuevo" in popover
+        # Create mobile-friendly card-style buttons for each draft
+        for draft in drafts:
+            draft_date = draft.created_at.strftime('%d/%m/%Y %H:%M')
+            draft_title = draft.title or "Sin título"
+            
+            # Count items in this draft
+            with get_session() as s:
+                line_count = s.exec(
+                    select(func.count(OrderLine.id))
+                    .where(OrderLine.order_id == draft.id)
+                ).first() or 0
+            
+            col1, col2 = st.columns([4, 1])
+            
+            with col1:
+                st.markdown(f"""
+                <div style="
+                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+                    padding: 16px;
+                    border-radius: 12px;
+                    margin-bottom: 12px;
+                    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+                ">
+                    <div style="color: white; font-size: 18px; font-weight: 600; margin-bottom: 4px;">
+                        {draft_title}
+                    </div>
+                    <div style="color: rgba(255,255,255,0.8); font-size: 14px; margin-bottom: 4px;">
+                        #{draft.id} • {draft_date}
+                    </div>
+                    <div style="color: rgba(255,255,255,0.9); font-size: 13px;">
+                        📦 {line_count} productos
+                    </div>
+                </div>
+                """, unsafe_allow_html=True)
+            
+            with col2:
+                if st.button("✓", key=f"select_draft_{draft.id}", use_container_width=True, type="primary"):
+                    # Save to this draft
+                    _add_lines_to_existing_draft(
+                        venue_id=venue_id,
+                        order_id=int(draft.id),
+                        actor=actor,
+                        df=df_to_use,
+                    )
+                    _set_active_draft(draft.id)
+                    bump_orders_refresh_token()
+                    
+                    # Clear state
+                    st.session_state[S("awaiting_draft_selection")] = False
+                    st.session_state.pop(S("parsed_df_pending"), None)
+                    st.session_state.pop(S("df_to_use_pending"), None)
+                    st.session_state.pop(S("actor_pending"), None)
+                    st.session_state[S("striked_products")] = set()
+                    reset_notes_only(do_rerun=False)
+                    
+                    st.success(f"✅ Productos añadidos al borrador #{draft.id}")
+                    time.sleep(0.5)
+                    _go_orders(draft.id)
+        
+        # Option to create new draft instead
+        st.markdown("---")
+        if st.button("➕ Crear nuevo borrador", key="create_new_draft_instead", use_container_width=True, type="secondary"):
             new_id = _create_draft_and_insert_lines(
                 venue_id=venue_id,
                 actor=actor,
                 df=df_to_use,
             )
             if new_id:
-                target_id = int(new_id)
-                st.session_state.pop(S("selected_draft_id"), None)
+                _set_active_draft(new_id)
+                bump_orders_refresh_token()
                 
-        elif selected_from_popover:
-            # User selected a specific draft from popover
-            target_id = int(selected_from_popover)
-            st.session_state.pop(S("selected_draft_id"), None)
-
-        # Case 1️⃣ — Active draft already set
-        elif active_draft_id:
-            target_id = int(active_draft_id)
-
-        # Case 2️⃣ — Only ONE draft exists → auto use it
-        elif len(drafts) == 1:
-            target_id = int(drafts[0].id)
-            _set_active_draft(target_id)
-
-        # Case 3️⃣ — Multiple drafts → TRIGGER POPOVER
-        elif len(drafts) > 1:
-            # Trigger the discreet popover and stop here
-            st.session_state[S("show_draft_popover")] = True
+                # Clear state
+                st.session_state[S("awaiting_draft_selection")] = False
+                st.session_state.pop(S("parsed_df_pending"), None)
+                st.session_state.pop(S("df_to_use_pending"), None)
+                st.session_state.pop(S("actor_pending"), None)
+                st.session_state[S("striked_products")] = set()
+                reset_notes_only(do_rerun=False)
+                
+                st.success(f"✅ Nuevo borrador creado #{new_id}")
+                time.sleep(0.5)
+                _go_orders(new_id)
+        
+        # Cancel button
+        if st.button("✕ Cancelar", key="cancel_draft_selection", use_container_width=True):
+            st.session_state[S("awaiting_draft_selection")] = False
+            st.session_state.pop(S("parsed_df_pending"), None)
+            st.session_state.pop(S("df_to_use_pending"), None)
+            st.session_state.pop(S("actor_pending"), None)
             st.rerun()
+        
+        st.stop()
+    
+    if add_clicked:
+        parsed_df = st.session_state.get(S("parsed_df"))
 
-        # Case 4️⃣ — No drafts → create new
-        else:
-            new_id = _create_draft_and_insert_lines(
-                venue_id=venue_id,
-                actor=actor,
-                df=df_to_use,
-            )
-            if new_id:
-                target_id = int(new_id)
+        if not isinstance(parsed_df, pd.DataFrame) or parsed_df.empty:
+            st.warning("Aún no hay nada parseado para guardar. Añade texto o audio y espera a que se genere el resumen.")
+            st.stop()
 
-        # Add to selected draft
-        if target_id:
-            _add_lines_to_existing_draft(
-                venue_id=venue_id,
-                order_id=int(target_id),
-                actor=actor,
-                df=df_to_use,
-            )
-
-            _set_active_draft(target_id)
-            bump_orders_refresh_token()
-
-            st.success(f"✅ Añadido al borrador #{target_id}")
-            st.session_state[S("striked_products")] = set()
-            reset_notes_only(do_rerun=False)
-            time.sleep(0.3)
-            _go_orders(target_id)
+        # Filter out striked products (your existing logic)
+        striked_products = st.session_state.get(S("striked_products"), set())
+        df_filtered = parsed_df.copy()
 
         if striked_products:
             keep_mask = []
