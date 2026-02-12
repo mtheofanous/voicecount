@@ -1621,23 +1621,22 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     st.markdown('<div class="voi-bottom-wrap"><div class="voi-bottom-inner">', unsafe_allow_html=True)
 
     with st.form(key=K("wa_form"), clear_on_submit=True):
-        with st.container(horizontal=True):
-            typed = st.text_input(
-                "",
-                placeholder="Escribe como en WhatsApp... ej: 3 coca cola, hielo",
-                key=K("wa_text_input_field"),
-                label_visibility="collapsed",
-            )
-            
-            # ✅ AUDIO INPUT NOW LIVES HERE (in the "Dictar" slot)
-            audio_file = st.audio_input("", key=K("audio_msg"), label_visibility="collapsed")
-            if audio_file is not None:
-                st.session_state[S("audio_bytes")] = audio_file.read()
+        
+        typed = st.text_input(
+            "",
+            placeholder="Escribe como en WhatsApp... ej: 3 coca cola, hielo",
+            key=K("wa_text_input_field"),
+            label_visibility="collapsed",
+        )
 
         # b1, b2, b3, b4 = st.columns([1, 2, 1, 1], vertical_alignment="center")
         
         with st.container(horizontal=True):
-
+            # ✅ AUDIO INPUT NOW LIVES HERE (in the "Dictar" slot)
+            
+            audio_file = st.audio_input("", key=K("audio_msg"), label_visibility="collapsed")
+            if audio_file is not None:
+                st.session_state[S("audio_bytes")] = audio_file.read()
                 
         # with b2:
             add_clicked = st.form_submit_button("Add", use_container_width=True, type="primary", key=K("btn_add_note"))

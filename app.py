@@ -20,7 +20,7 @@ from dotenv import load_dotenv
 import warnings
 import streamlit as st
 import logging
-
+from fixed_container import st_fixed_container
 # Configure logging
 logging.basicConfig(level=logging.DEBUG, format='%(asctime)s - %(levelname)s - %(message)s')
 
@@ -213,6 +213,151 @@ f"""<a class="voi-tab {active}" href="{href}" target="_self">
 
     st.markdown(html, unsafe_allow_html=True)
 
+import streamlit as st
+from streamlit.components.v1 import html as components_html
+
+
+def _handle_actions_from_query_params():
+    """Logout triggered from topbar link (?action=logout)."""
+    action = (st.query_params.get("action", "") or "").strip().lower()
+    if action == "logout":
+        clear_auth()
+        st.query_params.clear()
+        st.rerun()
+
+
+def _inject_topbar(account_name: str):
+    """Injects a true fixed top bar into parent DOM (won't scroll away)."""
+    token = st.session_state.get("_session_token", "")
+    token_param = f"&st={token}" if token else ""
+    logout_href = f"?action=logout{token_param}"
+
+    # We inject CSS + HTML into parent.document, and also pad the main content
+    # so your page doesn't hide under the fixed top bar + sticky selector.
+    components_html(
+        f"""
+<script>
+(function() {{
+  const doc = parent.document;
+
+  const BAR_H = 52;      // top bar height
+  const DOCK_H = 58;     // venue selector "dock" height (approx)
+  const PAD_TOP = BAR_H + DOCK_H;
+
+  // ---------- CSS (once) ----------
+  if (!doc.getElementById("voi-topbar-style")) {{
+    const style = doc.createElement("style");
+    style.id = "voi-topbar-style";
+    style.textContent = `
+      #voi-topbar-root {{
+        position: fixed;
+        top: 0; left: 0; right: 0;
+        z-index: 999999;
+        background: rgba(255,255,255,0.95);
+        backdrop-filter: blur(10px);
+        border-bottom: 1px solid rgba(0,0,0,0.10);
+        padding: 10px 14px;
+      }}
+      #voi-topbar-inner {{
+        max-width: 1100px;
+        margin: 0 auto;
+        display: flex;
+        align-items: center;
+        justify-content: space-between;
+        gap: 12px;
+      }}
+      #voi-topbar-acc {{
+        font-weight: 700;
+        font-size: 14px;
+        color: rgba(0,0,0,0.85);
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }}
+      #voi-topbar-logout {{
+        display: inline-flex;
+        align-items: center;
+        justify-content: center;
+        padding: 8px 10px;
+        border-radius: 10px;
+        border: 1px solid rgba(0,0,0,0.12);
+        text-decoration: none;
+        color: rgba(0,0,0,0.85);
+        font-size: 13px;
+        font-weight: 600;
+      }}
+      #voi-topbar-logout:active {{ transform: translateY(1px); }}
+    `;
+    doc.head.appendChild(style);
+  }}
+
+  // ---------- Root element ----------
+  let root = doc.getElementById("voi-topbar-root");
+  if (!root) {{
+    root = doc.createElement("div");
+    root.id = "voi-topbar-root";
+    doc.body.appendChild(root);
+  }}
+
+  // ---------- Render ----------
+  root.innerHTML = `
+    <div id="voi-topbar-inner">
+      <div id="voi-topbar-acc">Account: {account_name or "—"}</div>
+      <a id="voi-topbar-logout" href="{logout_href}" target="_self">Logout</a>
+    </div>
+  `;
+
+  // ---------- Pad main content so it doesn't go under bar+selector ----------
+  const app = doc.querySelector('[data-testid="stAppViewContainer"]');
+  if (app) {{
+    app.style.paddingTop = PAD_TOP + "px";
+  }}
+}})();
+</script>
+        """,
+        height=0,
+        scrolling=False,
+    )
+
+
+def _make_venue_selector_sticky():
+    """
+    After the marker is rendered, this finds its Streamlit wrapper in parent DOM
+    and turns that wrapper into a sticky "dock" under the fixed top bar.
+    """
+    components_html(
+        """
+<script>
+(function() {
+  const doc = parent.document;
+  const marker = doc.getElementById("voi-venue-marker");
+  if (!marker) return;
+
+  // Find closest wrapper Streamlit uses for blocks
+  let wrapper = marker;
+  while (wrapper && wrapper !== doc.body) {
+    if (wrapper.getAttribute && wrapper.getAttribute("data-testid") === "stVerticalBlockBorderWrapper") break;
+    wrapper = wrapper.parentElement;
+  }
+  if (!wrapper || wrapper === doc.body) return;
+
+  // Apply sticky styles
+  wrapper.style.position = "sticky";
+  wrapper.style.top = "52px";            // match BAR_H above
+  wrapper.style.zIndex = "999998";
+  wrapper.style.background = "rgba(255,255,255,0.95)";
+  wrapper.style.backdropFilter = "blur(10px)";
+  wrapper.style.borderBottom = "1px solid rgba(0,0,0,0.10)";
+  wrapper.style.padding = "10px 14px 10px 14px";
+
+  // Marker itself can be removed/hidden
+  marker.style.display = "none";
+})();
+</script>
+        """,
+        height=0,
+        scrolling=False,
+    )
 
 
 
@@ -328,28 +473,31 @@ def main():
     bootstrap_once()
     _css()
 
+    # Handle logout / actions early
+    _handle_actions_from_query_params()
+
     # Read page from URL (auth_gate now preserves these params)
     try:
         url_page = st.query_params.get("page", "").strip().lower()
     except:
         url_page = ""
-    
+
     if url_page and url_page in PAGES:
         st.session_state["page"] = url_page
     elif "page" not in st.session_state:
         st.session_state["page"] = "orders"
-    
+
     # Read other deep-link params
     try:
         deep_order_id = int(st.query_params.get("order_id", 0)) or None
     except:
         deep_order_id = None
-    
+
     try:
         deep_provider = st.query_params.get("provider", "").strip() or None
     except:
         deep_provider = None
-        
+
     try:
         deep_status = st.query_params.get("status", "").strip().lower() or None
     except:
@@ -359,7 +507,6 @@ def main():
     auth_gate(show_manage_org=True, show_venue_selector=False)
     require_login()
 
-    # Debug log for session state and page key
     logging.debug(f"Session state: {st.session_state}")
     logging.debug(f"Current page_key: {st.session_state.get('page')}")
 
@@ -378,32 +525,27 @@ def main():
             st.info("Ask an admin to grant you access.")
         return
 
-    # Debug log for resolved page
     logging.debug(f"Resolved page_key after deep-link sync: {st.session_state['page']}")
-    
 
     u = current_user()
     acc = current_account()
-    
-    #TOP BAR --------------------------------------
-    # TOP BAR (must be first thing rendered)
-    with st.container(horizontal=True):
-        st.markdown(f"**Account:** {acc['name'] if acc else '—'}")
 
-        venue_id = _venue_selector_compact()
+    # ---------------- TOP BAR (true fixed) ----------------
+    account_name = acc["name"] if acc else "—"
+    _inject_topbar(account_name)
 
-        _venues = current_venues_for_user() or []
-        _role_by_id = {int(v["id"]): role for (v, role) in _venues}
-        venue_role = _role_by_id.get(int(venue_id))
+    # ---------------- Sticky venue selector dock ----------------
+    # Marker must be rendered in Streamlit layout first:
+    st.markdown('<div id="voi-venue-marker"></div>', unsafe_allow_html=True)
+    venue_id = _venue_selector_compact()
+    # Then we "upgrade" the wrapper of that block to sticky via JS:
+    _make_venue_selector_sticky()
 
-        if st.button("Logout", key="logout_btn_app", use_container_width=True):
-            clear_auth()
-            st.rerun()
+    _venues = current_venues_for_user() or []
+    _role_by_id = {int(v["id"]): role for (v, role) in _venues}
+    venue_role = _role_by_id.get(int(venue_id))
 
-
-
-
-    # Render page (no fixed-height container)
+    # ---------------- Render page ----------------
     page_key = st.session_state["page"]
     title, loader = PAGES.get(page_key, PAGES["orders"])
     page_fn = loader()
@@ -418,7 +560,6 @@ def main():
         _call_page(page_fn, venue_id, venue_role=venue_role)
 
     _bottom_tabbar(page_key)
-
 
 
 if __name__ == "__main__":
