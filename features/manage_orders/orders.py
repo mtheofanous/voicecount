@@ -1361,14 +1361,14 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
     
     from streamlit_js_eval import streamlit_js_eval
     
-    CARD_MIN_PX = 220   # your “comfortable” card width
-    GAP_PX = 20         # approx gap between columns
+    CARD_MIN_PX = 180   # your “comfortable” card width
+    GAP_PX = 1        # approx gap between columns
 
     def compute_cols(viewport_w: int) -> int:
         if not viewport_w:
             return 2  # safe fallback
         n = int(viewport_w // (CARD_MIN_PX + GAP_PX))
-        return max(1, min(n, 6))  # clamp (optional)
+        return max(1, min(n, 8))  # clamp (optional)
     
     viewport_w = streamlit_js_eval(js_expressions="window.innerWidth", key="viewport_w")
     n_cols = compute_cols(int(viewport_w or 0))
@@ -1376,7 +1376,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
     css = """
     .st-key-my_blue_container {
         background: linear-gradient(180deg, #f8fafc 0%, #f1f5f9 100%);
-        padding: 1.2rem;
+        padding: 1.5rem;
         border-radius: 20px;
     }
     """
@@ -1420,7 +1420,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
                 st.html(f"<style>{css}</style>")
 
                 # IMPORTANT: remove width=200 so the column can adapt
-                with st.container(key=card_key, width=190):
+                with st.container(key=card_key):
                     existing_qty = float(qty_by_pid.get(pid, 0.0) or 0.0)
                     in_order = existing_qty > 0
                     qty_txt = f"{existing_qty:g}"
