@@ -185,9 +185,7 @@ def _bottom_tabbar(current_page: str) -> None:
         ("new", "➕", "New"),
         ("orders", "📦", "Orders"),
         ("tracking", "✅", "Receive"),
-        ("history", "📈", "History"),
-        ("catalog", "🧾", "Catalog"),
-        ("manage_org", "⚙️", "Manage Org"),
+  
     ]
 
     # Get session token to include in links
@@ -213,7 +211,6 @@ f"""<a class="voi-tab {active}" href="{href}" target="_self">
 
     st.markdown(html, unsafe_allow_html=True)
 
-import streamlit as st
 from streamlit.components.v1 import html as components_html
 
 
@@ -226,25 +223,45 @@ def _handle_actions_from_query_params():
         st.rerun()
 
 
-def _inject_topbar(account_name: str):
-    """Injects a true fixed top bar into parent DOM (won't scroll away)."""
+def _inject_topbar(
+    account_name: str,
+    venue_name: str,
+    show_manage_org: bool,
+    is_manage_page: bool,
+    is_catalog_page: bool,
+    is_history_page: bool,
+):
     token = st.session_state.get("_session_token", "")
     token_param = f"&st={token}" if token else ""
-    logout_href = f"?action=logout{token_param}"
 
-    # We inject CSS + HTML into parent.document, and also pad the main content
-    # so your page doesn't hide under the fixed top bar + sticky selector.
+    logout_href = f"?action=logout{token_param}"
+    manage_href = f"?page=manage_org{token_param}"
+    catalog_href = f"?page=catalog{token_param}"
+    history_href = f"?page=history{token_param}"
+
+    manage_active = "active" if is_manage_page else ""
+    catalog_active = "active" if is_catalog_page else ""
+    history_active = "active" if is_history_page else ""
+
+    manage_icon_html = (
+        f'<a class="voi-topbar-icon {manage_active}" href="{manage_href}" target="_self" title="Manage Org">⚙️</a>'
+        if show_manage_org else ""
+    )
+    catalog_icon_html = f'<a class="voi-topbar-icon {catalog_active}" href="{catalog_href}" target="_self" title="Catalog">🧾</a>'
+    history_icon_html = f'<a class="voi-topbar-icon {history_active}" href="{history_href}" target="_self" title="History">📈</a>'
+
+    # show venue next to account
+    acc_venue = f"Account: {account_name or '—'} — {venue_name or '—'}"
+
     components_html(
         f"""
 <script>
 (function() {{
   const doc = parent.document;
 
-  const BAR_H = 52;      // top bar height
-  const DOCK_H = 58;     // venue selector "dock" height (approx)
-  const PAD_TOP = BAR_H + DOCK_H;
+  const BAR_H = 52;
+  const PAD_TOP = BAR_H;   // no sticky venue dock anymore
 
-  // ---------- CSS (once) ----------
   if (!doc.getElementById("voi-topbar-style")) {{
     const style = doc.createElement("style");
     style.id = "voi-topbar-style";
@@ -274,10 +291,27 @@ def _inject_topbar(account_name: str):
         overflow: hidden;
         text-overflow: ellipsis;
       }}
-      #voi-topbar-logout {{
+      #voi-topbar-right {{
+        display: flex;
+        align-items: center;
+        gap: 8px;
+      }}
+      .voi-topbar-icon {{
         display: inline-flex;
         align-items: center;
         justify-content: center;
+        width: 36px;
+        height: 36px;
+        border-radius: 10px;
+        border: 1px solid rgba(0,0,0,0.12);
+        text-decoration: none;
+        font-size: 18px;
+        color: rgba(0,0,0,0.85);
+      }}
+      .voi-topbar-icon.active {{
+        background: rgba(0,0,0,0.08);
+      }}
+      #voi-topbar-logout {{
         padding: 8px 10px;
         border-radius: 10px;
         border: 1px solid rgba(0,0,0,0.12);
@@ -286,12 +320,10 @@ def _inject_topbar(account_name: str):
         font-size: 13px;
         font-weight: 600;
       }}
-      #voi-topbar-logout:active {{ transform: translateY(1px); }}
     `;
     doc.head.appendChild(style);
   }}
 
-  // ---------- Root element ----------
   let root = doc.getElementById("voi-topbar-root");
   if (!root) {{
     root = doc.createElement("div");
@@ -299,15 +331,18 @@ def _inject_topbar(account_name: str):
     doc.body.appendChild(root);
   }}
 
-  // ---------- Render ----------
   root.innerHTML = `
     <div id="voi-topbar-inner">
-      <div id="voi-topbar-acc">Account: {account_name or "—"}</div>
-      <a id="voi-topbar-logout" href="{logout_href}" target="_self">Logout</a>
+      <div id="voi-topbar-acc">{acc_venue}</div>
+      <div id="voi-topbar-right">
+        {catalog_icon_html}
+        {history_icon_html}
+        {manage_icon_html}
+        <a id="voi-topbar-logout" href="{logout_href}" target="_self">Logout</a>
+      </div>
     </div>
   `;
 
-  // ---------- Pad main content so it doesn't go under bar+selector ----------
   const app = doc.querySelector('[data-testid="stAppViewContainer"]');
   if (app) {{
     app.style.paddingTop = PAD_TOP + "px";
@@ -318,7 +353,6 @@ def _inject_topbar(account_name: str):
         height=0,
         scrolling=False,
     )
-
 
 def _make_venue_selector_sticky():
     """
@@ -503,7 +537,7 @@ def main():
     except:
         deep_status = None
 
-    # Auth gate (now preserves URL params across reruns)
+    # Auth gate (preserves URL params)
     auth_gate(show_manage_org=True, show_venue_selector=False)
     require_login()
 
@@ -512,48 +546,62 @@ def main():
 
     u = current_user() or {}
     account_role = (u.get("account_role") or "member").lower()
+    acc = current_account()
 
-    active = current_active_venue()
+    # Resolve active venue (based on st.session_state["active_venue_id"], fallback to first)
+    active = current_active_venue()  # expected: (venue_dict, role)
 
     # If user has NO venues yet
     if not active:
         st.warning("You don't have access to any venue yet.")
         if account_role in {"owner", "admin", "manager"}:
-            st.info("Create your first venue below.")
-            manage_organization_ui(venue_role="owner")
+            st.info("Create your first venue in Manage Org.")
         else:
             st.info("Ask an admin to grant you access.")
         return
 
-    logging.debug(f"Resolved page_key after deep-link sync: {st.session_state['page']}")
+    venue, venue_role = active
+    venue_id = int(venue["id"])
+    venue_name = venue.get("name", "—")
 
-    u = current_user()
-    acc = current_account()
+    logging.debug(f"Resolved page_key after deep-link sync: {st.session_state['page']}")
 
     # ---------------- TOP BAR (true fixed) ----------------
     account_name = acc["name"] if acc else "—"
-    _inject_topbar(account_name)
+    page_key = st.session_state.get("page", "orders")
 
-    # ---------------- Sticky venue selector dock ----------------
-    # Marker must be rendered in Streamlit layout first:
-    st.markdown('<div id="voi-venue-marker"></div>', unsafe_allow_html=True)
-    venue_id = _venue_selector_compact()
-    # Then we "upgrade" the wrapper of that block to sticky via JS:
-    _make_venue_selector_sticky()
+    show_manage_org = account_role in {"owner", "admin", "manager"}
 
-    _venues = current_venues_for_user() or []
-    _role_by_id = {int(v["id"]): role for (v, role) in _venues}
-    venue_role = _role_by_id.get(int(venue_id))
+    _inject_topbar(
+        account_name=account_name,
+        venue_name=venue_name,  # ✅ show venue next to account
+        show_manage_org=show_manage_org,
+        is_manage_page=(page_key == "manage_org"),
+        is_catalog_page=(page_key == "catalog"),
+        is_history_page=(page_key == "history"),
+    )
 
     # ---------------- Render page ----------------
-    page_key = st.session_state["page"]
     title, loader = PAGES.get(page_key, PAGES["orders"])
     page_fn = loader()
 
     if page_key == "tracking":
-        _call_page(page_fn, venue_id, venue_role=venue_role, deep_order_id=deep_order_id, deep_provider=(deep_provider or None))
+        _call_page(
+            page_fn,
+            venue_id,
+            venue_role=venue_role,
+            deep_order_id=deep_order_id,
+            deep_provider=(deep_provider or None),
+        )
     elif page_key == "orders":
-        _call_page(page_fn, venue_id, venue_role=venue_role, deep_order_id=deep_order_id, deep_provider=(deep_provider or None), deep_status=(deep_status or None))
+        _call_page(
+            page_fn,
+            venue_id,
+            venue_role=venue_role,
+            deep_order_id=deep_order_id,
+            deep_provider=(deep_provider or None),
+            deep_status=(deep_status or None),
+        )
     elif page_key == "history":
         _call_page(page_fn, venue_id, venue_role=venue_role, deep_provider=deep_provider)
     else:
@@ -564,3 +612,4 @@ def main():
 
 if __name__ == "__main__":
     main()
+

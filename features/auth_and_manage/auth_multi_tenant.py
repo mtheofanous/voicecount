@@ -1252,25 +1252,53 @@ def _df_to_xlsx_bytes(df: pd.DataFrame, *, sheet_name: str = "credit_notes") -> 
 
     return bio.getvalue()
 
-def manage_organization_ui(*, venue_role: str) -> None:
-    """
-    Manage Organization with performance improvements.
-    """
-    u = current_user()
-    acc = current_account()
-
-    if not u or not acc:
-        st.stop()
-
+def manage_organization_ui(venue_role: str = None):
     st.subheader("🏢 Manage organization")
 
-    # Gate by ACTIVE venue role
+    acc = current_account()
+    if not acc:
+        st.error("Account not found. Please log in again.")
+        st.stop()
+
+    venues = current_venues_for_user()
+    if not venues:
+        st.info("You don't have access to any venue yet.")
+        st.stop()
+
+    # Only allow managing venues where user is owner/manager
+    manageable = [(v, role) for (v, role) in venues if (role or "").lower() in {"owner", "manager"}]
+    if not manageable:
+        st.info("You don't have permission to access organization management.")
+        st.stop()
+
+    # --- Active venue picker (ONLY HERE) ---
+    labels = [f"{v['name']} — {role}" for (v, role) in manageable]
+    ids = [int(v["id"]) for (v, role) in manageable]
+
+    st.session_state.setdefault("active_venue_id", ids[0])
+    if int(st.session_state["active_venue_id"]) not in ids:
+        st.session_state["active_venue_id"] = ids[0]
+
+    idx = ids.index(int(st.session_state["active_venue_id"]))
+    chosen = st.selectbox("Active venue", options=labels, index=idx)
+
+    chosen_id = ids[labels.index(chosen)]
+    if chosen_id != int(st.session_state["active_venue_id"]):
+        st.session_state["active_venue_id"] = chosen_id
+        st.rerun()
+
+    role_by_id = {int(v["id"]): role for (v, role) in manageable}
+    venue_role = role_by_id.get(int(st.session_state["active_venue_id"]), venue_role)
+
     if (venue_role or "").lower() not in {"owner", "manager"}:
         st.info("You don't have permission to access organization management.")
         st.stop()
 
-    # st.tabs resets to the first tab on any rerun.
-    # Use a radio selector with session_state so saving stays on the same tab.
+    # ✅ now this works because acc exists
+    all_venues = list_venues_for_account(current_account()["id"])
+
+
+    # ---- existing tabs/radio below stays the same ----
     org_tab_labels = ["👤 Users", "🏪 Venues", "✉️ Email Templates", "📇 Providers"]
     st.session_state.setdefault("org_tab", org_tab_labels[0])
     if st.session_state["org_tab"] not in org_tab_labels:

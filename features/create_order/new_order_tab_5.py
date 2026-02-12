@@ -67,11 +67,10 @@ def build_google_phrases(products_: list[Product]) -> list[str]:
 
 
 @st.cache_data(show_spinner=False, ttl=300)
-def load_catalog_and_indexes(venue_id: int, _cache_version: str = "v2"):
+def load_catalog_and_indexes(venue_id: int):
     """
     Cached catalog + indexes to avoid reloading on every Streamlit rerun.
     TTL 5 minutes. (You can also add a refresh token to the cache key later.)
-    _cache_version param allows manual cache busting when data structure changes.
     """
     with get_session() as s:
         products = s.exec(
@@ -511,21 +510,6 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
     if not products:
         st.warning("Primero crea tu catálogo en la pestaña 'Catálogo'.")
-        return
-
-    # Validate alias_indexes structure (in case of cache corruption)
-    if not isinstance(alias_indexes, dict):
-        st.error("Error en la estructura de datos del catálogo. Limpiando caché...")
-        st.cache_data.clear()
-        st.rerun()
-        return
-    
-    required_keys = ["alias_to_pids", "token_to_pids", "alias_to_products"]
-    missing_keys = [k for k in required_keys if k not in alias_indexes]
-    if missing_keys:
-        st.error(f"Estructura de catálogo incompleta (faltan: {missing_keys}). Limpiando caché...")
-        st.cache_data.clear()
-        st.rerun()
         return
 
     alias_to_pids = alias_indexes["alias_to_pids"]
@@ -1690,124 +1674,6 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         append_message("user", typed.strip())
         st.rerun()
 
-    # =========================================================
-    # 🎯 IMPROVED ADD BUTTON LOGIC - Mobile-First UX
-    # =========================================================
-    
-    # Initialize draft selection state if needed
-    if S("awaiting_draft_selection") not in st.session_state:
-        st.session_state[S("awaiting_draft_selection")] = False
-    
-    # If we're awaiting selection, show the modal-style selector FIRST
-    if st.session_state.get(S("awaiting_draft_selection"), False):
-        parsed_df = st.session_state.get(S("parsed_df_pending"))
-        df_to_use = st.session_state.get(S("df_to_use_pending"))
-        actor = st.session_state.get(S("actor_pending"))
-        
-        with get_session() as s:
-            drafts = s.exec(
-                select(Order)
-                .where(Order.venue_id == venue_id, Order.status == "draft")
-                .order_by(Order.created_at.desc())
-            ).all()
-        
-        st.markdown("---")
-        st.markdown("### 📋 Selecciona un borrador")
-        st.info("Tienes varios borradores abiertos. ¿A cuál quieres añadir estos productos?")
-        
-        # Create mobile-friendly card-style buttons for each draft
-        for draft in drafts:
-            draft_date = draft.created_at.strftime('%d/%m/%Y %H:%M')
-            draft_title = draft.title or "Sin título"
-            
-            # Count items in this draft
-            with get_session() as s:
-                line_count = s.exec(
-                    select(func.count(OrderLine.id))
-                    .where(OrderLine.order_id == draft.id)
-                ).first() or 0
-            
-            col1, col2 = st.columns([4, 1])
-            
-            with col1:
-                st.markdown(f"""
-                <div style="
-                    background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-                    padding: 16px;
-                    border-radius: 12px;
-                    margin-bottom: 12px;
-                    box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-                ">
-                    <div style="color: white; font-size: 18px; font-weight: 600; margin-bottom: 4px;">
-                        {draft_title}
-                    </div>
-                    <div style="color: rgba(255,255,255,0.8); font-size: 14px; margin-bottom: 4px;">
-                        #{draft.id} • {draft_date}
-                    </div>
-                    <div style="color: rgba(255,255,255,0.9); font-size: 13px;">
-                        📦 {line_count} productos
-                    </div>
-                </div>
-                """, unsafe_allow_html=True)
-            
-            with col2:
-                if st.button("✓", key=f"select_draft_{draft.id}", use_container_width=True, type="primary"):
-                    # Save to this draft
-                    _add_lines_to_existing_draft(
-                        venue_id=venue_id,
-                        order_id=int(draft.id),
-                        actor=actor,
-                        df=df_to_use,
-                    )
-                    _set_active_draft(draft.id)
-                    bump_orders_refresh_token()
-                    
-                    # Clear state
-                    st.session_state[S("awaiting_draft_selection")] = False
-                    st.session_state.pop(S("parsed_df_pending"), None)
-                    st.session_state.pop(S("df_to_use_pending"), None)
-                    st.session_state.pop(S("actor_pending"), None)
-                    st.session_state[S("striked_products")] = set()
-                    reset_notes_only(do_rerun=False)
-                    
-                    st.success(f"✅ Productos añadidos al borrador #{draft.id}")
-                    time.sleep(0.5)
-                    _go_orders(draft.id)
-        
-        # Option to create new draft instead
-        st.markdown("---")
-        if st.button("➕ Crear nuevo borrador", key="create_new_draft_instead", use_container_width=True, type="secondary"):
-            new_id = _create_draft_and_insert_lines(
-                venue_id=venue_id,
-                actor=actor,
-                df=df_to_use,
-            )
-            if new_id:
-                _set_active_draft(new_id)
-                bump_orders_refresh_token()
-                
-                # Clear state
-                st.session_state[S("awaiting_draft_selection")] = False
-                st.session_state.pop(S("parsed_df_pending"), None)
-                st.session_state.pop(S("df_to_use_pending"), None)
-                st.session_state.pop(S("actor_pending"), None)
-                st.session_state[S("striked_products")] = set()
-                reset_notes_only(do_rerun=False)
-                
-                st.success(f"✅ Nuevo borrador creado #{new_id}")
-                time.sleep(0.5)
-                _go_orders(new_id)
-        
-        # Cancel button
-        if st.button("✕ Cancelar", key="cancel_draft_selection", use_container_width=True):
-            st.session_state[S("awaiting_draft_selection")] = False
-            st.session_state.pop(S("parsed_df_pending"), None)
-            st.session_state.pop(S("df_to_use_pending"), None)
-            st.session_state.pop(S("actor_pending"), None)
-            st.rerun()
-        
-        st.stop()
-    
     if add_clicked:
         parsed_df = st.session_state.get(S("parsed_df"))
 
@@ -1856,14 +1722,30 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             target_id = int(drafts[0].id)
             _set_active_draft(target_id)
 
-        # Case 3️⃣ — Multiple drafts → trigger selection mode (NO blocking)
+        # Case 3️⃣ — Multiple drafts → ask user to choose (NO rerun)
         elif len(drafts) > 1:
-            # Store data in session state for the selection UI
-            st.session_state[S("parsed_df_pending")] = parsed_df
-            st.session_state[S("df_to_use_pending")] = df_to_use
-            st.session_state[S("actor_pending")] = actor
-            st.session_state[S("awaiting_draft_selection")] = True
-            st.rerun()
+            st.warning("Hay varios borradores abiertos. ¿A cuál quieres añadir estos productos?")
+
+            draft_labels = [
+                f"#{o.id} — {o.title or o.created_at.strftime('%Y-%m-%d %H:%M')}"
+                for o in drafts
+            ]
+            draft_ids = [int(o.id) for o in drafts]
+
+            chosen_label = st.selectbox(
+                "Selecciona borrador",
+                options=draft_labels,
+                key=K("choose_draft_on_add"),
+            )
+            chosen_id = draft_ids[draft_labels.index(chosen_label)]
+
+            confirm = st.button("Confirmar destino", type="primary", key=K("confirm_draft_choice"))
+            if not confirm:
+                st.stop()
+
+            # ✅ proceed in the SAME run
+            _set_active_draft(chosen_id)
+            target_id = chosen_id
 
         # Case 4️⃣ — No drafts → create new
         else:
@@ -1876,29 +1758,29 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 target_id = int(new_id)
 
         # ---------------------------------------
-        # Apply add-to-draft (if target determined)
+        # Apply add-to-draft
         # ---------------------------------------
         if not target_id:
-            # This means we triggered draft selection - do nothing here
-            pass
-        else:
-            _add_lines_to_existing_draft(
-                venue_id=venue_id,
-                order_id=int(target_id),
-                actor=actor,
-                df=df_to_use,
-            )
+            st.warning("No se pudo determinar el borrador destino.")
+            st.stop()
 
-            _set_active_draft(target_id)
-            bump_orders_refresh_token()
+        _add_lines_to_existing_draft(
+            venue_id=venue_id,
+            order_id=int(target_id),
+            actor=actor,
+            df=df_to_use,
+        )
 
-            st.success(f"Preparación guardada ✅ (#{target_id})")
+        _set_active_draft(target_id)
+        bump_orders_refresh_token()
 
-            # Clear striked products after saving (your existing behavior)
-            st.session_state[S("striked_products")] = set()
+        st.success(f"Preparación guardada ✅ (#{target_id})")
 
-            reset_notes_only(do_rerun=False)
-            _go_orders(target_id)
+        # Clear striked products after saving (your existing behavior)
+        st.session_state[S("striked_products")] = set()
+
+        reset_notes_only(do_rerun=False)
+        _go_orders(target_id)
 
 
     if limpiar_clicked:
