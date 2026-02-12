@@ -1487,7 +1487,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
             unsafe_allow_html=True,
         )
 
-        with st.container(key=card_key, width=190):
+        with st.container(key=card_key, width=150):
             # Optional “in order” badge like the screenshot
             if in_order:
                 st.markdown(f"<div class='badge'>✓ {qty_txt}</div>", unsafe_allow_html=True)
