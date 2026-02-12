@@ -14,6 +14,7 @@ from sqlalchemy import desc, func, and_
 from domain.models import Product, Order, OrderLine, VenueTranscriptionSettings, ProviderSendStatus
 from core.db import get_session
 from features.utils.asr_google import asr_google
+from style_button import style_button
 from features.manage_orders.orders import current_actor
 from features.utils.voice_and_orders_utils import *
 
@@ -806,65 +807,6 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     
     st.subheader("📝 Notas de faltantes")
 
-            
-    # =========================================================
-    # Timeline (living notes) — mobile friendly + aligned
-    # =========================================================
-    # =========================================================
-    # Timeline (living notes) — mobile friendly + aligned
-    # =========================================================
-    # with st.container(border=True):
-    #     chat = st.session_state.get(S("order_chat"), [])
-
-    #     if not chat:
-    #         st.info("Empieza escribiendo abajo o graba un audio 👇")
-    #     else:
-    #         st.markdown('<div class="notes-wrap">', unsafe_allow_html=True)
-
-    #         for i, msg in enumerate(list(chat)):
-    #             role_msg = safe_str(msg.get("role"))
-    #             txt = safe_str(msg.get("text", ""))
-    #             tsf = float(msg.get("ts") or 0.0)
-
-    #             who = "Tú" if role_msg == "user" else "Audio"
-    #             cls = "note-user" if role_msg == "user" else "note-asr"
-    #             tlabel = time.strftime("%H:%M", time.localtime(tsf)) if tsf else ""
-
-    #             bubble_col, del_col = st.columns([20, 2], vertical_alignment="top")
-
-    #             with bubble_col:
-    #                 st.markdown(
-    #                     f"""
-    #                     <div class="note-row">
-    #                     <div class="note-bubble {cls}">
-    #                         <div class="note-meta">
-    #                         <div class="note-text"><strong>{who}:</strong> {txt}</div>
-    #                         <div class="note-time">{tlabel}</div>
-    #                         </div>
-    #                     </div>
-    #                     </div>
-    #                     """,
-    #                     unsafe_allow_html=True,
-    #                 )
-
-    #             with del_col:
-    #                 msg_key = f"{int(tsf * 1000)}" if tsf else f"idx_{i}"
-    #                 if st.button(
-    #                     "🗑️",
-    #                     key=K(f"del_msg_{msg_key}"),
-    #                     help="Eliminar esta nota",
-    #                     type="secondary",
-    #                 ):
-    #                     st.session_state[S("order_chat")].pop(i)
-    #                     _rebuild_transcript_from_chat()
-
-    #                     st.session_state[S("auto_parse_pending")] = True
-    #                     st.session_state.pop(S("parsed_df"), None)
-    #                     st.session_state.pop(S("parse_candidates_df"), None)
-    #                     st.session_state.pop(S("finalize_parse_pending"), None)
-    #                     st.rerun()
-
-    #         st.markdown("</div>", unsafe_allow_html=True)
 
     # =========================================================
     # Convert df -> order lines
@@ -1664,44 +1606,20 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
     st.markdown("</div></div>", unsafe_allow_html=True)
 
-    # ✅ IMPROVED: Style the button using CSS instead of JavaScript
-    # This is more reliable than style_button() which can fail due to timing issues
-    st.markdown("""
-    <style>
-    /* Target primary buttons (the Add button) */
-    button[kind="primary"] {
-        background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%) !important;
-        color: white !important;
-        border: 1px solid rgba(59,130,246,.35) !important;
-        border-radius: 14px !important;
-        padding: 10px 14px !important;
-        font-size: 16px !important;
-        box-shadow: 0 10px 20px rgba(2,6,23,.10) !important;
-        font-weight: 700 !important;
-        transition: all 0.2s ease !important;
-    }
-
-    button[kind="primary"]:hover {
-        background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%) !important;
-        transform: translateY(-1px);
-        box-shadow: 0 12px 24px rgba(2,6,23,.15) !important;
-    }
-
-    button[kind="primary"]:active {
-        background: linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%) !important;
-        transform: translateY(0);
-    }
-    
-    /* Make sure text inside button is also styled */
-    button[kind="primary"] p,
-    button[kind="primary"] div,
-    button[kind="primary"] span {
-        color: white !important;
-        font-size: 16px !important;
-        font-weight: 700 !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+    # Style the submit button using your existing helper
+    style_button(
+        "Add",
+        font_color="#ffffff",
+        background_color="#3b82f6",
+        hover_background_color="#2563eb",
+        active_background_color="#1d4ed8",
+        border="1px solid rgba(59,130,246,.35)",
+        border_radius="14px",
+        padding_x="14px",
+        padding_y="10px",
+        font_size="16px",
+        box_shadow="0 10px 20px rgba(2,6,23,.10)",
+    )
 
 
     # =========================================================

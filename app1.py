@@ -35,7 +35,7 @@ load_dotenv(dotenv_path=ENV_PATH, override=True)
 # -------------------------------
 st.set_page_config(
     page_title="Voi",
-    page_icon="ðŸ§¾",
+    page_icon="🧾",
     layout="centered",
 )
 
@@ -251,7 +251,7 @@ def _inject_topbar(
     history_icon_html = f'<a class="voi-topbar-icon {history_active}" href="{history_href}" target="_self" title="History">📈</a>'
 
     # show venue next to account
-    acc_venue = f"Account: {account_name or 'â€”'} â€” {venue_name or 'â€”'}"
+    acc_venue = f"Account: {account_name or '—'} — {venue_name or '—'}"
 
     components_html(
         f"""
@@ -354,6 +354,72 @@ def _inject_topbar(
         scrolling=False,
     )
 
+def _make_venue_selector_sticky():
+    """
+    After the marker is rendered, this finds its Streamlit wrapper in parent DOM
+    and turns that wrapper into a sticky "dock" under the fixed top bar.
+    """
+    components_html(
+        """
+<script>
+(function() {
+  const doc = parent.document;
+  const marker = doc.getElementById("voi-venue-marker");
+  if (!marker) return;
+
+  // Find closest wrapper Streamlit uses for blocks
+  let wrapper = marker;
+  while (wrapper && wrapper !== doc.body) {
+    if (wrapper.getAttribute && wrapper.getAttribute("data-testid") === "stVerticalBlockBorderWrapper") break;
+    wrapper = wrapper.parentElement;
+  }
+  if (!wrapper || wrapper === doc.body) return;
+
+  // Apply sticky styles
+  wrapper.style.position = "sticky";
+  wrapper.style.top = "52px";            // match BAR_H above
+  wrapper.style.zIndex = "999998";
+  wrapper.style.background = "rgba(255,255,255,0.95)";
+  wrapper.style.backdropFilter = "blur(10px)";
+  wrapper.style.borderBottom = "1px solid rgba(0,0,0,0.10)";
+  wrapper.style.padding = "10px 14px 10px 14px";
+
+  // Marker itself can be removed/hidden
+  marker.style.display = "none";
+})();
+</script>
+        """,
+        height=0,
+        scrolling=False,
+    )
+
+
+
+def _venue_selector_compact() -> int:
+    """Compact venue selector (fast on mobile)."""
+    venues = current_venues_for_user()
+    if not venues:
+        st.warning("You don't have access to any venue yet.")
+        st.stop()
+
+    labels, ids = [], []
+    for v, role in venues:
+        labels.append(f"{v['name']} — {role}")
+        ids.append(int(v["id"]))
+
+    st.session_state.setdefault("active_venue_id", ids[0])
+    if int(st.session_state["active_venue_id"]) not in ids:
+        st.session_state["active_venue_id"] = ids[0]
+
+    idx = ids.index(int(st.session_state["active_venue_id"]))
+    chosen = st.selectbox("Venue", options=labels, index=idx, label_visibility="collapsed")
+    chosen_id = ids[labels.index(chosen)]
+    if chosen_id != int(st.session_state["active_venue_id"]):
+        st.session_state["active_venue_id"] = chosen_id
+        st.rerun()
+    return chosen_id
+
+
 # -------------------------------
 # 6) Lazy page loaders (import on demand)
 # -------------------------------
@@ -362,7 +428,7 @@ def _page_catalog():
     return catalog_tab
 
 def _page_new_order():
-    from features.create_order.new_order_tab import new_order_tab
+    from features.create_order import new_order_tab
     return new_order_tab
 
 def _page_orders():
@@ -384,12 +450,12 @@ def _page_history():
 
 
 PAGES = {
-    "new": ("➕", _page_new_order),
-    "orders": ("📦", _page_orders),
-    "tracking": ("✅", _page_tracking),
-    "history": ("📈", _page_history),
-    "catalog": ("🧾", _page_catalog),
-    "manage_org": ("⚙️", _page_manage_org),
+    "new": ("➕ New order", _page_new_order),
+    "orders": ("📦 Orders", _page_orders),
+    "tracking": ("✅ Receive / Tracking", _page_tracking),
+    "history": ("📈  History", _page_history),
+    "catalog": ("🧾 Catalog", _page_catalog),
+    "manage_org": ("⚙️ Manage Org", _page_manage_org),
 }
 
 # Preferred order for the segmented control
@@ -441,56 +507,6 @@ def main():
     bootstrap_once()
     _css()
 
-    # ✅ BULLETPROOF TOKEN RESTORATION WITH LOGGING
-    # Get token from URL (highest priority)
-    token_from_url = None
-    try:
-        token_from_url = st.query_params.get("st", "").strip()
-    except:
-        pass
-    
-    # Get token from session (fallback)
-    token_from_session = st.session_state.get("_session_token", "").strip()
-    
-    # Use URL token if available, otherwise session token
-    active_token = token_from_url or token_from_session
-    
-    if active_token:
-        # Always update session with the active token
-        st.session_state["_session_token"] = active_token
-        
-        # Check if we need to restore auth context
-        auth_ctx = st.session_state.get("auth_ctx")
-        
-        if not auth_ctx:
-            # No auth context - need to restore it from token
-            logging.info(f"🔄 Restoring auth from token...")
-            try:
-                from features.auth_and_manage.auth_multi_tenant import _get_session_from_token
-                session_data = _get_session_from_token(active_token)
-                
-                if session_data:
-                    st.session_state["auth_ctx"] = {
-                        "user_id": session_data["user_id"],
-                        "account_id": session_data["account_id"]
-                    }
-                    logging.info(f"✅ Auth restored successfully: user_id={session_data['user_id']}, account_id={session_data['account_id']}")
-                else:
-                    logging.warning(f"⚠️ Token validation failed - invalid or expired token")
-                    # Clear the invalid token
-                    st.session_state.pop("_session_token", None)
-                    st.session_state.pop("auth_ctx", None)
-                    
-            except Exception as e:
-                logging.error(f"❌ Error restoring auth from token: {e}")
-                # Clear potentially corrupted data
-                st.session_state.pop("_session_token", None)
-                st.session_state.pop("auth_ctx", None)
-        else:
-            logging.debug(f"✅ Auth context already present (user_id={auth_ctx.get('user_id')})")
-    else:
-        logging.debug("No token found in URL or session")
-    
     # Handle logout / actions early
     _handle_actions_from_query_params()
 
@@ -546,19 +562,19 @@ def main():
 
     venue, venue_role = active
     venue_id = int(venue["id"])
-    venue_name = venue.get("name", "â€”")
+    venue_name = venue.get("name", "—")
 
     logging.debug(f"Resolved page_key after deep-link sync: {st.session_state['page']}")
 
     # ---------------- TOP BAR (true fixed) ----------------
-    account_name = acc["name"] if acc else "â€”"
+    account_name = acc["name"] if acc else "—"
     page_key = st.session_state.get("page", "orders")
 
     show_manage_org = account_role in {"owner", "admin", "manager"}
 
     _inject_topbar(
         account_name=account_name,
-        venue_name=venue_name,  # âœ… show venue next to account
+        venue_name=venue_name,  # ✅ show venue next to account
         show_manage_org=show_manage_org,
         is_manage_page=(page_key == "manage_org"),
         is_catalog_page=(page_key == "catalog"),

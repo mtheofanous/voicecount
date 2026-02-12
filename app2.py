@@ -441,55 +441,17 @@ def main():
     bootstrap_once()
     _css()
 
-    # ✅ BULLETPROOF TOKEN RESTORATION WITH LOGGING
-    # Get token from URL (highest priority)
+    # ✅ CRITICAL FIX 1: Restore token FIRST, before any auth checks
+    # This prevents losing session when navigating between pages
     token_from_url = None
     try:
         token_from_url = st.query_params.get("st", "").strip()
     except:
         pass
     
-    # Get token from session (fallback)
-    token_from_session = st.session_state.get("_session_token", "").strip()
-    
-    # Use URL token if available, otherwise session token
-    active_token = token_from_url or token_from_session
-    
-    if active_token:
-        # Always update session with the active token
-        st.session_state["_session_token"] = active_token
-        
-        # Check if we need to restore auth context
-        auth_ctx = st.session_state.get("auth_ctx")
-        
-        if not auth_ctx:
-            # No auth context - need to restore it from token
-            logging.info(f"🔄 Restoring auth from token...")
-            try:
-                from features.auth_and_manage.auth_multi_tenant import _get_session_from_token
-                session_data = _get_session_from_token(active_token)
-                
-                if session_data:
-                    st.session_state["auth_ctx"] = {
-                        "user_id": session_data["user_id"],
-                        "account_id": session_data["account_id"]
-                    }
-                    logging.info(f"✅ Auth restored successfully: user_id={session_data['user_id']}, account_id={session_data['account_id']}")
-                else:
-                    logging.warning(f"⚠️ Token validation failed - invalid or expired token")
-                    # Clear the invalid token
-                    st.session_state.pop("_session_token", None)
-                    st.session_state.pop("auth_ctx", None)
-                    
-            except Exception as e:
-                logging.error(f"❌ Error restoring auth from token: {e}")
-                # Clear potentially corrupted data
-                st.session_state.pop("_session_token", None)
-                st.session_state.pop("auth_ctx", None)
-        else:
-            logging.debug(f"✅ Auth context already present (user_id={auth_ctx.get('user_id')})")
-    else:
-        logging.debug("No token found in URL or session")
+    if token_from_url:
+        # Always update session state with URL token if present
+        st.session_state["_session_token"] = token_from_url
     
     # Handle logout / actions early
     _handle_actions_from_query_params()
