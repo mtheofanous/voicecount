@@ -1509,6 +1509,37 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
 
 
 
+    st.markdown("""
+    <style>
+    /* Force 2 columns on mobile Safari inside this container */
+    @media (max-width: 900px) {
+
+    /* The row wrapper that holds columns */
+    .st-key-my_blue_container [data-testid="stHorizontalBlock"],
+    .st-key-my_blue_container div[data-testid="stHorizontalBlock"]{
+        display: flex !important;
+        flex-wrap: wrap !important;
+        gap: 10px !important;
+    }
+
+    /* Columns (Streamlit has used different testids across versions) */
+    .st-key-my_blue_container [data-testid="column"],
+    .st-key-my_blue_container [data-testid="stColumn"],
+    .st-key-my_blue_container div[data-testid="column"],
+    .st-key-my_blue_container div[data-testid="stColumn"]{
+        flex: 0 0 calc(50% - 10px) !important;
+        width: calc(50% - 10px) !important;
+        max-width: calc(50% - 10px) !important;
+        min-width: 0 !important;
+    }
+
+    /* Prevent widgets from imposing min-width that breaks the column */
+    .st-key-my_blue_container *{
+        min-width: 0 !important;
+    }
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
     with st.container(border=True, key="my_blue_container", height=800):
         # 2 cards per row
