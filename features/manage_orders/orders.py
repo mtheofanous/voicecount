@@ -1186,63 +1186,25 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
     qa_nonce_key = f"{editor_key}__qa_nonce"
     st.session_state.setdefault(qa_nonce_key, 0)
 
-    def _bump_product_qty(pid: int, delta: float) -> None:
-        """Vendor-style qty stepper: supports + and - deltas.
-
-        - If qty reaches 0, we mark the row as delete=True (soft remove).
-        - Keeps the editor DF normalized via _sanitize_editor_df.
-        """
-        delta = float(delta or 0.0)
-        if abs(delta) < 1e-9:
+    def _add_product_to_df(pid: int, qty_val: float) -> None:
+        qty_val = float(qty_val or 0.0)
+        if qty_val <= 0:
             return
-
         df = _sanitize_editor_df(st.session_state[df_state_key])
         mask_same = (df["product_id"] == int(pid)) & (df["delete"] != True)  # noqa: E712
-
         if mask_same.any():
             idx = df.index[mask_same][0]
-            cur = float(df.at[idx, "quantity"] or 0.0)
-            new_qty = cur + delta
-
-            if new_qty <= 0:
-                df.at[idx, "quantity"] = 0.0
-                df.at[idx, "delete"] = True
-            else:
-                df.at[idx, "quantity"] = float(new_qty)
+            df.at[idx, "quantity"] = float(df.at[idx, "quantity"] or 0.0) + qty_val
         else:
-            # Only create a new row for positive deltas
-            if delta <= 0:
-                return
             unit = (_s(getattr(products_by_id.get(int(pid)), "unit", "")) or "unidad").lower()
             df = pd.concat(
-                [
-                    df,
-                    pd.DataFrame(
-                        [
-                            {
-                                "line_id": pd.NA,
-                                "product_id": int(pid),
-                                "quantity": float(delta),
-                                "unit": unit,
-                                "delete": False,
-                            }
-                        ]
-                    ),
-                ],
+                [df, pd.DataFrame([{"line_id": pd.NA, "product_id": int(pid), "quantity": qty_val, "unit": unit, "delete": False}])],
                 ignore_index=True,
             )
-
         st.session_state[df_state_key] = _sanitize_editor_df(df)
         # Force qty inputs to reset to 0.0
         st.session_state[qa_nonce_key] = int(st.session_state.get(qa_nonce_key, 0) or 0) + 1
         st.rerun()
-
-    def _add_product_to_df(pid: int, qty_val: float) -> None:
-        """Back-compat wrapper (positive adds only)."""
-        qty_val = float(qty_val or 0.0)
-        if qty_val <= 0:
-            return
-        _bump_product_qty(pid, qty_val)
         
 
     # with st.expander("➕ Añadir productos", expanded=True):
@@ -1391,137 +1353,87 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
 
 
     # ---------- Grid ----------
+    # ---------- Grid ----------
     start_i = (st.session_state[page_key] - 1) * page_size
     end_i = start_i + page_size
     pids_page = pids[start_i:end_i]
 
-    # Mobile-first vendor density (Glovo/UberEats style)
-    st.markdown(
-        """
-<style>
-/* Dense grid cards */
-.voi-prod{
-  border:1px solid rgba(148,163,184,.35);
-  border-left:4px solid rgba(148,163,184,.35);
-  border-radius:16px;
-  padding:10px 10px 8px 10px;
-  background:rgba(255,255,255,1);
-  box-shadow:0 6px 18px rgba(2,6,23,.04);
-}
-.voi-prod.sel{
-  border-color:rgba(37,99,235,.45);
-  border-left-color:#2563eb;
-  background:rgba(37,99,235,.08);
-}
-.voi-name{font-weight:950;font-size:.92rem;line-height:1.05;color:#0f172a;}
-.voi-sub{opacity:.55;font-size:.72rem;line-height:1.1;margin-top:2px;color:#0f172a;}
-.voi-meta{display:flex;justify-content:space-between;align-items:center;margin-top:6px}
-.voi-unit{font-size:.72rem;font-weight:800;opacity:.7;color:#0f172a;}
-.voi-pill{
-  font-size:.70rem;font-weight:950;
-  padding:2px 8px;border-radius:999px;
-  display:inline-flex;align-items:center;gap:6px;
-}
-.voi-pill.on{background:rgba(37,99,235,.95);color:#fff;}
-.voi-pill.off{background:rgba(15,23,42,.06);color:rgba(15,23,42,.75);font-weight:900;}
-/* Make taps feel like vendor apps */
-button[kind="primary"], button[kind="secondary"]{
-  min-height:42px !important;
-  border-radius:14px !important;
-  font-weight:950 !important;
-}
-div[data-testid="stNumberInput"] input{
-  height:42px !important;
-  border-radius:14px !important;
-  font-weight:900 !important;
-}
-.element-container{margin-bottom:.35rem !important;}
-div[data-testid="column"]{padding-top:0 !important;}
-</style>
-        """,
-        unsafe_allow_html=True,
-    )
-
-    with st.container(height=520):
-        cols = st.columns(2, gap="small")  # ✅ 2 columns mobile by default
-
+    # Mobile-optimized: 2 columns instead of 3
+    with st.container(height=500):
+        cols = st.columns(2, gap="small")
         for i, pid in enumerate(pids_page):
-            col = cols[i % 2]
+            col = cols[i % 2]  # Changed from 3 to 2
             p = products_by_id.get(pid)
             unit_txt = (_s(getattr(p, "unit", "")) or "unidad").lower()
-
             label = label_by_id.get(pid, str(pid))
             parts = label.split(" — ", 1)
             name = parts[0]
             rest = parts[1] if len(parts) > 1 else ""
-
+            
             with col:
                 existing_qty = float(qty_by_pid.get(pid, 0.0) or 0.0)
                 in_order = existing_qty > 0
                 qty_txt = f"{existing_qty:g}"
-
-                pill = (
-                    f"<span class='voi-pill on'>× {qty_txt}</span>"
+                bg = "rgba(33,150,243,0.08)" if in_order else "transparent"
+                border = "rgba(33,150,243,0.5)" if in_order else "rgba(49,51,63,.2)"
+                
+                # Compact badge for mobile
+                unit_row = (
+                    f"""
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;gap:4px">
+                        <span style="font-size:0.85rem;font-weight:600;opacity:0.8">{unit_txt}</span>
+                        <span style="font-size:0.8rem;font-weight:700;
+                                    background:rgba(33,150,243,.95);
+                                    color:white;padding:2px 8px;
+                                    border-radius:12px;white-space:nowrap">
+                            ✓ {qty_txt}
+                        </span>
+                    </div>
+                    """
                     if in_order
-                    else "<span class='voi-pill off'>+</span>"
+                    else f"""
+                    <div style="margin-top:4px">
+                        <span style="font-size:0.85rem;font-weight:600;opacity:0.8">{unit_txt}</span>
+                    </div>
+                    """
                 )
-                sel = "sel" if in_order else ""
-                sub = f"<div class='voi-sub'>{rest}</div>" if rest else "<div style='height:.2rem'></div>"
-
+                
                 st.markdown(
                     f"""
-<div class="voi-prod {sel}">
-  <div class="voi-name">{name}</div>
-  {sub}
-  <div class="voi-meta">
-    <span class="voi-unit">{unit_txt}</span>
-    {pill}
-  </div>
-</div>
-""",
+                    <div style="
+                        padding:.5rem;
+                        border:1px solid {border};
+                        border-left:3px solid {'#2196F3' if in_order else border};
+                        border-radius:.5rem;
+                        background:{bg};
+                        line-height:1.2;
+                        min-height:80px
+                    ">
+                        <div style="font-weight:700;font-size:0.9rem">{name}</div>
+                        {'<div style="opacity:0.55;font-size:0.8rem;margin-top:2px">' + rest + '</div>' if rest else ''}
+                        {unit_row}
+                    </div>
+                    """,
                     unsafe_allow_html=True,
                 )
-
-                # Stepper row: – qty +
-                c1, c2, c3 = st.columns([1, 1.2, 1], gap="small")
-
-                minus = c1.button(
-                    "–",
-                    use_container_width=True,
-                    disabled=(existing_qty <= 0),
-                    key=f"{editor_key}__m_{pid}__{st.session_state[qa_nonce_key]}",
-                )
-
-                qty_val = c2.number_input(
-                    "",
-                    min_value=0,
-                    step=1,
-                    value=0,
-                    label_visibility="collapsed",
-                    key=f"{editor_key}__q_{pid}__{st.session_state[qa_nonce_key]}",
-                )
-
-                plus = c3.button(
-                    "＋",
-                    use_container_width=True,
-                    key=f"{editor_key}__p_{pid}__{st.session_state[qa_nonce_key]}",
-                )
-
-                if plus:
-                    add = float(qty_val or 0)
-                    _bump_product_qty(pid, add if add > 0 else 1.0)
-
-                if minus:
-                    _bump_product_qty(pid, -1.0)
-
-                # Bulk quick-add chips (vendor-friendly)
-                a1, a2, a6 = st.columns(3, gap="small")
-                if a1.button("+1", use_container_width=True, key=f"{editor_key}__a1_{pid}__{st.session_state[qa_nonce_key]}"):
-                    _bump_product_qty(pid, 1)
-                if a2.button("+2", use_container_width=True, key=f"{editor_key}__a2_{pid}__{st.session_state[qa_nonce_key]}"):
-                    _bump_product_qty(pid, 2)
-                if a6.button("+6", use_container_width=True, key=f"{editor_key}__a6_{pid}__{st.session_state[qa_nonce_key]}"):
-                    _bump_product_qty(pid, 6)
+                
+                form_key = f"{editor_key}__qa_form_{pid}"
+                with st.form(key=form_key, clear_on_submit=False):
+                    # Compact number input
+                    qty_val = st.number_input(
+                        "Qty",
+                        min_value=0,
+                        step=1,
+                        value=0,
+                        key=f"{editor_key}__qa_qty_{pid}__{st.session_state[qa_nonce_key]}",
+                        label_visibility="collapsed",
+                    )
+                    submitted = st.form_submit_button(
+                        "+" if in_order else "Añadir",  # Shorter text for mobile
+                        use_container_width=True,
+                    )
+                if submitted:
+                    _add_product_to_df(pid, qty_val)
 
     # Build the dataframe that will be shown in the editor
     df_for_editor = _sanitize_editor_df(st.session_state[df_state_key])
