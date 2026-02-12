@@ -1420,7 +1420,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
                 st.html(f"<style>{css}</style>")
 
                 # IMPORTANT: remove width=200 so the column can adapt
-                with st.container(key=card_key):
+                with st.container(key=card_key, width=190):
                     existing_qty = float(qty_by_pid.get(pid, 0.0) or 0.0)
                     in_order = existing_qty > 0
                     qty_txt = f"{existing_qty:g}"
