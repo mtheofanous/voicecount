@@ -1353,31 +1353,117 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
             key=hide_key,
         )
 
-
     # ---------- Grid ----------
     start_i = (st.session_state[page_key] - 1) * page_size
     end_i = start_i + page_size
     pids_page = pids[start_i:end_i]
-    from streamlit_js_eval import streamlit_js_eval
 
-    CARD_MIN_PX = 180
-    GAP_PX = 12
+    # Put this once somewhere (helper)
+    def ss_qty_key(editor_key, pid):
+        return f"{editor_key}__qa_qty_live_{pid}"
 
-    viewport_w = streamlit_js_eval(js_expressions="window.innerWidth", key="viewport_w")
-    vw = int(viewport_w or 0)
+    def render_product_card(pid):
+        p = products_by_id.get(pid)
+        if not p:
+            return
 
-    def compute_cols(vw: int) -> int:
-        # Force 2 columns on phone
-        if vw and vw <= 700:
-            return 2
-        if not vw:
-            return 2
-        n = int(vw // (CARD_MIN_PX + GAP_PX))
-        return max(2, min(n, 6))
+        unit_txt = (_s(getattr(p, "unit", "")) or "unidad").lower()
+        label = label_by_id.get(pid, str(pid))
+        parts = label.split(" — ", 1)
+        name = parts[0]
+        rest = parts[1] if len(parts) > 1 else ""
 
-    n_cols = compute_cols(vw)
+        existing_qty = float(qty_by_pid.get(pid, 0.0) or 0.0)
+        in_order = existing_qty > 0
+        qty_txt = f"{existing_qty:g}"
 
-    # ✅ Force 2 columns on mobile (Streamlit otherwise stacks them)
+        # live qty input (draft qty before pressing add)
+        k_qty = ss_qty_key(editor_key, pid)
+        if k_qty not in st.session_state:
+            st.session_state[k_qty] = 0
+
+        bg = "rgba(33,150,243,0.08)" if in_order else "transparent"
+        border = "rgba(33,150,243,0.55)" if in_order else "rgba(49,51,63,.18)"
+
+        card_key = f"my_product_{pid}"
+
+        st.markdown(
+            f"""
+            <style>
+            .st-key-{card_key} {{
+                background: #fff;
+                border: 1px solid {border};
+                border-radius: 16px;
+                padding: 12px;
+                margin-bottom: 12px;
+                box-shadow: 0 6px 18px rgba(0,0,0,.05);
+            }}
+            </style>
+            """,
+            unsafe_allow_html=True,
+        )
+
+        with st.container(key=card_key):
+
+            # ====== Header ======
+            st.markdown(
+                f"""
+                <div style="
+                    border-left: 4px solid {'#2196F3' if in_order else 'rgba(49,51,63,.18)'};
+                    padding-left: 10px;
+                    background: {bg};
+                    border-radius: 12px;
+                    padding: 8px 10px;
+                ">
+                    <div style="font-weight: 700; font-size: 0.95rem; line-height: 1.15;">
+                        {name}
+                    </div>
+                    {f'<div style="opacity:.65;font-size:.78rem;margin-top:3px;line-height:1.15;">{rest}</div>' if rest else ''}
+                    <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;">
+                        <span style="font-size:.78rem;opacity:.7;font-weight:600;">{unit_txt}</span>
+                        {f'''
+                        <span style="
+                            font-size:.72rem;font-weight:800;
+                            background:rgba(33,150,243,.95);
+                            color:white;padding:3px 8px;border-radius:999px;white-space:nowrap">
+                            ✓ {qty_txt}
+                        </span>
+                        ''' if in_order else ''}
+                    </div>
+                </div>
+                """,
+                unsafe_allow_html=True,
+            )
+
+            st.markdown('<div style="height:10px"></div>', unsafe_allow_html=True)
+
+            # ====== Controls row (mobile friendly) ======
+            with st.container(horizontal=True):
+                if st.button("−", key=f"dec_{pid}", use_container_width=True):
+                    st.session_state[k_qty] = max(0, int(st.session_state[k_qty]) - 1)
+
+                st.number_input(
+                    "Qty",
+                    min_value=0,
+                    step=1,
+                    key=k_qty,
+                    label_visibility="collapsed",
+                )
+
+                if st.button("+", key=f"inc_{pid}", use_container_width=True):
+                    st.session_state[k_qty] = int(st.session_state[k_qty]) + 1
+
+            # ====== Action ======
+            action_label = "Sumar" if in_order else "Añadir"
+            if st.button(action_label, key=f"add_{pid}", use_container_width=True, type="primary"):
+                qty_val = int(st.session_state[k_qty])
+                if qty_val > 0:
+                    _add_product_to_df(pid, qty_val)
+                    st.session_state[k_qty] = 0  # reset after add
+                    st.rerun()
+
+
+    # ✅ Optional CSS that helps keep 2 columns on mobile inside this container
     st.markdown(
         """
     <style>
@@ -1397,99 +1483,171 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
         unsafe_allow_html=True,
     )
 
-    with st.container(key="my_blue_container", height=550):
-        cols = st.columns(n_cols, gap="small")  # small gap helps on mobile
+    with st.container(border=True, key="my_blue_container", height=800):
 
-        for i, pid in enumerate(pids_page):
-            col = cols[i % n_cols]
-            p = products_by_id.get(pid)
+        # 2 items per row (2 columns) – works well for mobile
+        for i in range(0, len(pids_page), 2):
+            col1, col2 = st.columns(2, gap="small")
 
-            # ✅ DEFINE IT HERE
-            unit_txt = (_s(getattr(p, "unit", "")) or "unidad").lower()
+            pid1 = pids_page[i]
+            with col1:
+                render_product_card(pid1)
 
-            label = label_by_id.get(pid, str(pid))
-            parts = label.split(" — ", 1)
-            name = parts[0]
-            rest = parts[1] if len(parts) > 1 else ""
-            with col:
-                card_key = f"my_product_{pid}"
+            if i + 1 < len(pids_page):
+                pid2 = pids_page[i + 1]
+                with col2:
+                    render_product_card(pid2)
 
-                st.html(f"""
-                <style>
-                .st-key-{card_key}{{
-                    background:#fff;
-                    border:0.5px solid #e2e8f0;
-                    border-radius: 12px;
-                    padding: .6rem;
-                    width: 100%;
-                    max-width: none; /* IMPORTANT: allow full column width */
-                    margin: 0;
-                }}
-                </style>
-                """)
+    # # ---------- Grid ----------
+    # start_i = (st.session_state[page_key] - 1) * page_size
+    # end_i = start_i + page_size
+    # pids_page = pids[start_i:end_i]
+    # from streamlit_js_eval import streamlit_js_eval
 
-                with st.container(key=card_key):
-                    existing_qty = float(qty_by_pid.get(pid, 0.0) or 0.0)
-                    in_order = existing_qty > 0
-                    qty_txt = f"{existing_qty:g}"
-                    bg = "rgba(33,150,243,0.08)" if in_order else "transparent"
-                    border = "rgba(33,150,243,0.5)" if in_order else "rgba(49,51,63,.2)"
+    # CARD_MIN_PX = 180
+    # GAP_PX = 12
 
-                    unit_row = (
-                        f"""
-                        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:4px;gap:4px">
-                            <span style="font-size:0.75rem;font-weight:500;opacity:0.7">{unit_txt}</span>
-                            <span style="font-size:0.7rem;font-weight:600;
-                                        background:rgba(33,150,243,.95);
-                                        color:white;padding:2px 6px;
-                                        border-radius:10px;white-space:nowrap">
-                                ✓ {qty_txt}
-                            </span>
-                        </div>
-                        """
-                        if in_order
-                        else f"""
-                        <div style="margin-top:4px">
-                            <span style="font-size:0.75rem;font-weight:500;opacity:0.7">{unit_txt}</span>
-                        </div>
-                        """
-                    )
+    # viewport_w = streamlit_js_eval(js_expressions="window.innerWidth", key="viewport_w")
+    # vw = int(viewport_w or 0)
 
-                    st.markdown(
-                        f"""
-                        <div style="
-                            padding:.4rem;
-                            border:1px solid {border};
-                            border-left:3px solid {'#2196F3' if in_order else border};
-                            border-radius:.5rem;
-                            background:{bg};
-                            line-height:1.10;
-                            min-height:60px
-                        ">
-                            <div style="font-weight:500;font-size:0.80rem">{name}</div>
-                            {'<div style="opacity:0.55;font-size:0.70rem;margin-top:2px">' + rest + '</div>' if rest else ''}
-                            {unit_row}
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+    # def compute_cols(vw: int) -> int:
+    #     # Force 2 columns on phone
+    #     if vw and vw <= 700:
+    #         return 2
+    #     if not vw:
+    #         return 2
+    #     n = int(vw // (CARD_MIN_PX + GAP_PX))
+    #     return max(2, min(n, 6))
 
-                    form_key = f"{editor_key}__qa_form_{pid}"
-                    with st.form(key=form_key, clear_on_submit=False):
-                        qty_val = st.number_input(
-                            "Qty",
-                            min_value=0,
-                            step=1,
-                            value=0,
-                            key=f"{editor_key}__qa_qty_{pid}__{st.session_state[qa_nonce_key]}",
-                            label_visibility="collapsed",
-                        )
-                        submitted = st.form_submit_button(
-                            "Sumar" if in_order else "Añadir",
-                            use_container_width=True,
-                        )
-                    if submitted:
-                        _add_product_to_df(pid, qty_val)
+    # n_cols = compute_cols(vw)
+
+    # # ✅ Force 2 columns on mobile (Streamlit otherwise stacks them)
+    # st.markdown(
+    #     """
+    # <style>
+    # @media (max-width: 700px) {
+    # .st-key-my_blue_container [data-testid="stHorizontalBlock"]{
+    #     flex-wrap: wrap !important;
+    #     gap: 12px !important;
+    # }
+    # .st-key-my_blue_container [data-testid="column"]{
+    #     flex: 1 1 calc(50% - 12px) !important;
+    #     width: calc(50% - 12px) !important;
+    #     min-width: 0 !important;
+    # }
+    # }
+    # </style>
+    # """,
+    #     unsafe_allow_html=True,
+    # )
+    # # Put this once somewhere (helper)
+    # def ss_qty_key(editor_key, pid):
+    #     return f"{editor_key}__qa_qty_live_{pid}"
+
+
+    # with st.container(border=True, key="my_blue_container", height=800):
+
+    #     for i in range(0, len(pids_page), 2):
+    #         col1, col2 = st.columns(2, gap="small")
+    #         p = products_by_id.get(pid)
+    #         if not p:
+    #             continue
+
+    #         unit_txt = (_s(getattr(p, "unit", "")) or "unidad").lower()
+    #         label = label_by_id.get(pid, str(pid))
+    #         parts = label.split(" — ", 1)
+    #         name = parts[0]
+    #         rest = parts[1] if len(parts) > 1 else ""
+
+    #         # current qty already in order
+    #         existing_qty = float(qty_by_pid.get(pid, 0.0) or 0.0)
+    #         in_order = existing_qty > 0
+    #         qty_txt = f"{existing_qty:g}"
+
+    #         # live qty input (draft qty before pressing add)
+    #         k_qty = ss_qty_key(editor_key, pid)
+    #         if k_qty not in st.session_state:
+    #             st.session_state[k_qty] = 0
+
+    #         bg = "rgba(33,150,243,0.08)" if in_order else "transparent"
+    #         border = "rgba(33,150,243,0.55)" if in_order else "rgba(49,51,63,.18)"
+
+    #         card_key = f"my_product_{pid}"
+
+    #         # Card styling (same approach you use)
+    #         st.markdown(f"""
+    #         <style>
+    #         .st-key-{card_key} {{
+    #             background: #fff;
+    #             border: 1px solid {border};
+    #             border-radius: 16px;
+    #             padding: 12px;
+    #             margin-bottom: 12px;
+    #             box-shadow: 0 6px 18px rgba(0,0,0,.05);
+    #         }}
+    #         </style>
+    #         """, unsafe_allow_html=True)
+
+    #         with st.container(key=card_key):
+
+    #             # ====== Header ======
+    #             st.markdown(
+    #                 f"""
+    #                 <div style="
+    #                     border-left: 4px solid {'#2196F3' if in_order else 'rgba(49,51,63,.18)'};
+    #                     padding-left: 10px;
+    #                     background: {bg};
+    #                     border-radius: 12px;
+    #                     padding-top: 8px;
+    #                     padding-bottom: 8px;
+    #                 ">
+    #                     <div style="font-weight: 700; font-size: 0.95rem; line-height: 1.15;">
+    #                         {name}
+    #                     </div>
+    #                     {f'<div style="opacity:.65;font-size:.78rem;margin-top:3px;line-height:1.15;">{rest}</div>' if rest else ''}
+    #                     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px;">
+    #                         <span style="font-size:.78rem;opacity:.7;font-weight:600;">{unit_txt}</span>
+    #                         {f'''
+    #                         <span style="
+    #                             font-size:.72rem;font-weight:800;
+    #                             background:rgba(33,150,243,.95);
+    #                             color:white;padding:3px 8px;border-radius:999px;white-space:nowrap">
+    #                             ✓ {qty_txt}
+    #                         </span>
+    #                         ''' if in_order else ''}
+    #                     </div>
+    #                 </div>
+    #                 """,
+    #                 unsafe_allow_html=True
+    #             )
+
+    #             st.markdown('<div style="height:10px"></div>', unsafe_allow_html=True)
+
+    #             # ====== Controls row (mobile friendly) ======
+    #             with st.container(horizontal=True):
+    #                 # Big tap buttons
+    #                 if st.button("−", key=f"dec_{pid}", use_container_width=True):
+    #                     st.session_state[k_qty] = max(0, int(st.session_state[k_qty]) - 1)
+
+    #                 st.number_input(
+    #                     "Qty",
+    #                     min_value=0,
+    #                     step=1,
+    #                     key=k_qty,
+    #                     label_visibility="collapsed",
+    #                 )
+
+    #                 if st.button("+", key=f"inc_{pid}", use_container_width=True):
+    #                     st.session_state[k_qty] = int(st.session_state[k_qty]) + 1
+
+    #             # ====== Action ======
+    #             action_label = "Sumar" if in_order else "Añadir"
+    #             if st.button(action_label, key=f"add_{pid}", use_container_width=True, type="primary"):
+    #                 qty_val = int(st.session_state[k_qty])
+    #                 if qty_val > 0:
+    #                     _add_product_to_df(pid, qty_val)
+    #                     st.session_state[k_qty] = 0  # reset after add
+    #                     st.rerun()
     # Build the dataframe that will be shown in the editor
     df_for_editor = _sanitize_editor_df(st.session_state[df_state_key])
 
