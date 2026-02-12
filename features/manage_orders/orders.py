@@ -1205,9 +1205,16 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
         # Force qty inputs to reset to 0.0
         st.session_state[qa_nonce_key] = int(st.session_state.get(qa_nonce_key, 0) or 0) + 1
         st.rerun()
+        
+
+# =============================================================================
+# START: REPLACE FROM HERE (Line ~1209)
+# =============================================================================
 
     with st.expander("➕ Añadir productos", expanded=True):
-        # Backwards compatible cleanup (older sessions may still carry legacy keys)
+        # -----------------------------
+        # Backwards compatible cleanup
+        # -----------------------------
         legacy_reset_flag = f"{editor_key}__qa_reset_qty"
         if st.session_state.get(legacy_reset_flag):
             qty_prefix = f"{editor_key}__qa_qty_"
@@ -1216,217 +1223,642 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
                     st.session_state.pop(k, None)
             st.session_state.pop(legacy_reset_flag, None)
 
+        # -----------------------------
+        # CUSTOM CSS - HORIZONTAL SCROLLING (CRITICAL!)
+        # -----------------------------
+        st.markdown("""
+        <style>
+        /* Force horizontal scrolling container */
+        div[data-testid="column"] {
+            min-width: fit-content !important;
+        }
+        
+        /* Horizontal scroll wrapper for pills */
+        .stHorizontalBlock {
+            overflow-x: auto !important;
+            overflow-y: hidden !important;
+            -webkit-overflow-scrolling: touch;
+            scrollbar-width: thin;
+            padding-bottom: 8px;
+            display: flex !important;
+            flex-wrap: nowrap !important;
+        }
+        
+        /* Custom scrollbar */
+        .stHorizontalBlock::-webkit-scrollbar {
+            height: 6px;
+        }
+        .stHorizontalBlock::-webkit-scrollbar-track {
+            background: rgba(0,0,0,.05);
+            border-radius: 10px;
+        }
+        .stHorizontalBlock::-webkit-scrollbar-thumb {
+            background: rgba(49,51,63,.25);
+            border-radius: 10px;
+        }
+        
+        /* Make buttons not wrap */
+        .stButton {
+            min-width: fit-content !important;
+        }
+        
+        .stButton button {
+            white-space: nowrap !important;
+            min-width: fit-content !important;
+            padding: 10px 20px !important;
+            border-radius: 999px !important;
+            font-weight: 600 !important;
+            font-size: 0.9rem !important;
+        }
+        
+        /* Product card styling */
+        .product-card {
+            border: 1px solid rgba(49,51,63,.12);
+            border-radius: 12px;
+            padding: 12px;
+            background: #fff;
+            margin-bottom: 12px;
+            position: relative;
+            box-shadow: 0 1px 3px rgba(0,0,0,.08);
+            transition: all 0.2s ease;
+        }
+        .product-card:hover {
+            box-shadow: 0 2px 6px rgba(0,0,0,.12);
+        }
+        .product-card-in-order {
+            border: 2px solid #2196F3;
+            background: rgba(33,150,243,0.04);
+        }
+        
+        /* Typography */
+        .product-name {
+            font-weight: 700;
+            font-size: 0.95rem;
+            line-height: 1.3;
+            margin-bottom: 4px;
+            color: #1a1a1a;
+        }
+        .product-desc {
+            font-size: 0.85rem;
+            color: #64748b;
+            margin-bottom: 8px;
+            line-height: 1.2;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            overflow: hidden;
+        }
+        .product-unit {
+            font-size: 0.85rem;
+            font-weight: 600;
+            color: #475569;
+            margin-bottom: 8px;
+        }
+        
+        /* Badge */
+        .in-order-badge {
+            display: inline-block;
+            background: #2196F3;
+            color: white;
+            padding: 4px 10px;
+            border-radius: 999px;
+            font-size: 0.8rem;
+            font-weight: 700;
+            margin-top: 6px;
+        }
+        
+        /* Section headers */
+        .filter-label {
+            font-weight: 700;
+            font-size: 0.95rem;
+            color: #1a1a1a;
+            margin-bottom: 8px;
+            margin-top: 12px;
+        }
+        </style>
+        """, unsafe_allow_html=True)
 
-        with st.container(horizontal=True):
-            q = st.text_input(
-                "Buscar",
-                key=f"{editor_key}__qa_search",
-                placeholder="Producto…",
-            ).strip().lower()
+        # -----------------------------
+        # Search bar
+        # -----------------------------
+        q = st.text_input(
+            "Buscar",
+            key=f"{editor_key}__qa_search",
+            placeholder="Buscar productos...",
+        ).strip().lower()
 
-            # Prepare order state for dependent options
-            df_current = _sanitize_editor_df(st.session_state[df_state_key])
-            qty_by_pid = _qty_by_product(df_current)
+        # -----------------------------
+        # Prepare order state
+        # -----------------------------
+        df_current = _sanitize_editor_df(st.session_state[df_state_key])
+        qty_by_pid = _qty_by_product(df_current)
 
-            base_pids = sorted(label_by_id.keys())
-            if q:
-                base_pids = [pid for pid in base_pids if q in label_by_id.get(pid, "").lower()]
+        # Filter by search
+        base_pids = sorted(label_by_id.keys())
+        if q:
+            base_pids = [pid for pid in base_pids if q in label_by_id.get(pid, "").lower()]
 
-            # Session keys
-            cat_key = f"{editor_key}__qa_cat"
-            prov_key = f"{editor_key}__qa_prov"
-            hide_key = f"{editor_key}__qa_hide"
+        # -----------------------------
+        # Session state keys
+        # -----------------------------
+        prov_key = f"{editor_key}__qa_prov"
+        cat_key = f"{editor_key}__qa_cat"
+        hide_key = f"{editor_key}__qa_hide"
 
-            st.session_state.setdefault(cat_key, "Todas")
-            st.session_state.setdefault(prov_key, "Todos")
+        st.session_state.setdefault(prov_key, "Todos")
+        st.session_state.setdefault(cat_key, "Todas")
+        
+        current_prov = st.session_state[prov_key]
+        current_cat = st.session_state[cat_key]
+        hide_in_order = bool(st.session_state.get(hide_key, False))
+
+        # -----------------------------
+        # Compute cascading options
+        # -----------------------------
+        # Get available providers based on current category
+        if current_cat != "Todas":
+            provs_for_cat = sorted({prov_by_pid.get(pid, "") for pid in base_pids if cat_by_pid.get(pid, "") == current_cat})
+        else:
+            provs_for_cat = sorted({prov_by_pid.get(pid, "") for pid in base_pids})
+        provs_for_cat = [p for p in provs_for_cat if p]
+
+        # Get available categories based on current provider
+        if current_prov != "Todos":
+            cats_for_prov = sorted({cat_by_pid.get(pid, "") for pid in base_pids if prov_by_pid.get(pid, "") == current_prov})
+        else:
+            cats_for_prov = sorted({cat_by_pid.get(pid, "") for pid in base_pids})
+        cats_for_prov = [c for c in cats_for_prov if c]
+
+        # Reset invalid selections
+        if current_prov != "Todos" and current_prov not in provs_for_cat:
+            st.session_state[prov_key] = "Todos"
+            current_prov = "Todos"
+
+        if current_cat != "Todas" and current_cat not in cats_for_prov:
+            st.session_state[cat_key] = "Todas"
+            current_cat = "Todas"
+
+        # -----------------------------
+        # HORIZONTAL SCROLLING PROVIDERS (Like Globo)
+        # -----------------------------
+        st.markdown('<div class="filter-label">Proveedores</div>', unsafe_allow_html=True)
+        
+        # Create horizontal container with all providers as pills
+        with st.container(border=False):
+            # Create columns for each provider - this creates horizontal layout
+            num_providers = len(["Todos"] + provs_for_cat)
+            prov_cols = st.columns(num_providers)
             
+            for i, prov in enumerate(["Todos"] + provs_for_cat):
+                with prov_cols[i]:
+                    is_active = prov == current_prov
+                    btn_type = "primary" if is_active else "secondary"
+                    
+                    if st.button(
+                        prov,
+                        key=f"{prov_key}_{i}",
+                        type=btn_type,
+                        use_container_width=True,
+                    ):
+                        st.session_state[prov_key] = prov
+                        st.rerun()
+
+        # -----------------------------
+        # HORIZONTAL SCROLLING CATEGORIES (Like Globo)
+        # -----------------------------
+        st.markdown('<div class="filter-label">Categorías</div>', unsafe_allow_html=True)
+        
+        # Re-evaluate categories after provider selection
+        if st.session_state[prov_key] != "Todos":
+            cat_opts = sorted({cat_by_pid.get(pid, "") for pid in base_pids if prov_by_pid.get(pid, "") == st.session_state[prov_key]})
+        else:
+            cat_opts = sorted({cat_by_pid.get(pid, "") for pid in base_pids})
+        cat_opts = [c for c in cat_opts if c]
+
+        # Create horizontal container with all categories as pills
+        with st.container(border=False):
+            num_categories = len(["Todas"] + cat_opts)
+            cat_cols = st.columns(num_categories)
             
-            hide_in_order = bool(st.session_state.get(hide_key, False))
+            for i, cat in enumerate(["Todas"] + cat_opts):
+                with cat_cols[i]:
+                    is_active = cat == current_cat
+                    btn_type = "primary" if is_active else "secondary"
+                    
+                    if st.button(
+                        cat,
+                        key=f"{cat_key}_{i}",
+                        type=btn_type,
+                        use_container_width=True,
+                    ):
+                        st.session_state[cat_key] = cat
+                        st.rerun()
 
-            current_cat = st.session_state[cat_key]
-            current_prov = st.session_state[prov_key]
+        st.markdown("<div style='height: 16px'></div>", unsafe_allow_html=True)
 
-            # --- Compute cascading options ---
-            cats_for_prov = (
-                sorted({cat_by_pid.get(pid, "") for pid in base_pids if prov_by_pid.get(pid, "") == current_prov})
-                if current_prov != "Todos"
-                else sorted({cat_by_pid.get(pid, "") for pid in base_pids})
-            )
-            cats_for_prov = [c for c in cats_for_prov if c]
+        # -----------------------------
+        # Reset paging when filters change
+        # -----------------------------
+        selected_prov = st.session_state[prov_key]
+        selected_cat = st.session_state[cat_key]
+        
+        filters_sig = (q, selected_cat, selected_prov, bool(hide_in_order))
+        sig_key = f"{editor_key}__qa_filters_sig"
+        page_key = f"{editor_key}__qa_page"
 
-            provs_for_cat = (
-                sorted({prov_by_pid.get(pid, "") for pid in base_pids if cat_by_pid.get(pid, "") == current_cat})
-                if current_cat != "Todas"
-                else sorted({prov_by_pid.get(pid, "") for pid in base_pids})
-            )
-            provs_for_cat = [p for p in provs_for_cat if p]
+        if st.session_state.get(sig_key) != filters_sig:
+            st.session_state[sig_key] = filters_sig
+            st.session_state[page_key] = 1
 
-            # Reset invalid selections
-            if current_cat != "Todas" and current_cat not in cats_for_prov:
-                st.session_state[cat_key] = "Todas"
-                current_cat = "Todas"
+        # -----------------------------
+        # Apply filters
+        # -----------------------------
+        pids = base_pids
 
-            if current_prov != "Todos" and current_prov not in provs_for_cat:
-                st.session_state[prov_key] = "Todos"
-                current_prov = "Todos"
+        if selected_cat != "Todas":
+            pids = [pid for pid in pids if cat_by_pid.get(pid, "") == selected_cat]
 
+        if selected_prov != "Todos":
+            pids = [pid for pid in pids if prov_by_pid.get(pid, "") == selected_prov]
 
-            selected_cat = st.selectbox(
-                "Categoría",
-                options=["Todas"] + cats_for_prov,
-                index=(["Todas"] + cats_for_prov).index(current_cat),
-                key=cat_key,
-            )
+        if hide_in_order:
+            pids = [pid for pid in pids if float(qty_by_pid.get(pid, 0.0) or 0.0) <= 0.0]
 
-      
-            # Re-evaluate providers after category selection
-            prov_opts = (
-                sorted({prov_by_pid.get(pid, "") for pid in base_pids if cat_by_pid.get(pid, "") == selected_cat})
-                if selected_cat != "Todas"
-                else sorted({prov_by_pid.get(pid, "") for pid in base_pids})
-            )
-            prov_opts = [p for p in prov_opts if p]
+        total = len(pids)
 
-            selected_prov = st.selectbox(
-                "Proveedor",
-                options=["Todos"] + prov_opts,
-                index=(["Todos"] + prov_opts).index(st.session_state[prov_key]),
-                key=prov_key,
-            )
-
-            # ---------- Reset paging when filters change ----------
-            filters_sig = (q, selected_cat, selected_prov, bool(hide_in_order))
-            sig_key = f"{editor_key}__qa_filters_sig"
-            page_key = f"{editor_key}__qa_page"
-
-            if st.session_state.get(sig_key) != filters_sig:
-                st.session_state[sig_key] = filters_sig
-                st.session_state[page_key] = 1
-
-            # ---------- Apply filters ----------
-            pids = base_pids
-
-            if selected_cat != "Todas":
-                pids = [pid for pid in pids if cat_by_pid.get(pid, "") == selected_cat]
-
-            if selected_prov != "Todos":
-                pids = [pid for pid in pids if prov_by_pid.get(pid, "") == selected_prov]
-
-            if hide_in_order:
-                pids = [pid for pid in pids if float(qty_by_pid.get(pid, 0.0) or 0.0) <= 0.0]
-
-            total = len(pids)
-
-        # ---------- Paging ----------
-
-        page_size = 60
+        # -----------------------------
+        # Paging
+        # -----------------------------
+        page_size = 20  # 2 columns × 10 rows - perfect for mobile
 
         st.session_state.setdefault(page_key, 1)
         total_pages = max(1, (total + page_size - 1) // page_size)
         st.session_state[page_key] = min(st.session_state[page_key], total_pages)
 
-        with st.container(horizontal=True):
+        # -----------------------------
+        # Paging controls + toggle
+        # -----------------------------
+        with st.container():
+            col1, col2, col3 = st.columns([1, 3, 1])
             
-            if st.button("⬅️", disabled=st.session_state[page_key] <= 1):
-                st.session_state[page_key] -= 1
-                st.rerun()
+            with col1:
+                if st.button("◀", disabled=st.session_state[page_key] <= 1, use_container_width=True):
+                    st.session_state[page_key] -= 1
+                    st.rerun()
 
+            with col2:
+                st.markdown(
+                    f"<div style='text-align: center; padding-top: 8px; font-weight: 600; color: #64748b'>"
+                    f"{total} productos · Pág {st.session_state[page_key]}/{total_pages}"
+                    f"</div>",
+                    unsafe_allow_html=True
+                )
+                
+            with col3:
+                if st.button("▶", disabled=st.session_state[page_key] >= total_pages, use_container_width=True):
+                    st.session_state[page_key] += 1
+                    st.rerun()
 
-            if st.button("➡️", disabled=st.session_state[page_key] >= total_pages):
-                st.session_state[page_key] += 1
-                st.rerun()
+        hide_in_order = st.toggle(
+            "Ocultar productos ya en pedido",
+            key=hide_key,
+        )
 
+        st.markdown("<div style='height: 16px'></div>", unsafe_allow_html=True)
 
-            st.caption(f"{total} resultados · Página {st.session_state[page_key]} / {total_pages}")
-            
-            hide_in_order = st.toggle(
-                "Ocultar en pedido",
-                key=hide_key,
-            )
-
-
-        # ---------- Grid ----------
+        # -----------------------------
+        # 2-COLUMN GRID (Mobile optimized, like Globo)
+        # -----------------------------
         start_i = (st.session_state[page_key] - 1) * page_size
         end_i = start_i + page_size
         pids_page = pids[start_i:end_i]
 
-        with st.container(height=500):
-            cols = st.columns(3, gap="small")
-            for i, pid in enumerate(pids_page):
-                col = cols[i % 3]
-                p = products_by_id.get(pid)
-                unit_txt = (_s(getattr(p, "unit", "")) or "unidad").lower()
+        # Render products in 2-column grid
+        with st.container():
+            # Process products in pairs for 2-column layout
+            for row_idx in range(0, len(pids_page), 2):
+                cols = st.columns(2, gap="small")
+                
+                # LEFT COLUMN PRODUCT
+                if row_idx < len(pids_page):
+                    pid = pids_page[row_idx]
+                    with cols[0]:
+                        p = products_by_id.get(pid)
+                        unit_txt = (_s(getattr(p, "unit", "")) or "unidad").lower()
 
-                label = label_by_id.get(pid, str(pid))
-                parts = label.split(" — ", 1)
-                name = parts[0]
-                rest = parts[1] if len(parts) > 1 else ""
+                        label = label_by_id.get(pid, str(pid))
+                        parts = label.split(" — ", 1)
+                        name = parts[0]
+                        rest = parts[1] if len(parts) > 1 else ""
 
-                with col:
-                    existing_qty = float(qty_by_pid.get(pid, 0.0) or 0.0)
-                    in_order = existing_qty > 0
-                    qty_txt = f"{existing_qty:g}"
+                        existing_qty = float(qty_by_pid.get(pid, 0.0) or 0.0)
+                        in_order = existing_qty > 0
 
-                    bg = "rgba(33,150,243,0.08)" if in_order else "transparent"
-                    border = "rgba(33,150,243,0.5)" if in_order else "rgba(49,51,63,.2)"
-
-                    unit_row = (
-                        f"""
-                        <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
-                            <span style="font-size:0.95rem;font-weight:700">{unit_txt}</span>
-                            <span style="font-size:0.9rem;font-weight:800;
-                                        background:rgba(33,150,243,.95);
-                                        color:white;padding:4px 10px;
-                                        border-radius:999px">
-                                ✓ En pedido · {qty_txt}
-                            </span>
+                        # Product card
+                        card_class = "product-card-in-order" if in_order else "product-card"
+                        
+                        card_html = f"""
+                        <div class="{card_class}">
+                            <div class="product-name">{name}</div>
+                            {f'<div class="product-desc">{rest}</div>' if rest else ''}
+                            <div class="product-unit">{unit_txt}</div>
+                            {f'<span class="in-order-badge">✓ En pedido: {existing_qty:g}</span>' if in_order else ''}
                         </div>
                         """
-                        if in_order
-                        else f"""
-                        <div style="margin-top:6px">
-                            <span style="font-size:0.95rem;font-weight:700">{unit_txt}</span>
+                        st.markdown(card_html, unsafe_allow_html=True)
+
+                        # Add form
+                        form_key = f"{editor_key}__qa_form_{pid}"
+                        with st.form(key=form_key, clear_on_submit=False):
+                            qty_val = st.number_input(
+                                "Cantidad",
+                                min_value=0,
+                                step=1,
+                                value=0,
+                                key=f"{editor_key}__qa_qty_{pid}__{st.session_state[qa_nonce_key]}",
+                                label_visibility="collapsed",
+                            )
+                            submitted = st.form_submit_button(
+                                "➕ Sumar" if in_order else "➕ Añadir",
+                                use_container_width=True,
+                                type="primary" if not in_order else "secondary",
+                            )
+
+                        if submitted:
+                            _add_product_to_df(pid, qty_val)
+                
+                # RIGHT COLUMN PRODUCT
+                if row_idx + 1 < len(pids_page):
+                    pid = pids_page[row_idx + 1]
+                    with cols[1]:
+                        p = products_by_id.get(pid)
+                        unit_txt = (_s(getattr(p, "unit", "")) or "unidad").lower()
+
+                        label = label_by_id.get(pid, str(pid))
+                        parts = label.split(" — ", 1)
+                        name = parts[0]
+                        rest = parts[1] if len(parts) > 1 else ""
+
+                        existing_qty = float(qty_by_pid.get(pid, 0.0) or 0.0)
+                        in_order = existing_qty > 0
+
+                        # Product card
+                        card_class = "product-card-in-order" if in_order else "product-card"
+                        
+                        card_html = f"""
+                        <div class="{card_class}">
+                            <div class="product-name">{name}</div>
+                            {f'<div class="product-desc">{rest}</div>' if rest else ''}
+                            <div class="product-unit">{unit_txt}</div>
+                            {f'<span class="in-order-badge">✓ En pedido: {existing_qty:g}</span>' if in_order else ''}
                         </div>
                         """
-                    )
+                        st.markdown(card_html, unsafe_allow_html=True)
 
-                    st.markdown(
-                        f"""
-                        <div style="
-                            padding:.6rem;
-                            border:1px solid {border};
-                            border-left:4px solid {'#2196F3' if in_order else border};
-                            border-radius:.6rem;
-                            background:{bg};
-                            line-height:1.25
-                        ">
-                            <div style="font-weight:700">{name}</div>
-                            {'<div style="opacity:0.55;font-size:0.9em">' + rest + '</div>' if rest else ''}
-                            {unit_row}
-                        </div>
-                        """,
-                        unsafe_allow_html=True,
-                    )
+                        # Add form
+                        form_key = f"{editor_key}__qa_form_{pid}"
+                        with st.form(key=form_key, clear_on_submit=False):
+                            qty_val = st.number_input(
+                                "Cantidad",
+                                min_value=0,
+                                step=1,
+                                value=0,
+                                key=f"{editor_key}__qa_qty_{pid}__{st.session_state[qa_nonce_key]}",
+                                label_visibility="collapsed",
+                            )
+                            submitted = st.form_submit_button(
+                                "➕ Sumar" if in_order else "➕ Añadir",
+                                use_container_width=True,
+                                type="primary" if not in_order else "secondary",
+                            )
 
-                    form_key = f"{editor_key}__qa_form_{pid}"
-                    with st.form(key=form_key, clear_on_submit=False):
-                        qty_val = st.number_input(
-                            "Qty",
-                            # Use float so it resets to 0.0 after Add/Sumar
-                            # (we bump a nonce in the widget key)
-                            min_value=0,
-                            step=1,
-                            value=0,
-                            key=f"{editor_key}__qa_qty_{pid}__{st.session_state[qa_nonce_key]}",
-                            label_visibility="collapsed",
-                        )
-                        submitted = st.form_submit_button(
-                            "Sumar" if in_order else "Añadir",
-                            use_container_width=True,
-                        )
+                        if submitted:
+                            _add_product_to_df(pid, qty_val)
 
-                    if submitted:
-                        _add_product_to_df(pid, qty_val)
+# =============================================================================
+# END: STOP REPLACING HERE
+# =============================================================================
+    # with st.expander("➕ Añadir productos", expanded=True):
+    #     # Backwards compatible cleanup (older sessions may still carry legacy keys)
+    #     legacy_reset_flag = f"{editor_key}__qa_reset_qty"
+    #     if st.session_state.get(legacy_reset_flag):
+    #         qty_prefix = f"{editor_key}__qa_qty_"
+    #         for k in list(st.session_state.keys()):
+    #             if isinstance(k, str) and k.startswith(qty_prefix):
+    #                 st.session_state.pop(k, None)
+    #         st.session_state.pop(legacy_reset_flag, None)
+
+
+    #     with st.container(horizontal=True):
+    #         q = st.text_input(
+    #             "Buscar",
+    #             key=f"{editor_key}__qa_search",
+    #             placeholder="Producto…",
+    #         ).strip().lower()
+
+    #         # Prepare order state for dependent options
+    #         df_current = _sanitize_editor_df(st.session_state[df_state_key])
+    #         qty_by_pid = _qty_by_product(df_current)
+
+    #         base_pids = sorted(label_by_id.keys())
+    #         if q:
+    #             base_pids = [pid for pid in base_pids if q in label_by_id.get(pid, "").lower()]
+
+    #         # Session keys
+    #         cat_key = f"{editor_key}__qa_cat"
+    #         prov_key = f"{editor_key}__qa_prov"
+    #         hide_key = f"{editor_key}__qa_hide"
+
+    #         st.session_state.setdefault(cat_key, "Todas")
+    #         st.session_state.setdefault(prov_key, "Todos")
+            
+            
+    #         hide_in_order = bool(st.session_state.get(hide_key, False))
+
+    #         current_cat = st.session_state[cat_key]
+    #         current_prov = st.session_state[prov_key]
+
+    #         # --- Compute cascading options ---
+    #         cats_for_prov = (
+    #             sorted({cat_by_pid.get(pid, "") for pid in base_pids if prov_by_pid.get(pid, "") == current_prov})
+    #             if current_prov != "Todos"
+    #             else sorted({cat_by_pid.get(pid, "") for pid in base_pids})
+    #         )
+    #         cats_for_prov = [c for c in cats_for_prov if c]
+
+    #         provs_for_cat = (
+    #             sorted({prov_by_pid.get(pid, "") for pid in base_pids if cat_by_pid.get(pid, "") == current_cat})
+    #             if current_cat != "Todas"
+    #             else sorted({prov_by_pid.get(pid, "") for pid in base_pids})
+    #         )
+    #         provs_for_cat = [p for p in provs_for_cat if p]
+
+    #         # Reset invalid selections
+    #         if current_cat != "Todas" and current_cat not in cats_for_prov:
+    #             st.session_state[cat_key] = "Todas"
+    #             current_cat = "Todas"
+
+    #         if current_prov != "Todos" and current_prov not in provs_for_cat:
+    #             st.session_state[prov_key] = "Todos"
+    #             current_prov = "Todos"
+
+
+    #         selected_cat = st.selectbox(
+    #             "Categoría",
+    #             options=["Todas"] + cats_for_prov,
+    #             index=(["Todas"] + cats_for_prov).index(current_cat),
+    #             key=cat_key,
+    #         )
+
+      
+    #         # Re-evaluate providers after category selection
+    #         prov_opts = (
+    #             sorted({prov_by_pid.get(pid, "") for pid in base_pids if cat_by_pid.get(pid, "") == selected_cat})
+    #             if selected_cat != "Todas"
+    #             else sorted({prov_by_pid.get(pid, "") for pid in base_pids})
+    #         )
+    #         prov_opts = [p for p in prov_opts if p]
+
+    #         selected_prov = st.selectbox(
+    #             "Proveedor",
+    #             options=["Todos"] + prov_opts,
+    #             index=(["Todos"] + prov_opts).index(st.session_state[prov_key]),
+    #             key=prov_key,
+    #         )
+
+    #         # ---------- Reset paging when filters change ----------
+    #         filters_sig = (q, selected_cat, selected_prov, bool(hide_in_order))
+    #         sig_key = f"{editor_key}__qa_filters_sig"
+    #         page_key = f"{editor_key}__qa_page"
+
+    #         if st.session_state.get(sig_key) != filters_sig:
+    #             st.session_state[sig_key] = filters_sig
+    #             st.session_state[page_key] = 1
+
+    #         # ---------- Apply filters ----------
+    #         pids = base_pids
+
+    #         if selected_cat != "Todas":
+    #             pids = [pid for pid in pids if cat_by_pid.get(pid, "") == selected_cat]
+
+    #         if selected_prov != "Todos":
+    #             pids = [pid for pid in pids if prov_by_pid.get(pid, "") == selected_prov]
+
+    #         if hide_in_order:
+    #             pids = [pid for pid in pids if float(qty_by_pid.get(pid, 0.0) or 0.0) <= 0.0]
+
+    #         total = len(pids)
+
+    #     # ---------- Paging ----------
+
+    #     page_size = 60
+
+    #     st.session_state.setdefault(page_key, 1)
+    #     total_pages = max(1, (total + page_size - 1) // page_size)
+    #     st.session_state[page_key] = min(st.session_state[page_key], total_pages)
+
+    #     with st.container(horizontal=True):
+            
+    #         if st.button("⬅️", disabled=st.session_state[page_key] <= 1):
+    #             st.session_state[page_key] -= 1
+    #             st.rerun()
+
+
+    #         if st.button("➡️", disabled=st.session_state[page_key] >= total_pages):
+    #             st.session_state[page_key] += 1
+    #             st.rerun()
+
+
+    #         st.caption(f"{total} resultados · Página {st.session_state[page_key]} / {total_pages}")
+            
+    #         hide_in_order = st.toggle(
+    #             "Ocultar en pedido",
+    #             key=hide_key,
+    #         )
+
+
+    #     # ---------- Grid ----------
+    #     start_i = (st.session_state[page_key] - 1) * page_size
+    #     end_i = start_i + page_size
+    #     pids_page = pids[start_i:end_i]
+
+    #     with st.container(height=500):
+    #         cols = st.columns(3, gap="small")
+    #         for i, pid in enumerate(pids_page):
+    #             col = cols[i % 3]
+    #             p = products_by_id.get(pid)
+    #             unit_txt = (_s(getattr(p, "unit", "")) or "unidad").lower()
+
+    #             label = label_by_id.get(pid, str(pid))
+    #             parts = label.split(" — ", 1)
+    #             name = parts[0]
+    #             rest = parts[1] if len(parts) > 1 else ""
+
+    #             with col:
+    #                 existing_qty = float(qty_by_pid.get(pid, 0.0) or 0.0)
+    #                 in_order = existing_qty > 0
+    #                 qty_txt = f"{existing_qty:g}"
+
+    #                 bg = "rgba(33,150,243,0.08)" if in_order else "transparent"
+    #                 border = "rgba(33,150,243,0.5)" if in_order else "rgba(49,51,63,.2)"
+
+    #                 unit_row = (
+    #                     f"""
+    #                     <div style="display:flex;justify-content:space-between;align-items:center;margin-top:6px">
+    #                         <span style="font-size:0.95rem;font-weight:700">{unit_txt}</span>
+    #                         <span style="font-size:0.9rem;font-weight:800;
+    #                                     background:rgba(33,150,243,.95);
+    #                                     color:white;padding:4px 10px;
+    #                                     border-radius:999px">
+    #                             ✓ En pedido · {qty_txt}
+    #                         </span>
+    #                     </div>
+    #                     """
+    #                     if in_order
+    #                     else f"""
+    #                     <div style="margin-top:6px">
+    #                         <span style="font-size:0.95rem;font-weight:700">{unit_txt}</span>
+    #                     </div>
+    #                     """
+    #                 )
+
+    #                 st.markdown(
+    #                     f"""
+    #                     <div style="
+    #                         padding:.6rem;
+    #                         border:1px solid {border};
+    #                         border-left:4px solid {'#2196F3' if in_order else border};
+    #                         border-radius:.6rem;
+    #                         background:{bg};
+    #                         line-height:1.25
+    #                     ">
+    #                         <div style="font-weight:700">{name}</div>
+    #                         {'<div style="opacity:0.55;font-size:0.9em">' + rest + '</div>' if rest else ''}
+    #                         {unit_row}
+    #                     </div>
+    #                     """,
+    #                     unsafe_allow_html=True,
+    #                 )
+
+    #                 form_key = f"{editor_key}__qa_form_{pid}"
+    #                 with st.form(key=form_key, clear_on_submit=False):
+    #                     qty_val = st.number_input(
+    #                         "Qty",
+    #                         # Use float so it resets to 0.0 after Add/Sumar
+    #                         # (we bump a nonce in the widget key)
+    #                         min_value=0,
+    #                         step=1,
+    #                         value=0,
+    #                         key=f"{editor_key}__qa_qty_{pid}__{st.session_state[qa_nonce_key]}",
+    #                         label_visibility="collapsed",
+    #                     )
+    #                     submitted = st.form_submit_button(
+    #                         "Sumar" if in_order else "Añadir",
+    #                         use_container_width=True,
+    #                     )
+
+    #                 if submitted:
+    #                     _add_product_to_df(pid, qty_val)
 
     # Build the dataframe that will be shown in the editor
     df_for_editor = _sanitize_editor_df(st.session_state[df_state_key])
