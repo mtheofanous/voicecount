@@ -1353,7 +1353,6 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
 
 
     # ---------- Grid ----------
-    # ---------- Grid ----------
     start_i = (st.session_state[page_key] - 1) * page_size
     end_i = start_i + page_size
     pids_page = pids[start_i:end_i]
