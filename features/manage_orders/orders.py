@@ -1364,46 +1364,30 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
         return f"{editor_key}__qa_qty_live_{pid}"
 
     # --- Global CSS (once) ---
-    st.markdown(
-        """
+    st.markdown("""
     <style>
-    /* Keep 2 columns on mobile inside the blue container */
     @media (max-width: 700px) {
     .st-key-my_blue_container [data-testid="stHorizontalBlock"]{
+        display:flex !important;
         flex-wrap: wrap !important;
         gap: 12px !important;
     }
     .st-key-my_blue_container [data-testid="column"]{
-        flex: 1 1 calc(50% - 12px) !important;
+        flex: 0 0 calc(50% - 12px) !important;
         width: calc(50% - 12px) !important;
+        max-width: calc(50% - 12px) !important;
+        min-width: 0 !important;
+    }
+
+    /* Make widgets shrink properly inside columns */
+    .st-key-my_blue_container [data-testid="stNumberInput"],
+    .st-key-my_blue_container [data-testid="stButton"]{
+        width: 100% !important;
         min-width: 0 !important;
     }
     }
-
-    /* Buttons: larger tap targets, icon-y */
-    div[data-testid="stButton"] > button {
-    border-radius: 16px !important;
-    padding: 0.35rem 0.6rem !important;
-    font-weight: 900 !important;
-    min-height: 44px !important;
-    }
-
-    /* Number input: centered + bold */
-    div[data-testid="stNumberInput"] input {
-    text-align: center !important;
-    font-weight: 900 !important;
-    font-size: 1.15rem !important;
-    height: 44px !important;
-    }
-
-    /* Remove extra top/bottom spacing inside our pill area */
-    .pill-row [data-testid="stHorizontalBlock"]{
-    gap: 10px !important;
-    }
     </style>
-    """,
-        unsafe_allow_html=True,
-    )
+    """, unsafe_allow_html=True)
 
     def render_product_card(pid):
         p = products_by_id.get(pid)
@@ -1487,7 +1471,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
             unsafe_allow_html=True,
         )
 
-        with st.container(key=card_key, width=130):
+        with st.container(key=card_key):
             # Optional “in order” badge like the screenshot
             if in_order:
                 st.markdown(f"<div class='badge'>✓ {qty_txt}</div>", unsafe_allow_html=True)
