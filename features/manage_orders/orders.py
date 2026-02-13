@@ -1409,8 +1409,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
         qty_txt = f"{existing_qty:g}"
 
         k_qty = ss_qty_key(editor_key, pid)
-        if k_qty not in st.session_state:
-            st.session_state[k_qty] = 0
+        st.session_state.setdefault(k_qty, 0)
 
         card_key = f"my_product_{pid}"
         pill_key = f"{card_key}_pill"
