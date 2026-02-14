@@ -38,28 +38,50 @@ def get_database_url() -> str:
 
 
 def ensure_google_credentials_file():
+    """
+    Ensures GOOGLE_APPLICATION_CREDENTIALS points to a valid file path.
+    Works for:
+    - Local .env setups
+    - Streamlit Cloud secrets
+    - Accidental JSON stored directly in GOOGLE_APPLICATION_CREDENTIALS
+    """
+
     raw_env = (os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
 
-    # ✅ If env var contains JSON, treat it as creds and write to /tmp
+    # -------------------------------------------------
+    # 1️⃣ If env var contains JSON directly -> fix it
+    # -------------------------------------------------
     if raw_env.startswith("{") and "private_key" in raw_env:
         p = Path("/tmp/google-creds.json")
         p.write_text(raw_env, encoding="utf-8")
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(p)
         return
 
-    # If already set to a file path, keep it
-    if raw_env:
+    # -------------------------------------------------
+    # 2️⃣ If env var is already a valid file path -> keep it
+    # -------------------------------------------------
+    if raw_env and Path(raw_env).exists():
         return
 
+    # -------------------------------------------------
+    # 3️⃣ Otherwise try loading from Streamlit secrets
+    # -------------------------------------------------
     creds = None
+
     if "GOOGLE_CREDENTIALS_JSON" in st.secrets:
         creds = st.secrets["GOOGLE_CREDENTIALS_JSON"]
+
     if not creds:
         creds = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
     if not creds:
-        return
+        raise RuntimeError(
+            "Google credentials not found. "
+            "Set GOOGLE_CREDENTIALS_JSON in Streamlit secrets or env."
+        )
 
+    # Write JSON to temp file
     p = Path("/tmp/google-creds.json")
     p.write_text(creds, encoding="utf-8")
+
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(p)
