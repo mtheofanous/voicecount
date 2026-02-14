@@ -63,7 +63,7 @@ def bootstrap_once() -> bool:
 
 def _css() -> None:
     st.markdown(
-        r'''
+        """
 <style>
 
 /* Hide Streamlit chrome (we render our own fixed topbar) */
@@ -135,7 +135,7 @@ button{
   .voi-tab .tx{font-size:.82rem;}
 }
 </style>
-''',
+""",
         unsafe_allow_html=True,
     )
 
@@ -198,12 +198,12 @@ def _inject_topbar(
     is_history_page: bool,
 ) -> None:
     """Fixed top bar (session-safe). Navigation uses Streamlit buttons, not <a href>."""
-    bar = st.container()
+    bar = st.container(horizontal=True)
 
     with bar:
-        left, center, right = st.columns([2.6, 3.2, 1.2], gap="small")
+        # left, center, right = st.columns([2.6, 3.2, 1.2], gap="small")
 
-        with left:
+        # with left:
             st.markdown(
                 f"""
                 <div style="display:flex;flex-direction:column;gap:2px;line-height:1.1">
@@ -218,12 +218,12 @@ def _inject_topbar(
                 unsafe_allow_html=True,
             )
 
-        with center:
+        # with center:
             btn_cols = st.columns(3 if show_manage_org else 2, gap="small")
             i = 0
             if show_manage_org:
                 if btn_cols[i].button(
-                    "⚙️ Manage",
+                    "⚙️",
                     use_container_width=True,
                     type=("primary" if is_manage_page else "secondary"),
                     key="top_manage_btn",
@@ -232,7 +232,7 @@ def _inject_topbar(
                 i += 1
 
             if btn_cols[i].button(
-                "📒 Catalog",
+                "📒",
                 use_container_width=True,
                 type=("primary" if is_catalog_page else "secondary"),
                 key="top_catalog_btn",
@@ -241,15 +241,15 @@ def _inject_topbar(
             i += 1
 
             if btn_cols[i].button(
-                "🕘 History",
+                "🕘",
                 use_container_width=True,
                 type=("primary" if is_history_page else "secondary"),
                 key="top_history_btn",
             ):
                 _go("history")
 
-        with right:
-            if st.button("🚪 Logout", use_container_width=True, type="secondary", key="top_logout_btn"):
+        # with right:
+            if st.button("Logout", use_container_width=True, type="secondary", key="top_logout_btn"):
                 clear_auth()
                 try:
                     st.query_params.clear()
