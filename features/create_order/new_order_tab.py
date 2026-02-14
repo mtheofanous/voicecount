@@ -597,23 +597,22 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             st.markdown("### ➕ Añadir Productos")
 
             # Buttons row
-            with st.container(horizontal=True ):
-                btn_col1, btn_col2 = st.columns([1, 1])
-                with btn_col1:
-                    if st.button("← Volver", key=K("back_from_product_adder"), use_container_width=True):
-                        st.session_state.product_adder_fullpage = False
-                        st.rerun()
+            btn_col1, btn_col2 = st.columns([1, 1])
+            with btn_col1:
+                if st.button("← Volver", key=K("back_from_product_adder"), use_container_width=True):
+                    st.session_state.product_adder_fullpage = False
+                    st.rerun()
 
-                with btn_col2:
-                    if st.button("✓ Añadir seleccionados", key=K("submit_header_btn"), type="primary", use_container_width=True):
-                        st.session_state[K("form_submitted")] = True
-                        st.rerun()
+            with btn_col2:
+                if st.button("✓ Añadir seleccionados", key=K("submit_header_btn"), type="primary", use_container_width=True):
+                    st.session_state[K("form_submitted")] = True
+                    st.rerun()
 
             # Search bar
             search_query = st.text_input(
                 "Buscar producto",
                 placeholder="Busca por nombre, proveedor...",
-                key=K("product_search_fullpage"), label_visibility="collapsed"
+                key=K("product_search_fullpage"),
             ).strip().lower()
 
             # Filter products by search
@@ -631,7 +630,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             st.session_state.setdefault(K("selected_cat_idx"), 0)
 
             if cat_list:
-        
+                st.markdown("**Categorías:**")
                 cat_tabs = st.tabs(cat_list)
 
                 for i, tab in enumerate(cat_tabs):
@@ -649,6 +648,19 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
                 # Provider selection
                 providers_in_cat = sorted({getattr(p, "provider_name", "") or "Sin proveedor" for p in cat_filtered})
+
+                if providers_in_cat:
+                    st.markdown("**Proveedores:**")
+                    prov_tabs = st.tabs(providers_in_cat)
+
+                    for j, prov_tab in enumerate(prov_tabs):
+                        with prov_tab:
+                            st.session_state[K("selected_prov_idx")] = j
+                            break
+
+                    selected_prov = providers_in_cat[st.session_state.get(K("selected_prov_idx"), 0)]
+                else:
+                    selected_prov = None
 
         # Float the header
         header_css = float_css_helper(
@@ -670,139 +682,104 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         # Content area with padding for fixed header
         st.markdown("<div style='height: 400px;'></div>", unsafe_allow_html=True)
 
-        # Provider tabs and product display
-        if providers_in_cat:
-            prov_tabs = st.tabs(providers_in_cat)
-
-            for j, prov_tab in enumerate(prov_tabs):
-                with prov_tab:
-                    # Filter products for this specific provider
-                    selected_prov = providers_in_cat[j]
-                    final_products = [p for p in cat_filtered if (getattr(p, "provider_name", "") or "Sin proveedor") == selected_prov]
-
-                    if not final_products:
-                        st.info("No hay productos en esta categoría/proveedor")
-                    else:
-                        # Deduplicate products by ID (keep first occurrence)
-                        seen_ids = set()
-                        unique_products = []
-                        for p in final_products:
-                            pid = int(p.id)
-                            if pid not in seen_ids:
-                                seen_ids.add(pid)
-                                unique_products.append(p)
-
-                        st.caption(f"{len(unique_products)} producto(s)")
-
-                        # Display products (no form needed)
-                        products_to_add = []
-
-                        for prod in unique_products[:50]:  # Limit to 50 per page
-                            pid = int(prod.id)
-                            pname = getattr(prod, "name", "")
-                            pprov = getattr(prod, "provider_name", "")
-                            pdesc = getattr(prod, "description", "")
-                            punit = getattr(prod, "unit", "") or "unit"
-                            pprice = getattr(prod, "price", None)
-
-                            with st.container():
-                                col1, col2 = st.columns([3, 1])
-
-                                with col1:
-                                    st.markdown(f"**{pname}**")
-                                    details = []
-                                    if pdesc:
-                                        details.append(pdesc)
-                                    if pprov:
-                                        details.append(pprov)
-                                    if pprice:
-                                        details.append(f"{float(pprice):.2f}€")
-                                    if details:
-                                        st.caption(" · ".join(details))
-
-                                with col2:
-                                    qty = st.number_input(
-                                        f"Cant.",
-                                        min_value=0.0,
-                                        value=0.0,
-                                        step=1.0,
-                                        key=K(f"fullpage_qty_{pid}_{j}"),
-                                        label_visibility="collapsed"
-                                    )
-                                    if qty > 0:
-                                        products_to_add.append((pid, pname, qty, punit, pprov))
-
-                                # Smaller gap between products
-                                st.markdown("<div style='margin: 4px 0; border-bottom: 1px solid rgba(0,0,0,0.05);'></div>", unsafe_allow_html=True)
-
-        # Check if submit button was clicked (from header)
-        # This is outside the tab loop to collect products from all tabs
-        submit_clicked = st.session_state.get(K("form_submitted"), False)
-        if submit_clicked:
-            st.session_state[K("form_submitted")] = False  # Reset flag
-
-            # Collect all products with quantities > 0 from all tabs
-            all_products_to_add = []
-            for j, prov in enumerate(providers_in_cat):
-                prov_products = [p for p in cat_filtered if (getattr(p, "provider_name", "") or "Sin proveedor") == prov]
-                seen_ids = set()
-                for p in prov_products:
-                    pid = int(p.id)
-                    if pid not in seen_ids:
-                        seen_ids.add(pid)
-                        qty_key = K(f"fullpage_qty_{pid}_{j}")
-                        qty = st.session_state.get(qty_key, 0.0)
-                        if qty > 0:
-                            pname = getattr(p, "name", "")
-                            punit = getattr(p, "unit", "") or "unit"
-                            pprov = getattr(p, "provider_name", "")
-                            all_products_to_add.append((pid, pname, qty, punit, pprov))
-
-            if all_products_to_add:
-                parsed_df = st.session_state.get(S("parsed_df"))
-
-                for pid, pname, qty, punit, pprov in all_products_to_add:
-                    new_row = pd.DataFrame([{
-                        "spoken_name": pname,
-                        "matched_product_id": pid,
-                        "matched_name": pname,
-                        "confidence": 100.0,
-                        "quantity": qty,
-                        "unit": punit,
-                        "unit_custom": "",
-                        "suggestions": [],
-                        "recommended_pid": pid,
-                        "status": "OK",
-                        "provider": pprov
-                    }])
-
-                    if isinstance(parsed_df, pd.DataFrame) and not parsed_df.empty:
-                        # Check if product already exists
-                        existing_mask = parsed_df['matched_product_id'] == pid
-                        if existing_mask.any():
-                            # Update quantity
-                            idx = parsed_df.index[existing_mask][0]
-                            parsed_df.at[idx, 'quantity'] = float(parsed_df.at[idx, 'quantity']) + qty
-                        else:
-                            # Append new row
-                            parsed_df = pd.concat([parsed_df, new_row], ignore_index=True)
-                    else:
-                        # Create new df
-                        if parsed_df is None:
-                            parsed_df = new_row
-                        else:
-                            parsed_df = pd.concat([parsed_df, new_row], ignore_index=True)
-
-                st.session_state[S("parsed_df")] = parsed_df
-                st.success(f"✓ Añadidos {len(all_products_to_add)} producto(s)")
-                time.sleep(0.5)
-                st.session_state.product_adder_fullpage = False
-                st.rerun()
-            else:
-                st.warning("No seleccionaste ningún producto")
+        # Final filter
+        if selected_prov:
+            final_products = [p for p in cat_filtered if (getattr(p, "provider_name", "") or "Sin proveedor") == selected_prov]
         else:
-            # No providers in this category
-            st.info("No hay productos en esta categoría")
+            final_products = cat_filtered if 'cat_filtered' in locals() else []
+
+        if not final_products:
+            st.info("No hay productos en esta categoría/proveedor")
+        else:
+            st.caption(f"{len(final_products)} producto(s)")
+
+            # Display products (no form needed)
+            products_to_add = []
+
+            for prod in final_products[:50]:  # Limit to 50 per page
+                pid = int(prod.id)
+                pname = getattr(prod, "name", "")
+                pprov = getattr(prod, "provider_name", "")
+                pdesc = getattr(prod, "description", "")
+                punit = getattr(prod, "unit", "") or "unit"
+                pprice = getattr(prod, "price", None)
+
+                with st.container():
+                    col1, col2 = st.columns([3, 1])
+
+                    with col1:
+                        st.markdown(f"**{pname}**")
+                        details = []
+                        if pdesc:
+                            details.append(pdesc)
+                        if pprov:
+                            details.append(pprov)
+                        if pprice:
+                            details.append(f"{float(pprice):.2f}€")
+                        if details:
+                            st.caption(" · ".join(details))
+
+                    with col2:
+                        qty = st.number_input(
+                            f"Cant.",
+                            min_value=0.0,
+                            value=0.0,
+                            step=1.0,
+                            key=K(f"fullpage_qty_{pid}"),
+                            label_visibility="collapsed"
+                        )
+                        if qty > 0:
+                            products_to_add.append((pid, pname, qty, punit, pprov))
+
+                    # Smaller gap between products
+                    st.markdown("<div style='margin: 4px 0; border-bottom: 1px solid rgba(0,0,0,0.05);'></div>", unsafe_allow_html=True)
+
+            # Check if submit button was clicked (from header)
+            submit_clicked = st.session_state.get(K("form_submitted"), False)
+            if submit_clicked:
+                st.session_state[K("form_submitted")] = False  # Reset flag
+                if products_to_add:
+                    parsed_df = st.session_state.get(S("parsed_df"))
+
+                    for pid, pname, qty, punit, pprov in products_to_add:
+                        new_row = pd.DataFrame([{
+                            "spoken_name": pname,
+                            "matched_product_id": pid,
+                            "matched_name": pname,
+                            "confidence": 100.0,
+                            "quantity": qty,
+                            "unit": punit,
+                            "unit_custom": "",
+                            "suggestions": [],
+                            "recommended_pid": pid,
+                            "status": "OK",
+                            "provider": pprov
+                        }])
+
+                        if isinstance(parsed_df, pd.DataFrame) and not parsed_df.empty:
+                            # Check if product already exists
+                            existing_mask = parsed_df['matched_product_id'] == pid
+                            if existing_mask.any():
+                                # Update quantity
+                                idx = parsed_df.index[existing_mask][0]
+                                parsed_df.at[idx, 'quantity'] = float(parsed_df.at[idx, 'quantity']) + qty
+                            else:
+                                # Append new row
+                                parsed_df = pd.concat([parsed_df, new_row], ignore_index=True)
+                        else:
+                            # Create new df
+                            if parsed_df is None:
+                                parsed_df = new_row
+                            else:
+                                parsed_df = pd.concat([parsed_df, new_row], ignore_index=True)
+
+                    st.session_state[S("parsed_df")] = parsed_df
+                    st.success(f"✓ Añadidos {len(products_to_add)} producto(s)")
+                    time.sleep(0.5)
+                    st.session_state.product_adder_fullpage = False
+                    st.rerun()
+                else:
+                    st.warning("No seleccionaste ningún producto")
 
         # Stop rendering the rest of the page
         return
@@ -2326,6 +2303,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
         # NOTE: You have a duplicated second "determine draft target" block in your original snippet.
         # Keep ONLY one of them to avoid double-execution and confusing state.
+
 
 
 
