@@ -596,18 +596,19 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         with header_container:
             st.markdown("### ➕ Añadir Productos")
 
-            # Buttons row with mobile-friendly layout
-            col1, col2 = st.columns([1, 1])
-            with col1:
+            # Buttons row
+            btn_col1, btn_col2 = st.columns([1, 1])
+            with btn_col1:
                 if st.button("← Volver", key=K("back_from_product_adder"), use_container_width=True):
                     st.session_state.product_adder_fullpage = False
                     st.rerun()
 
-            with col2:
-                # Shorter text for mobile
-                if st.button("✓ Añadir", key=K("submit_header_btn"), type="primary", use_container_width=True):
+            with btn_col2:
+                if st.button("✓ Añadir seleccionados", key=K("submit_header_btn"), type="primary", use_container_width=True):
                     st.session_state[K("form_submitted")] = True
                     st.rerun()
+
+            st.divider()
 
             # Search bar
             search_query = st.text_input(
