@@ -616,7 +616,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
         # Category tabs
         with st.container():
-            cat_list = ["Todas"] + sorted(all_categories)
+            cat_list = sorted(all_categories)
             cat_tabs = st.tabs(cat_list)
 
             for i, tab in enumerate(cat_tabs):
@@ -624,13 +624,11 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                     selected_cat = cat_list[i]
 
                     # Filter by category
-                    cat_filtered = filtered_products
-                    if selected_cat != "Todas":
-                        cat_filtered = [p for p in filtered_products if getattr(p, "category", "") == selected_cat]
+                    cat_filtered = [p for p in filtered_products if getattr(p, "category", "") == selected_cat]
 
                     # Provider sub-tabs
                     providers_in_cat = sorted({getattr(p, "provider_name", "") or "Sin proveedor" for p in cat_filtered})
-                    prov_list = ["Todos"] + providers_in_cat
+                    prov_list = providers_in_cat
                     prov_tabs = st.tabs(prov_list)
 
                     for j, prov_tab in enumerate(prov_tabs):
@@ -638,9 +636,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                             selected_prov = prov_list[j]
 
                             # Final filter
-                            final_products = cat_filtered
-                            if selected_prov != "Todos":
-                                final_products = [p for p in cat_filtered if (getattr(p, "provider_name", "") or "Sin proveedor") == selected_prov]
+                            final_products = [p for p in cat_filtered if (getattr(p, "provider_name", "") or "Sin proveedor") == selected_prov]
 
                             if not final_products:
                                 st.info("No hay productos en esta categoría/proveedor")
@@ -650,8 +646,12 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
                             # Display products in a form
                             with st.form(key=K(f"add_form_{i}_{j}")):
-                                added_any = False
                                 products_to_add = []
+
+                                # Submit button at TOP
+                                submit_clicked = st.form_submit_button("✓ Añadir seleccionados", type="primary", use_container_width=True)
+
+                                st.markdown("<div style='margin: 8px 0;'></div>", unsafe_allow_html=True)
 
                                 for prod in final_products[:50]:  # Limit to 50 per page
                                     pid = int(prod.id)
@@ -688,10 +688,11 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                                             if qty > 0:
                                                 products_to_add.append((pid, pname, qty, punit, pprov))
 
-                                        st.divider()
+                                        # Smaller gap between products
+                                        st.markdown("<div style='margin: 4px 0; border-bottom: 1px solid rgba(0,0,0,0.05);'></div>", unsafe_allow_html=True)
 
-                                # Submit button
-                                if st.form_submit_button("✓ Añadir seleccionados", type="primary", use_container_width=True):
+                                # Check if submit button was clicked
+                                if submit_clicked:
                                     if products_to_add:
                                         parsed_df = st.session_state.get(S("parsed_df"))
 
