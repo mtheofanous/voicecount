@@ -1853,6 +1853,13 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     div[data-testid="stTextInput"] input {
         min-width: 0 !important;
         width: 100% !important;
+        font-size: 0.85rem !important;
+        padding: 8px 10px !important;
+        height: auto !important;
+    }
+
+    div[data-testid="stTextInput"] input::placeholder {
+        font-size: 0.82rem !important;
     }
 
     /* Keep buttons at fixed width */
