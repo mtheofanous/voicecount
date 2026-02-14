@@ -1656,7 +1656,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     COMPOSER_BOTTOM = BOTTOM_BAR_OFFSET    # composer sits right above bottom nav
     ADD_BOTTOM = "10.75rem"               # add bar above composer
     PICKER_BOTTOM = "14.75rem"            # draft picker above add
-    SIDE_PAD = "0.85rem"                  # slightly more breathing room than 0.75
+    SIDE_PAD = "0.55rem"                  # slightly more breathing room than 0.75
 
     # =========================================================
     # 0) Floating FAB to open mic overlay (kept away from bars)
@@ -1828,6 +1828,56 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
     box-shadow: 0 12px 36px rgba(2,6,23,.14);
     """
+
+    # Force horizontal layout on mobile - prevent column stacking
+    wa_css += """
+    /* Force horizontal layout on all screen sizes */
+    div[data-testid="column"] {
+        flex-shrink: 1 !important;
+        min-width: 0 !important;
+    }
+
+    /* Keep horizontal container from wrapping */
+    div[data-testid="stHorizontalBlock"] {
+        flex-wrap: nowrap !important;
+        display: flex !important;
+        gap: 8px !important;
+    }
+
+    /* Ensure text input shrinks appropriately */
+    div[data-testid="stTextInput"] {
+        min-width: 0 !important;
+        flex: 1 !important;
+    }
+
+    div[data-testid="stTextInput"] input {
+        min-width: 0 !important;
+        width: 100% !important;
+    }
+
+    /* Keep buttons at fixed width */
+    button[kind="formSubmit"] {
+        min-width: 40px !important;
+        max-width: 50px !important;
+        white-space: nowrap !important;
+        padding: 8px !important;
+    }
+
+    /* Mobile-specific adjustments */
+    @media (max-width: 640px) {
+        div[data-testid="stHorizontalBlock"] {
+            gap: 6px !important;
+        }
+
+        button[kind="formSubmit"] {
+            min-width: 36px !important;
+            max-width: 44px !important;
+            padding: 6px !important;
+            font-size: 1.1rem !important;
+        }
+    }
+    """
+
     wa_bar.float(wa_css)
 
     # Spacer so page content isn't hidden behind picker + add + composer
