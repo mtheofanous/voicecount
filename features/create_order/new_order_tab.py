@@ -608,8 +608,6 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                     st.session_state[K("form_submitted")] = True
                     st.rerun()
 
-            st.divider()
-
             # Search bar
             search_query = st.text_input(
                 "Buscar producto",
