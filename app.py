@@ -144,6 +144,7 @@ button{
 def _ui_float_init() -> None:
     """Init floating UI + glass styles (safe to call on every rerun)."""
     float_init()
+
     st.markdown(
         """
 <style>
@@ -163,6 +164,7 @@ footer{visibility:hidden;}
   height: 44px;
   font-weight: 650;
   border: 1px solid rgba(148,163,184,.28);
+  white-space: nowrap; /* never wrap */
 }
 
 /* Primary buttons a bit punchier */
@@ -170,14 +172,23 @@ footer{visibility:hidden;}
   border: 1px solid rgba(59,130,246,.35);
 }
 
-/* Reduce column gap on mobile */
+/* Mobile adjustments */
 @media (max-width: 520px){
   .block-container{padding-left:.6rem;padding-right:.6rem;}
+
+  .stButton>button{
+    height: 40px !important;
+    border-radius: 12px !important;
+    padding: 0.15rem 0.35rem !important;
+    font-size: 0.95rem !important; /* emoji-friendly */
+    font-weight: 700 !important;
+  }
 }
 </style>
         """,
         unsafe_allow_html=True,
     )
+
 
 
 def _go(page_key: str, **extra_qp: str) -> None:
@@ -190,12 +201,13 @@ def _go(page_key: str, **extra_qp: str) -> None:
 
 
 def _bottom_tabbar(current_page: str) -> None:
-    """Fixed glass bottom bar (mobile-first, session-safe)."""
-    bar = st.container(horizontal=True,gap="small")
+    """Fixed glass bottom bar (always horizontal on mobile)."""
+    bar = st.container()
     with bar:
-        # c1, c2, c3 = st.columns(3, gap="small")
+        c1, c2, c3 = st.columns(3, gap="small")
 
-        if st.button(
+        # Short labels (won't wrap on mobile)
+        if c1.button(
             "➕",
             use_container_width=True,
             type=("primary" if current_page == "new" else "secondary"),
@@ -203,7 +215,7 @@ def _bottom_tabbar(current_page: str) -> None:
         ):
             _go("new")
 
-        if st.button(
+        if c2.button(
             "📦",
             use_container_width=True,
             type=("primary" if current_page == "orders" else "secondary"),
@@ -211,7 +223,7 @@ def _bottom_tabbar(current_page: str) -> None:
         ):
             _go("orders")
 
-        if st.button(
+        if c3.button(
             "✅",
             use_container_width=True,
             type=("primary" if current_page == "tracking" else "secondary"),
@@ -228,7 +240,7 @@ def _bottom_tabbar(current_page: str) -> None:
         z_index="9998",
     )
     css += (
-        "padding: 10px 12px;"
+        "padding: 10px 10px;"
         "border-top: 1px solid rgba(148,163,184,.22);"
         "backdrop-filter: blur(14px) saturate(180%);"
         "-webkit-backdrop-filter: blur(14px) saturate(180%);"
@@ -236,7 +248,8 @@ def _bottom_tabbar(current_page: str) -> None:
     )
     bar.float(css)
 
-    st.markdown("<div style='height:98px'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:94px'></div>", unsafe_allow_html=True)
+
 
 def _handle_actions_from_query_params() -> None:
     action = (st.query_params.get("action", "") or "").strip().lower()
