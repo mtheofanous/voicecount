@@ -603,15 +603,21 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         div[data-testid="stHorizontalBlock"] {
             flex-wrap: nowrap !important;
             display: flex !important;
-            gap: 8px !important;
+            gap: 4px !important;
         }
 
-        /* Ensure buttons stay readable on mobile */
+        /* Make buttons much smaller on mobile */
         @media (max-width: 640px) {
             .stButton > button {
-                font-size: 0.8rem !important;
-                padding: 0.4rem 0.6rem !important;
+                font-size: 0.65rem !important;
+                padding: 0.25rem 0.35rem !important;
                 white-space: nowrap !important;
+                min-height: 2rem !important;
+            }
+
+            /* Also reduce title size on mobile */
+            h3 {
+                font-size: 1.1rem !important;
             }
         }
         </style>
