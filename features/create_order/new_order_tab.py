@@ -1690,6 +1690,9 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     if "show_composer" not in st.session_state:
         st.session_state.show_composer = False
 
+    if "show_product_adder" not in st.session_state:
+        st.session_state.show_product_adder = False
+
     # Floating UI spacing knobs (modern + consistent)
     BOTTOM_BAR_OFFSET = "5.00rem"          # your bottom nav height
     COMPOSER_BOTTOM = BOTTOM_BAR_OFFSET    # composer sits right above bottom nav
@@ -1700,6 +1703,22 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     # =========================================================
     # 0) Floating FABs (kept away from bars)
     # =========================================================
+    # Product Adder FAB (topmost)
+    fab_product_container = st.container()
+    with fab_product_container:
+        if st.button("➕", key="smart_product_add_fab", help="Añadir productos"):
+            st.session_state.show_product_adder = True
+            st.rerun()
+
+    fab_product_css = float_css_helper(
+        right="1.10rem",
+        bottom="22.5rem",   # above mic
+        width="auto",
+        z_index="10000",
+    )
+    fab_product_css += "padding: 0;"
+    fab_product_container.float(fab_product_css)
+
     # Mic FAB
     fab_mic_container = st.container()
     with fab_mic_container:
@@ -1733,6 +1752,100 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         fab_composer_css += "padding: 0;"
         fab_composer_container.float(fab_composer_css)
     # fab_btn_container.markdown(
+    # =========================================================
+    # 0.5) PRODUCT ADDER OVERLAY (quick add products)
+    # =========================================================
+    product_adder_container = float_dialog(st.session_state.show_product_adder)
+    with product_adder_container:
+        st.markdown("#### ➕ Añadir Productos")
+
+        # Search bar
+        search = st.text_input(
+            "Buscar producto",
+            placeholder="Busca por nombre...",
+            key=K("product_search"),
+            label_visibility="collapsed"
+        ).strip().lower()
+
+        # Filter products
+        filtered_products = [
+            p for p in products
+            if not search or search in (getattr(p, "name", "") or "").lower()
+        ][:20]  # Limit to 20 for performance
+
+        if filtered_products:
+            st.caption(f"Mostrando {len(filtered_products)} producto(s)")
+
+            # Quick add interface
+            for prod in filtered_products:
+                pid = int(prod.id)
+                pname = getattr(prod, "name", "")
+                pprov = getattr(prod, "provider_name", "")
+                punit = getattr(prod, "unit", "") or "unit"
+
+                with st.container():
+                    col1, col2, col3 = st.columns([4, 2, 1])
+
+                    with col1:
+                        st.markdown(f"**{pname}**")
+                        if pprov:
+                            st.caption(pprov)
+
+                    with col2:
+                        qty = st.number_input(
+                            "Cantidad",
+                            min_value=0.0,
+                            value=0.0,
+                            step=1.0,
+                            key=K(f"quick_add_qty_{pid}"),
+                            label_visibility="collapsed"
+                        )
+
+                    with col3:
+                        if st.button("✓", key=K(f"quick_add_btn_{pid}"), type="primary"):
+                            if qty > 0:
+                                # Add to parsed_df
+                                new_row = pd.DataFrame([{
+                                    "spoken_name": pname,
+                                    "matched_product_id": pid,
+                                    "matched_name": pname,
+                                    "confidence": 100.0,
+                                    "quantity": qty,
+                                    "unit": punit,
+                                    "unit_custom": "",
+                                    "suggestions": [],
+                                    "recommended_pid": pid,
+                                    "status": "OK",
+                                    "provider": pprov
+                                }])
+
+                                parsed_df = st.session_state.get(S("parsed_df"))
+                                if isinstance(parsed_df, pd.DataFrame) and not parsed_df.empty:
+                                    # Check if product already exists
+                                    existing_mask = parsed_df['matched_product_id'] == pid
+                                    if existing_mask.any():
+                                        # Update quantity
+                                        idx = parsed_df.index[existing_mask][0]
+                                        parsed_df.at[idx, 'quantity'] = float(parsed_df.at[idx, 'quantity']) + qty
+                                    else:
+                                        # Append new row
+                                        parsed_df = pd.concat([parsed_df, new_row], ignore_index=True)
+                                else:
+                                    # Create new df
+                                    parsed_df = new_row
+
+                                st.session_state[S("parsed_df")] = parsed_df
+                                st.success(f"✓ Añadido {qty} {punit} de {pname}")
+                                st.rerun()
+
+                    st.divider()
+        else:
+            st.info("No se encontraron productos" if search else "Escribe para buscar productos")
+
+        if st.button("Cerrar", key="close_product_adder", use_container_width=True):
+            st.session_state.show_product_adder = False
+            st.rerun()
+
     # =========================================================
     # 1) MIC OVERLAY (audio only)
     # =========================================================
