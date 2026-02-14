@@ -12,7 +12,7 @@ import base64
 import hmac
 import hashlib
 from dataclasses import dataclass
-from datetime import datetime, date
+from datetime import datetime, date, timedelta
 from typing import Optional, List, Tuple, Dict, Any
 import time
 import re
@@ -207,7 +207,25 @@ class VenueUser(SQLModel, table=True):
 
     created_at: datetime = Field(default_factory=datetime.utcnow)
 
+class AuthSession(SQLModel, table=True):
+    __tablename__ = "auth_session"
+    __table_args__ = {"extend_existing": True}
 
+    id: Optional[int] = Field(default=None, primary_key=True)
+    token_hash: str = Field(index=True, unique=True)
+
+    user_id: int = Field(index=True)
+    account_id: int = Field(index=True)
+
+    created_at: datetime = Field(default_factory=datetime.utcnow, index=True)
+    expires_at: datetime = Field(index=True)
+    revoked_at: Optional[datetime] = Field(default=None, index=True)
+
+
+_SESSION_TTL_DAYS = 14
+
+def _hash_token(token: str) -> str:
+    return hashlib.sha256(token.encode("utf-8")).hexdigest()
 # =========================================================
 # Tiny SQLite migration with performance
 # =========================================================
@@ -362,28 +380,60 @@ import secrets
 
 
 # Store active sessions in memory (survives across Streamlit reruns within same Python process)
-_active_sessions = {}
-
-
 def _create_session_token(user_id: int, account_id: int) -> str:
-    """Create a session token and store it in memory"""
     token = secrets.token_urlsafe(32)
-    _active_sessions[token] = {
-        "user_id": int(user_id),
-        "account_id": int(account_id),
-        "created_at": datetime.utcnow()
-    }
+    token_hash = _hash_token(token)
+    expires_at = datetime.utcnow() + timedelta(days=_SESSION_TTL_DAYS)
+
+    with get_auth_session() as s:
+        s.add(AuthSession(
+            token_hash=token_hash,
+            user_id=int(user_id),
+            account_id=int(account_id),
+            expires_at=expires_at,
+        ))
+        s.commit()
+
     return token
 
 
 def _get_session_from_token(token: str) -> Optional[dict]:
-    """Retrieve session data from token"""
-    return _active_sessions.get(token)
+    token = (token or "").strip()
+    if not token:
+        return None
+
+    token_hash = _hash_token(token)
+    now = datetime.utcnow()
+
+    with get_auth_session() as s:
+        row = s.exec(
+            select(AuthSession).where(
+                AuthSession.token_hash == token_hash,
+                AuthSession.revoked_at.is_(None),
+                AuthSession.expires_at > now,
+            )
+        ).first()
+
+    if not row:
+        return None
+
+    return {"user_id": int(row.user_id), "account_id": int(row.account_id)}
 
 
 def _invalidate_session_token(token: str) -> None:
-    """Remove a session token"""
-    _active_sessions.pop(token, None)
+    token = (token or "").strip()
+    if not token:
+        return
+
+    token_hash = _hash_token(token)
+    now = datetime.utcnow()
+
+    with get_auth_session() as s:
+        row = s.exec(select(AuthSession).where(AuthSession.token_hash == token_hash)).first()
+        if row and row.revoked_at is None:
+            row.revoked_at = now
+            s.add(row)
+            s.commit()
 
 
 def _set_auth(user_id: int, account_id: int) -> None:
@@ -1259,6 +1309,12 @@ def manage_organization_ui(venue_role: str = None):
     if not acc:
         st.error("Account not found. Please log in again.")
         st.stop()
+        
+    u = current_user() or {}
+    uid = u.get("id")
+    if not uid:
+        st.error("User not found. Please log in again.")
+        st.stop()
 
     venues = current_venues_for_user()
     if not venues:
@@ -1515,7 +1571,7 @@ def manage_organization_ui(venue_role: str = None):
                     try:
                         v = create_venue(acc["id"], v_name, v_tax, v_addr, v_phone, v_email)
                         # owner gets access automatically
-                        add_user_to_venue(v.id, u["id"], "owner")
+                        add_user_to_venue(v.id, int(uid), "owner")
                         invalidate_auth_caches()
                         st.success(f"Venue created ✅ ({v.name})")
                         time.sleep(0.5)

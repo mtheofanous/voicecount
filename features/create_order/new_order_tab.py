@@ -1643,84 +1643,33 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     
     from streamlit_float import float_init, float_css_helper, float_dialog
 
-    float_init()
-
-    # state
-    if "show" not in st.session_state:
-        st.session_state.show = False
-
-    # --- FLOATING FAB BUTTON (the launcher) ---
-    fab_btn_container = st.container()
-    with fab_btn_container:
-        if st.button("Smart Add", key="smart_add_fab"):
-            st.session_state.show = True
-            st.rerun()
-
-    fab_btn_css = float_css_helper(
-        right="1.25rem",
-        bottom="6.5rem",   # above your bottom bar if you have one
-        width="auto",
-        z_index="9999",
-    )
-    fab_btn_css += "padding: 0;"
-    fab_btn_container.float(fab_btn_css)
-
-    # --- FLOATING DIALOG (opens/closes via st.session_state.show) ---
-    dialog_container = float_dialog(st.session_state.show)
-
-    with dialog_container:
-        st.subheader("Smart Add")
-
-        with st.form(key=K("wa_form"), clear_on_submit=True):
-            typed = st.text_input(
-                "",
-                placeholder="Escribe como en WhatsApp... ej: 3 coca cola, hielo",
-                key=K("wa_text_input_field"),
-                label_visibility="collapsed",
-            )
-
-            with st.container(horizontal=True):
-                audio_file = st.audio_input("", key=K("audio_msg"), label_visibility="collapsed")
-                if audio_file is not None:
-                    st.session_state[S("audio_bytes")] = audio_file.read()
-
-            c1, c2 = st.columns([3, 1])
-            with c1:
-                add_clicked = st.form_submit_button(
-                    "Add", use_container_width=True, type="primary", key=K("btn_add_note")
-                )
-            with c2:
-                limpiar_clicked = st.form_submit_button(
-                    "🗑️", use_container_width=True, key=K("btn_clear_text")
-                )
-
-        # close control (outside the form)
-        if st.button("Close", key="close_smart_add"):
-            st.session_state.show = False
-            st.rerun()
-
-    # spacer so page content isn't covered (adjust as needed)
-    st.markdown("<div style='height:140px'></div>", unsafe_allow_html=True)
-    
-  
-    # from streamlit_float import float_init, float_css_helper
-
     # float_init()
-    
-    # # Initialize session variable that will open/close dialog
+
+    # # state
     # if "show" not in st.session_state:
     #     st.session_state.show = False
 
-    # # Button that opens the dialog
-    # if st.button("Smart Add"):
+    # # --- FLOATING FAB BUTTON (the launcher) ---
+    # fab_btn_container = st.container()
+    # with fab_btn_container:
+    #     if st.button("Smart Add", key="smart_add_fab"):
     #         st.session_state.show = True
     #         st.rerun()
 
-    # # 1) Create a container that will hold your bottom bar
-    # wa_bar = st.container()
+    # fab_btn_css = float_css_helper(
+    #     right="1.25rem",
+    #     bottom="6.5rem",   # above your bottom bar if you have one
+    #     width="auto",
+    #     z_index="9999",
+    # )
+    # fab_btn_css += "padding: 0;"
+    # fab_btn_container.float(fab_btn_css)
 
-    # # 2) Put your form inside it (unchanged logic)
-    # with wa_bar:
+    # # --- FLOATING DIALOG (opens/closes via st.session_state.show) ---
+    # dialog_container = float_dialog(st.session_state.show)
+
+    # with dialog_container:
+
     #     with st.form(key=K("wa_form"), clear_on_submit=True):
     #         typed = st.text_input(
     #             "",
@@ -1734,29 +1683,79 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     #             if audio_file is not None:
     #                 st.session_state[S("audio_bytes")] = audio_file.read()
 
-    #         add_clicked = st.form_submit_button(
-    #             "Add", use_container_width=True, type="primary", key=K("btn_add_note")
-    #         )
-    #         limpiar_clicked = st.form_submit_button(
-    #             "🗑️", use_container_width=True, key=K("btn_clear_text")
-    #         )
+    #         c1, c2 = st.columns([3, 1])
+    #         with c1:
+    #             add_clicked = st.form_submit_button(
+    #                 "Add", use_container_width=True, type="primary", key=K("btn_add_note")
+    #             )
+    #         with c2:
+    #             limpiar_clicked = st.form_submit_button(
+    #                 "🗑️", use_container_width=True, key=K("btn_clear_text")
+    #             )
 
-    # # 3) Float it AFTER you added all content
-    # css = float_css_helper(
-    #     left="0",
-    #     right="0",
-    #     bottom="0",
-    #     width="100%",
-    #     background="rgba(255,255,255,.96)",
-    #     z_index="9998",
-    # )
-    # # Add extra CSS if you want padding/border/blur
-    # css += "padding: 10px 12px; border-top: 1px solid rgba(148,163,184,.30); backdrop-filter: saturate(180%) blur(12px);"
+    #     # close control (outside the form)
+    #     if st.button("Close", key="close_smart_add"):
+    #         st.session_state.show = False
+    #         st.rerun()
 
-    # wa_bar.float(css)
+    # # spacer so page content isn't covered (adjust as needed)
+    # st.markdown("<div style='height:140px'></div>", unsafe_allow_html=True)
+    
+  
+    # from streamlit_float import float_init, float_css_helper
 
-    # # 4) Add spacer so content isn't hidden behind the floating bar
-    # st.markdown("<div style='height:110px'></div>", unsafe_allow_html=True)
+    float_init()
+    
+    # # Initialize session variable that will open/close dialog
+    # if "show" not in st.session_state:
+    #     st.session_state.show = False
+
+    # # Button that opens the dialog
+    # if st.button("Smart Add"):
+    #         st.session_state.show = True
+    #         st.rerun()
+
+    # 1) Create a container that will hold your bottom bar
+    wa_bar_1 = st.container()
+
+    # 2) Put your form inside it (unchanged logic)
+    with wa_bar_1:
+        with st.form(key=K("wa_form_1"), clear_on_submit=True):
+            typed = st.text_input(
+                "WhatsApp input",
+                placeholder="Escribe como en WhatsApp... ej: 3 coca cola, hielo",
+                key=K("wa_text_input_field"),
+                label_visibility="collapsed",
+            )
+
+            with st.container(horizontal=True):
+            #     audio_file = st.audio_input("Voice message", key=K("audio_msg"), label_visibility="collapsed")
+            #     if audio_file is not None:
+            #         st.session_state[S("audio_bytes")] = audio_file.read()
+
+                add_clicked = st.form_submit_button(
+                    "Add", use_container_width=True, type="primary", key=K("btn_add_note")
+                )
+                limpiar_clicked = st.form_submit_button(
+                    "🗑️", use_container_width=True, key=K("btn_clear_text")
+                )
+
+    # 3) Float it AFTER you added all content
+    css = float_css_helper(
+        left="0",
+        right="0",
+        bottom="0",
+        width="100%",
+        background="rgba(255,255,255,.96)",
+        z_index="9998",
+    )
+    # Add extra CSS if you want padding/border/blur
+    css += "padding: 10px 12px; border-top: 1px solid rgba(148,163,184,.30); backdrop-filter: saturate(180%) blur(12px);"
+
+    wa_bar_1.float(css)
+
+    # 4) Add spacer so content isn't hidden behind the floating bar
+    st.markdown("<div style='height:110px'></div>", unsafe_allow_html=True)
 
 
     # with st.form(key=K("wa_form"), clear_on_submit=True):

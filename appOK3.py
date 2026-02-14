@@ -65,15 +65,8 @@ def _css() -> None:
     st.markdown(
         r'''
 <style>
-
-/* Hide Streamlit chrome (we render our own fixed topbar) */
-[data-testid="stHeader"]{display:none;}
-header{display:none;}
-[data-testid="stToolbar"]{display:none;}
-#MainMenu{visibility:hidden;}
-footer{visibility:hidden;}
 .block-container{
-  padding:0.75rem 0.75rem 5.5rem;
+  padding:3.75rem 0.75rem 5.5rem;
   max-width:100%;
 }
 
@@ -197,59 +190,40 @@ def _inject_topbar(
     is_catalog_page: bool,
     is_history_page: bool,
 ) -> None:
-    """Fixed top bar (session-safe). Navigation uses Streamlit buttons, not <a href>."""
+    """Fixed top bar that keeps Streamlit session (no <a href> full reload)."""
     bar = st.container()
-
     with bar:
-        left, center, right = st.columns([2.6, 3.2, 1.2], gap="small")
+        left, mid, right = st.columns([2.4, 2.2, 1.0])
 
         with left:
             st.markdown(
                 f"""
-                <div style="display:flex;flex-direction:column;gap:2px;line-height:1.1">
-                  <div style="font-weight:800;font-size:0.95rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-                    {account_name}
-                  </div>
-                  <div style="font-size:0.80rem;opacity:0.75;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
-                    {venue_name}
-                  </div>
+                <div style="line-height:1.1">
+                  <div style="font-weight:700;font-size:0.95rem">{account_name}</div>
+                  <div style="font-size:0.80rem;opacity:0.75">{venue_name}</div>
                 </div>
                 """,
                 unsafe_allow_html=True,
             )
 
-        with center:
-            btn_cols = st.columns(3 if show_manage_org else 2, gap="small")
+        with mid:
+            bcols = st.columns(3 if show_manage_org else 2, gap="small")
             i = 0
+
             if show_manage_org:
-                if btn_cols[i].button(
-                    "⚙️ Manage",
-                    use_container_width=True,
-                    type=("primary" if is_manage_page else "secondary"),
-                    key="top_manage_btn",
-                ):
+                if bcols[i].button("⚙️ Manage", use_container_width=True, type=("primary" if is_manage_page else "secondary"), key="tb_manage"):
                     _go("manage_org")
                 i += 1
 
-            if btn_cols[i].button(
-                "📒 Catalog",
-                use_container_width=True,
-                type=("primary" if is_catalog_page else "secondary"),
-                key="top_catalog_btn",
-            ):
+            if bcols[i].button("📒 Catalog", use_container_width=True, type=("primary" if is_catalog_page else "secondary"), key="tb_catalog"):
                 _go("catalog")
             i += 1
 
-            if btn_cols[i].button(
-                "🕘 History",
-                use_container_width=True,
-                type=("primary" if is_history_page else "secondary"),
-                key="top_history_btn",
-            ):
+            if bcols[i].button("🕘 History", use_container_width=True, type=("primary" if is_history_page else "secondary"), key="tb_history"):
                 _go("history")
 
         with right:
-            if st.button("🚪 Logout", use_container_width=True, type="secondary", key="top_logout_btn"):
+            if st.button("Logout", use_container_width=True, type="secondary", key="tb_logout"):
                 clear_auth()
                 try:
                     st.query_params.clear()
@@ -268,7 +242,8 @@ def _inject_topbar(
     css += "padding: 10px 12px; border-bottom: 1px solid rgba(148,163,184,.30); backdrop-filter: saturate(180%) blur(12px);"
     bar.float(css)
 
-    st.markdown("<div style='height:78px'></div>", unsafe_allow_html=True)
+    # Spacer so content isn't hidden behind fixed bar
+    st.markdown("<div style='height:72px'></div>", unsafe_allow_html=True)
 
 def _page_catalog():
     from features.catalog import catalog_tab
