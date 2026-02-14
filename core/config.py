@@ -38,21 +38,27 @@ def get_database_url() -> str:
 
 
 def ensure_google_credentials_file():
-    # If already set to a file path, keep it.
-    if os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+    raw_env = (os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
+
+    # ✅ If env var contains JSON, treat it as creds and write to /tmp
+    if raw_env.startswith("{") and "private_key" in raw_env:
+        p = Path("/tmp/google-creds.json")
+        p.write_text(raw_env, encoding="utf-8")
+        os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(p)
         return
 
-    # Streamlit Cloud: store JSON in secrets
+    # If already set to a file path, keep it
+    if raw_env:
+        return
+
     creds = None
     if "GOOGLE_CREDENTIALS_JSON" in st.secrets:
         creds = st.secrets["GOOGLE_CREDENTIALS_JSON"]
-
-    # Render: store JSON in env var
     if not creds:
         creds = os.getenv("GOOGLE_CREDENTIALS_JSON")
 
     if not creds:
-        return  # ASR can be disabled if you want
+        return
 
     p = Path("/tmp/google-creds.json")
     p.write_text(creds, encoding="utf-8")

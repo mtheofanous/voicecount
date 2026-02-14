@@ -1409,7 +1409,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         """
 
         st.html(f"<style>{css}</style>")
-        with st.container(border=True, key="my_blue_container", height=800):
+        with st.container(key="my_blue_container"):
             for row_idx, r in parsed_df.iterrows():
                 name = safe_str(r.get("matched_name") or r.get("spoken_name") or "").strip()
                 qty = r.get("quantity", None)

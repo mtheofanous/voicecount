@@ -445,6 +445,11 @@ def _call_page(fn, venue_id: int, **kwargs):
 
 def main():
     bootstrap_once()
+    import os, pathlib
+    st.write("GAC:", os.getenv("GOOGLE_APPLICATION_CREDENTIALS"))
+    p = os.getenv("GOOGLE_APPLICATION_CREDENTIALS")
+    st.write("exists?", bool(p and pathlib.Path(p).exists()))
+
     _css()
 
     # ✅ CRITICAL FIX: ALWAYS restore auth from token if token exists
