@@ -591,55 +591,23 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         # Initialize form data collection
         st.session_state.setdefault(K("form_submitted"), False)
 
-        # CSS to force buttons to stay horizontal on mobile
-        st.markdown("""
-        <style>
-        /* Force header buttons to stay horizontal on all screen sizes */
-        div[data-testid="column"] {
-            min-width: 0 !important;
-            flex-shrink: 1 !important;
-        }
-
-        div[data-testid="stHorizontalBlock"] {
-            flex-wrap: nowrap !important;
-            display: flex !important;
-            gap: 4px !important;
-        }
-
-        /* Make buttons much smaller on mobile */
-        @media (max-width: 640px) {
-            .stButton > button {
-                font-size: 0.65rem !important;
-                padding: 0.25rem 0.35rem !important;
-                white-space: nowrap !important;
-                min-height: 2rem !important;
-            }
-
-            /* Also reduce title size on mobile */
-            h3 {
-                font-size: 1.1rem !important;
-            }
-        }
-        </style>
-        """, unsafe_allow_html=True)
-
         # Fixed header container
         header_container = st.container()
         with header_container:
             st.markdown("### ➕ Añadir Productos")
 
-            # Buttons row
-            with st.container(horizontal=True):
-                btn_col1, btn_col2 = st.columns([1, 1])
-                with btn_col1:
-                    if st.button("← Volver", key=K("back_from_product_adder"), use_container_width=True):
-                        st.session_state.product_adder_fullpage = False
-                        st.rerun()
+            # Buttons row with mobile-friendly layout
+            col1, col2 = st.columns([1, 1])
+            with col1:
+                if st.button("← Volver", key=K("back_from_product_adder"), use_container_width=True):
+                    st.session_state.product_adder_fullpage = False
+                    st.rerun()
 
-                with btn_col2:
-                    if st.button("✓ Añadir seleccionados", key=K("submit_header_btn"), type="primary", use_container_width=True):
-                        st.session_state[K("form_submitted")] = True
-                        st.rerun()
+            with col2:
+                # Shorter text for mobile
+                if st.button("✓ Añadir", key=K("submit_header_btn"), type="primary", use_container_width=True):
+                    st.session_state[K("form_submitted")] = True
+                    st.rerun()
 
             # Search bar
             search_query = st.text_input(
