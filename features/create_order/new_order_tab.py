@@ -612,7 +612,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             search_query = st.text_input(
                 "Buscar producto",
                 placeholder="Busca por nombre, proveedor...",
-                key=K("product_search_fullpage"),
+                key=K("product_search_fullpage"), label_visibility="collapsed"
             ).strip().lower()
 
             # Filter products by search
@@ -630,7 +630,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             st.session_state.setdefault(K("selected_cat_idx"), 0)
 
             if cat_list:
-                st.markdown("**Categorías:**")
+        
                 cat_tabs = st.tabs(cat_list)
 
                 for i, tab in enumerate(cat_tabs):
@@ -650,7 +650,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 providers_in_cat = sorted({getattr(p, "provider_name", "") or "Sin proveedor" for p in cat_filtered})
 
                 if providers_in_cat:
-                    st.markdown("**Proveedores:**")
+      
                     prov_tabs = st.tabs(providers_in_cat)
 
                     for j, prov_tab in enumerate(prov_tabs):
