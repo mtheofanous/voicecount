@@ -191,28 +191,28 @@ def _go(page_key: str, **extra_qp: str) -> None:
 
 def _bottom_tabbar(current_page: str) -> None:
     """Fixed glass bottom bar (mobile-first, session-safe)."""
-    bar = st.container()
+    bar = st.container(horizontal=True,gap="small")
     with bar:
-        c1, c2, c3 = st.columns(3, gap="small")
+        # c1, c2, c3 = st.columns(3, gap="small")
 
-        if c1.button(
-            "➕ New",
+        if st.button(
+            "➕",
             use_container_width=True,
             type=("primary" if current_page == "new" else "secondary"),
             key="bb_new",
         ):
             _go("new")
 
-        if c2.button(
-            "📦 Orders",
+        if st.button(
+            "📦",
             use_container_width=True,
             type=("primary" if current_page == "orders" else "secondary"),
             key="bb_orders",
         ):
             _go("orders")
 
-        if c3.button(
-            "✅ Receive",
+        if st.button(
+            "✅",
             use_container_width=True,
             type=("primary" if current_page == "tracking" else "secondary"),
             key="bb_tracking",
