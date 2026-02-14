@@ -140,6 +140,46 @@ button{
     )
 
 
+
+def _ui_float_init() -> None:
+    """Init floating UI + glass styles (safe to call on every rerun)."""
+    float_init()
+    st.markdown(
+        """
+<style>
+/* Hide Streamlit chrome (we render our own bars) */
+[data-testid="stHeader"]{display:none;}
+header{display:none;}
+[data-testid="stToolbar"]{display:none;}
+#MainMenu{visibility:hidden;}
+footer{visibility:hidden;}
+
+/* Make room for fixed bars */
+.block-container{padding-top:.75rem;padding-bottom:6.5rem;}
+
+/* Modern button baseline */
+.stButton>button{
+  border-radius: 14px;
+  height: 44px;
+  font-weight: 650;
+  border: 1px solid rgba(148,163,184,.28);
+}
+
+/* Primary buttons a bit punchier */
+.stButton>button[kind="primary"]{
+  border: 1px solid rgba(59,130,246,.35);
+}
+
+/* Reduce column gap on mobile */
+@media (max-width: 520px){
+  .block-container{padding-left:.6rem;padding-right:.6rem;}
+}
+</style>
+        """,
+        unsafe_allow_html=True,
+    )
+
+
 def _go(page_key: str, **extra_qp: str) -> None:
     """Navigate to a page and sync URL (?page=...). Never add auth tokens to URL."""
     st.session_state["page"] = page_key
@@ -150,18 +190,33 @@ def _go(page_key: str, **extra_qp: str) -> None:
 
 
 def _bottom_tabbar(current_page: str) -> None:
-    """Fixed bottom bar using Streamlit buttons (keeps same session)."""
+    """Fixed glass bottom bar (mobile-first, session-safe)."""
     bar = st.container()
     with bar:
         c1, c2, c3 = st.columns(3, gap="small")
 
-        if c1.button("➕ New", use_container_width=True, type=("primary" if current_page == "new" else "secondary"), key="bb_new"):
+        if c1.button(
+            "➕ New",
+            use_container_width=True,
+            type=("primary" if current_page == "new" else "secondary"),
+            key="bb_new",
+        ):
             _go("new")
 
-        if c2.button("📦 Orders", use_container_width=True, type=("primary" if current_page == "orders" else "secondary"), key="bb_orders"):
+        if c2.button(
+            "📦 Orders",
+            use_container_width=True,
+            type=("primary" if current_page == "orders" else "secondary"),
+            key="bb_orders",
+        ):
             _go("orders")
 
-        if c3.button("✅ Receive", use_container_width=True, type=("primary" if current_page == "tracking" else "secondary"), key="bb_tracking"):
+        if c3.button(
+            "✅ Receive",
+            use_container_width=True,
+            type=("primary" if current_page == "tracking" else "secondary"),
+            key="bb_tracking",
+        ):
             _go("tracking")
 
     css = float_css_helper(
@@ -169,14 +224,19 @@ def _bottom_tabbar(current_page: str) -> None:
         right="0",
         bottom="0",
         width="100%",
-        background="rgba(255,255,255,.96)",
+        background="rgba(255,255,255,.72)",
         z_index="9998",
     )
-    css += "padding: 10px 12px; border-top: 1px solid rgba(148,163,184,.30); backdrop-filter: saturate(180%) blur(12px);"
+    css += (
+        "padding: 10px 12px;"
+        "border-top: 1px solid rgba(148,163,184,.22);"
+        "backdrop-filter: blur(14px) saturate(180%);"
+        "-webkit-backdrop-filter: blur(14px) saturate(180%);"
+        "box-shadow: 0 -10px 30px rgba(15,23,42,.06);"
+    )
     bar.float(css)
 
-    # Spacer so content isn't hidden behind fixed bar
-    st.markdown("<div style='height:92px'></div>", unsafe_allow_html=True)
+    st.markdown("<div style='height:98px'></div>", unsafe_allow_html=True)
 
 def _handle_actions_from_query_params() -> None:
     action = (st.query_params.get("action", "") or "").strip().lower()
@@ -197,20 +257,19 @@ def _inject_topbar(
     is_catalog_page: bool,
     is_history_page: bool,
 ) -> None:
-    """Fixed top bar (session-safe). Navigation uses Streamlit buttons, not <a href>."""
-    bar = st.container(horizontal=True)
-
+    """Fixed glass topbar (mobile-first, session-safe)."""
+    bar = st.container()
     with bar:
-        # left, center, right = st.columns([2.6, 3.2, 1.2], gap="small")
+        left, mid, right = st.columns([2.4, 3.6, 1.0], gap="small")
 
-        # with left:
+        with left:
             st.markdown(
                 f"""
-                <div style="display:flex;flex-direction:column;gap:2px;line-height:1.1">
-                  <div style="font-weight:800;font-size:0.95rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                <div style="line-height:1.05">
+                  <div style="font-weight:800;font-size:.95rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
                     {account_name}
                   </div>
-                  <div style="font-size:0.80rem;opacity:0.75;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
+                  <div style="opacity:.72;font-size:.80rem;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">
                     {venue_name}
                   </div>
                 </div>
@@ -218,12 +277,14 @@ def _inject_topbar(
                 unsafe_allow_html=True,
             )
 
-        # with center:
-            btn_cols = st.columns(3 if show_manage_org else 2, gap="small")
+        with mid:
+            n = 3 if show_manage_org else 2
+            cols = st.columns(n, gap="small")
             i = 0
+
             if show_manage_org:
-                if btn_cols[i].button(
-                    "⚙️",
+                if cols[i].button(
+                    "⚙️ Manage",
                     use_container_width=True,
                     type=("primary" if is_manage_page else "secondary"),
                     key="top_manage_btn",
@@ -231,8 +292,8 @@ def _inject_topbar(
                     _go("manage_org")
                 i += 1
 
-            if btn_cols[i].button(
-                "📒",
+            if cols[i].button(
+                "📒 Catalog",
                 use_container_width=True,
                 type=("primary" if is_catalog_page else "secondary"),
                 key="top_catalog_btn",
@@ -240,16 +301,16 @@ def _inject_topbar(
                 _go("catalog")
             i += 1
 
-            if btn_cols[i].button(
-                "🕘",
+            if cols[i].button(
+                "🕘 History",
                 use_container_width=True,
                 type=("primary" if is_history_page else "secondary"),
                 key="top_history_btn",
             ):
                 _go("history")
 
-        # with right:
-            if st.button("Logout", use_container_width=True, type="secondary", key="top_logout_btn"):
+        with right:
+            if st.button("🚪", use_container_width=True, type="secondary", key="top_logout_btn"):
                 clear_auth()
                 try:
                     st.query_params.clear()
@@ -262,10 +323,16 @@ def _inject_topbar(
         right="0",
         top="0",
         width="100%",
-        background="rgba(255,255,255,.96)",
+        background="rgba(255,255,255,.72)",
         z_index="9999",
     )
-    css += "padding: 10px 12px; border-bottom: 1px solid rgba(148,163,184,.30); backdrop-filter: saturate(180%) blur(12px);"
+    css += (
+        "padding: 10px 12px;"
+        "border-bottom: 1px solid rgba(148,163,184,.22);"
+        "backdrop-filter: blur(14px) saturate(180%);"
+        "-webkit-backdrop-filter: blur(14px) saturate(180%);"
+        "box-shadow: 0 8px 28px rgba(15,23,42,.06);"
+    )
     bar.float(css)
 
     st.markdown("<div style='height:78px'></div>", unsafe_allow_html=True)
@@ -380,6 +447,9 @@ def _restore_auth_from_token() -> None:
 def main():
     bootstrap_once()
     _css()
+
+    # Floating glass bars (top/bottom)
+    _ui_float_init()
 
     # Enable floating containers (top/bottom bars)
     float_init()
