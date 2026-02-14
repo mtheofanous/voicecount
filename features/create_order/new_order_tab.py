@@ -111,6 +111,21 @@ def load_catalog_and_indexes(venue_id: int, _cache_version: str = "v2"):
     )
 
 
+@st.cache_data(show_spinner=False, ttl=30)
+def load_venue_drafts(venue_id: int, _refresh_token: int = 0):
+    """
+    Cached draft orders to avoid reloading on every rerun.
+    TTL 30 seconds. Use _refresh_token to force refresh.
+    """
+    with get_session() as s:
+        drafts = s.exec(
+            select(Order)
+            .where(Order.venue_id == venue_id, Order.status == "draft")
+            .order_by(Order.created_at.desc())
+        ).all()
+    return drafts
+
+
 def get_last_sent_pid_for_venue_among_opts(venue_id: int, opts: list[int]) -> int | None:
     """🕒 Last product among opts that was included in an order that was SENT to its provider (per-provider send)."""
     if not opts:
@@ -395,6 +410,16 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     def bump_orders_refresh_token() -> None:
         k = f"orders_refresh_token_{venue_id}"
         st.session_state[k] = int(st.session_state.get(k, 0)) + 1
+
+    def bump_drafts_refresh_token() -> None:
+        """Bump draft cache refresh token to force reload"""
+        k = f"drafts_refresh_token_{venue_id}"
+        st.session_state[k] = int(st.session_state.get(k, 0)) + 1
+
+    def get_drafts_refresh_token() -> int:
+        """Get current draft cache refresh token"""
+        k = f"drafts_refresh_token_{venue_id}"
+        return int(st.session_state.get(k, 0))
 
     def _rebuild_transcript_from_chat() -> None:
         st.session_state[S("transcript_area")] = "\n".join(
@@ -1349,9 +1374,12 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         return pd.DataFrame(parsed_rows)
 
 
-    # Run auto-parse if pending
+    # Run auto-parse if pending (optimization: only when text exists)
     has_any_text = bool((st.session_state.get(S("transcript_area")) or "").strip())
-    if st.session_state.get(S("auto_parse_pending"), False) and has_any_text:
+    auto_parse_pending = st.session_state.get(S("auto_parse_pending"), False)
+
+    # Skip parsing if no text or already finalized
+    if auto_parse_pending and has_any_text and not st.session_state.get(S("parsed_df")):
         candidates_df = _parse_chat_to_candidates()
         st.session_state[S("parse_candidates_df")] = candidates_df
         st.session_state[S("finalize_parse_pending")] = True
@@ -1587,15 +1615,10 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     # Check if we need to show draft selector
     show_draft_selector = False
     drafts_list = []
-    
+
     if st.session_state.get(S("show_draft_popover"), False):
-        with get_session() as s:
-            drafts_list = s.exec(
-                select(Order)
-                .where(Order.venue_id == venue_id, Order.status == "draft")
-                .order_by(Order.created_at.desc())
-            ).all()
-        
+        drafts_list = load_venue_drafts(venue_id, _refresh_token=get_drafts_refresh_token())
+
         if len(drafts_list) > 1:
             show_draft_selector = True
     
@@ -1697,15 +1720,10 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     show_picker = st.session_state.get(S("show_draft_popover"), False)
 
     # IMPORTANT: drafts must be available for the picker.
-    # Fetch only when picker is visible to avoid extra DB calls.
+    # Fetch only when picker is visible to avoid extra DB calls (cached).
     drafts_for_picker = []
     if show_picker:
-        with get_session() as s:
-            drafts_for_picker = s.exec(
-                select(Order)
-                .where(Order.venue_id == venue_id, Order.status == "draft")
-                .order_by(Order.created_at.desc())
-            ).all()
+        drafts_for_picker = load_venue_drafts(venue_id, _refresh_token=get_drafts_refresh_token())
 
     if show_picker:
         picker_bar = st.container()
@@ -1936,13 +1954,8 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         df_to_use = apply_unit_choice(df_filtered)
         actor = current_actor()
 
-        # Get all drafts
-        with get_session() as s:
-            drafts = s.exec(
-                select(Order)
-                .where(Order.venue_id == venue_id, Order.status == "draft")
-                .order_by(Order.created_at.desc())
-            ).all()
+        # Get all drafts (cached)
+        drafts = load_venue_drafts(venue_id, _refresh_token=get_drafts_refresh_token())
 
         target_id: int = 0
 
@@ -1985,6 +1998,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
             _set_active_draft(target_id)
             bump_orders_refresh_token()
+            bump_drafts_refresh_token()  # Invalidate draft cache
 
             st.success(f"✅ Añadido al borrador #{target_id}")
             st.session_state[S("striked_products")] = set()
