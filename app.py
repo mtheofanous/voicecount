@@ -60,7 +60,7 @@ def bootstrap_once() -> bool:
     init_auth_db()
     return True
 
-
+# Custom CSS for the app (mobile-first, clean, modern). Adjust as needed.
 def _css() -> None:
     st.markdown(
         """
