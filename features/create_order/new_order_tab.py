@@ -1643,209 +1643,214 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     
     from streamlit_float import float_init, float_css_helper, float_dialog
 
-    # float_init()
-
-    # # state
-    # if "show" not in st.session_state:
-    #     st.session_state.show = False
-
-    # # --- FLOATING FAB BUTTON (the launcher) ---
-    # fab_btn_container = st.container()
-    # with fab_btn_container:
-    #     if st.button("Smart Add", key="smart_add_fab"):
-    #         st.session_state.show = True
-    #         st.rerun()
-
-    # fab_btn_css = float_css_helper(
-    #     right="1.25rem",
-    #     bottom="6.5rem",   # above your bottom bar if you have one
-    #     width="auto",
-    #     z_index="9999",
-    # )
-    # fab_btn_css += "padding: 0;"
-    # fab_btn_container.float(fab_btn_css)
-
-    # # --- FLOATING DIALOG (opens/closes via st.session_state.show) ---
-    # dialog_container = float_dialog(st.session_state.show)
-
-    # with dialog_container:
-
-    #     with st.form(key=K("wa_form"), clear_on_submit=True):
-    #         typed = st.text_input(
-    #             "",
-    #             placeholder="Escribe como en WhatsApp... ej: 3 coca cola, hielo",
-    #             key=K("wa_text_input_field"),
-    #             label_visibility="collapsed",
-    #         )
-
-    #         with st.container(horizontal=True):
-    #             audio_file = st.audio_input("", key=K("audio_msg"), label_visibility="collapsed")
-    #             if audio_file is not None:
-    #                 st.session_state[S("audio_bytes")] = audio_file.read()
-
-    #         c1, c2 = st.columns([3, 1])
-    #         with c1:
-    #             add_clicked = st.form_submit_button(
-    #                 "Add", use_container_width=True, type="primary", key=K("btn_add_note")
-    #             )
-    #         with c2:
-    #             limpiar_clicked = st.form_submit_button(
-    #                 "🗑️", use_container_width=True, key=K("btn_clear_text")
-    #             )
-
-    #     # close control (outside the form)
-    #     if st.button("Close", key="close_smart_add"):
-    #         st.session_state.show = False
-    #         st.rerun()
-
-    # # spacer so page content isn't covered (adjust as needed)
-    # st.markdown("<div style='height:140px'></div>", unsafe_allow_html=True)
-    
-  
-    # from streamlit_float import float_init, float_css_helper
-
     float_init()
-    
-    # # Initialize session variable that will open/close dialog
-    # if "show" not in st.session_state:
-    #     st.session_state.show = False
 
-    # # Button that opens the dialog
-    # if st.button("Smart Add"):
-    #         st.session_state.show = True
-    #         st.rerun()
+    # -------------------------------
+    # state
+    # -------------------------------
+    if "show_micro" not in st.session_state:
+        st.session_state.show_micro = False
 
-    # 1) Create a container that will hold your bottom bar
-    wa_bar_1 = st.container()
+    # Floating UI spacing knobs (modern + consistent)
+    BOTTOM_BAR_OFFSET = "5.00rem"          # your bottom nav height
+    COMPOSER_BOTTOM = BOTTOM_BAR_OFFSET    # composer sits right above bottom nav
+    ADD_BOTTOM = "10.75rem"               # add bar above composer
+    PICKER_BOTTOM = "14.75rem"            # draft picker above add
+    SIDE_PAD = "0.85rem"                  # slightly more breathing room than 0.75
 
-    # 2) Put your form inside it (unchanged logic)
-    with wa_bar_1:
-        with st.form(key=K("wa_form_1"), clear_on_submit=True):
-            typed = st.text_input(
-                "WhatsApp input",
-                placeholder="Escribe como en WhatsApp... ej: 3 coca cola, hielo",
-                key=K("wa_text_input_field"),
+    # =========================================================
+    # 0) Floating FAB to open mic overlay (kept away from bars)
+    # =========================================================
+    fab_btn_container = st.container()
+    with fab_btn_container:
+        if st.button("🎙️", key="smart_add_fab"):
+            st.session_state.show_micro = True
+            st.rerun()
+
+    fab_btn_css = float_css_helper(
+        right="1.10rem",
+        bottom="18.0rem",   # above picker/add/composer stack
+        width="auto",
+        z_index="10000",
+    )
+    fab_btn_css += "padding: 0;"
+    fab_btn_container.float(fab_btn_css)
+
+    # =========================================================
+    # 1) MIC OVERLAY (audio only)
+    # =========================================================
+    mic_container = float_dialog(st.session_state.show_micro)
+    with mic_container:
+        st.markdown("#### 🎙️ Audio")
+        audio_file = st.audio_input("", key=K("audio_msg"), label_visibility="collapsed")
+        if audio_file is not None:
+            st.session_state[S("audio_bytes")] = audio_file.read()
+
+        if st.button("Close", key="close_smart_add"):
+            st.session_state.show_micro = False
+            st.rerun()
+
+    # =========================================================
+    # 2) FLOATING "SELECCIONAR BORRADOR" BAR (only when needed)
+    #    This UI appears when your add flow sets show_draft_popover=True
+    # =========================================================
+    show_picker = st.session_state.get(S("show_draft_popover"), False)
+
+    # IMPORTANT: drafts must be available for the picker.
+    # Fetch only when picker is visible to avoid extra DB calls.
+    drafts_for_picker = []
+    if show_picker:
+        with get_session() as s:
+            drafts_for_picker = s.exec(
+                select(Order)
+                .where(Order.venue_id == venue_id, Order.status == "draft")
+                .order_by(Order.created_at.desc())
+            ).all()
+
+    if show_picker:
+        picker_bar = st.container()
+        with picker_bar:
+            st.markdown("**Seleccionar borrador**")
+
+            options = [("Nuevo borrador", -1)] + [(f"Borrador #{d.id}", int(d.id)) for d in drafts_for_picker]
+            label_to_id = {lbl: did for (lbl, did) in options}
+            labels = [lbl for (lbl, _) in options]
+
+            chosen_label = st.selectbox(
+                "",
+                labels,
+                key=K("draft_picker_select"),
                 label_visibility="collapsed",
             )
 
-            with st.container(horizontal=True):
-            #     audio_file = st.audio_input("Voice message", key=K("audio_msg"), label_visibility="collapsed")
-            #     if audio_file is not None:
-            #         st.session_state[S("audio_bytes")] = audio_file.read()
+            pc1, pc2 = st.columns([1, 1])
+            with pc1:
+                if st.button("Cancelar", use_container_width=True, key=K("draft_picker_cancel")):
+                    st.session_state[S("show_draft_popover")] = False
+                    st.rerun()
 
-                add_clicked = st.form_submit_button(
-                    "Add", use_container_width=True, type="primary", key=K("btn_add_note")
-                )
-                limpiar_clicked = st.form_submit_button(
-                    "🗑️", use_container_width=True, key=K("btn_clear_text")
-                )
+            with pc2:
+                if st.button("Confirmar", type="primary", use_container_width=True, key=K("draft_picker_confirm")):
+                    st.session_state[S("selected_draft_id")] = label_to_id[chosen_label]
+                    st.session_state[S("show_draft_popover")] = False
+                    st.session_state[S("trigger_add")] = True  # run existing add flow
+                    st.rerun()
 
-    # 3) Float it AFTER you added all content
-    css = float_css_helper(
-        left="0",
-        right="0",
-        bottom="0",
-        width="100%",
-        background="rgba(255,255,255,.96)",
+        picker_css = float_css_helper(
+            left=SIDE_PAD,
+            right=SIDE_PAD,
+            bottom=PICKER_BOTTOM,     # above Add
+            width="auto",
+            z_index="9999",
+        )
+        picker_css += """
+        background: rgba(255,255,255,.98);
+        backdrop-filter: saturate(180%) blur(14px);
+        border: 1px solid rgba(148,163,184,.40);
+        border-radius: 20px;
+        padding: 12px 12px;
+        box-shadow: 0 14px 40px rgba(2,6,23,.16);
+        """
+        picker_bar.float(picker_css)
+
+    # =========================================================
+    # 3) FLOATING "ADD TO BORRADOR" BUTTON BAR (above composer)
+    # =========================================================
+    add_bar = st.container()
+    with add_bar:
+        # This is the SAME add_clicked you already use to commit parsed_df -> borrador
+        add_clicked = st.button(
+            "Add to borrador",
+            type="primary",
+            use_container_width=True,
+            key=K("btn_add_note"),
+            disabled=show_picker,  # prevents double interactions while picker is open
+        )
+
+    add_css = float_css_helper(
+        left=SIDE_PAD,
+        right=SIDE_PAD,
+        bottom=ADD_BOTTOM,
+        width="auto",
         z_index="9998",
     )
-    # Add extra CSS if you want padding/border/blur
-    css += "padding: 10px 12px; border-top: 1px solid rgba(148,163,184,.30); backdrop-filter: saturate(180%) blur(12px);"
-
-    wa_bar_1.float(css)
-
-    # 4) Add spacer so content isn't hidden behind the floating bar
-    st.markdown("<div style='height:110px'></div>", unsafe_allow_html=True)
-
-
-    # with st.form(key=K("wa_form"), clear_on_submit=True):
-        
-    #     typed = st.text_input(
-    #         "",
-    #         placeholder="Escribe como en WhatsApp... ej: 3 coca cola, hielo",
-    #         key=K("wa_text_input_field"),
-    #         label_visibility="collapsed",
-    #     )
-
-
-        
-    #     with st.container(horizontal=True):
-    #         # ✅ AUDIO INPUT NOW LIVES HERE (in the "Dictar" slot)
-            
-    #         audio_file = st.audio_input("", key=K("audio_msg"), label_visibility="collapsed")
-    #         if audio_file is not None:
-    #             st.session_state[S("audio_bytes")] = audio_file.read()
-                
-    #     # with b2:
-    #         add_clicked = st.form_submit_button("Add", use_container_width=True, type="primary", key=K("btn_add_note"))
-
-    #     # with b3:
-    #         limpiar_clicked = st.form_submit_button("🗑️", use_container_width=True, key=K("btn_clear_text"))
-            
-  
-    # st.markdown("</div></div>", unsafe_allow_html=True)
-
-    # ✅ IMPROVED: Style the button using CSS instead of JavaScript
-    # This is more reliable than style_button() which can fail due to timing issues
-    st.markdown("""
-    <style>
-    /* Target primary buttons (the Add button) */
-    button[kind="primary"] {
-        background: linear-gradient(135deg, #3b82f6 0%, #2563eb 100%) !important;
-        color: white !important;
-        border: 1px solid rgba(59,130,246,.35) !important;
-        border-radius: 14px !important;
-        padding: 10px 14px !important;
-        font-size: 16px !important;
-        box-shadow: 0 10px 20px rgba(2,6,23,.10) !important;
-        font-weight: 700 !important;
-        transition: all 0.2s ease !important;
-    }
-
-    button[kind="primary"]:hover {
-        background: linear-gradient(135deg, #2563eb 0%, #1d4ed8 100%) !important;
-        transform: translateY(-1px);
-        box-shadow: 0 12px 24px rgba(2,6,23,.15) !important;
-    }
-
-    button[kind="primary"]:active {
-        background: linear-gradient(135deg, #1d4ed8 0%, #1e40af 100%) !important;
-        transform: translateY(0);
-    }
-    
-    /* Make sure text inside button is also styled */
-    button[kind="primary"] p,
-    button[kind="primary"] div,
-    button[kind="primary"] span {
-        color: white !important;
-        font-size: 16px !important;
-        font-weight: 700 !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
-
+    add_css += """
+    background: rgba(255,255,255,.96);
+    backdrop-filter: saturate(180%) blur(14px);
+    border: 1px solid rgba(148,163,184,.35);
+    border-radius: 20px;
+    padding: 10px 12px;
+    box-shadow: 0 12px 36px rgba(2,6,23,.14);
+    """
+    add_bar.float(add_css)
 
     # =========================================================
-    # Handle form submission actions
+    # 4) ALWAYS-VISIBLE WHATSAPP COMPOSER BAR → FEEDS SUMMARY PREVIEW
     # =========================================================
+    typed = ""
+    send_clicked = False
+    clear_clicked = False
 
-    # Handle typed input submission
-    if typed and typed.strip():
+    wa_bar = st.container()
+    with wa_bar:
+        with st.form(key=K("wa_compose_form"), clear_on_submit=True):
+            c1, c2, c3 = st.columns([10, 1.3, 1.3])
+
+            with c1:
+                typed = st.text_input(
+                    "",
+                    placeholder="Escribe como en WhatsApp... ej: 3 coca cola, hielo",
+                    key=K("wa_text_input_field"),
+                    label_visibility="collapsed",
+                )
+
+            # Enter triggers first submit button -> keep SEND first
+            with c2:
+                send_clicked = st.form_submit_button("➤", use_container_width=True, key=K("btn_send_to_notes"))
+
+            with c3:
+                clear_clicked = st.form_submit_button("🗑️", use_container_width=True, key=K("btn_clear_notes"))
+
+    wa_css = float_css_helper(
+        left=SIDE_PAD,
+        right=SIDE_PAD,
+        bottom=COMPOSER_BOTTOM,
+        width="auto",
+        z_index="9997",
+    )
+    wa_css += """
+    background: rgba(255,255,255,.96);
+    backdrop-filter: saturate(180%) blur(14px);
+    border: 1px solid rgba(148,163,184,.35);
+    border-radius: 22px;
+    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
+    box-shadow: 0 12px 36px rgba(2,6,23,.14);
+    """
+    wa_bar.float(wa_css)
+
+    # Spacer so page content isn't hidden behind picker + add + composer
+    st.markdown("<div style='height:360px'></div>", unsafe_allow_html=True)
+
+    # =========================================================
+    # 5) ACTIONS: Notas / preview pipeline
+    # =========================================================
+    if clear_clicked:
+        reset_notes_only(clear_resolved_picks=False)
+        st.rerun()
+
+    if send_clicked and typed and typed.strip():
         append_message("user", typed.strip())
         st.rerun()
 
     # =========================================================
-    # 🎯 ADD BUTTON LOGIC - Triggers discreet popover or processes selection
+    # 6) YOUR EXISTING "ADD TO BORRADOR" LOGIC (UNCHANGED)
     # =========================================================
-    
-    # Check if we should process the add (either from button click or from popover selection)
     trigger_add = add_clicked or st.session_state.get(S("trigger_add"), False)
-    
     if trigger_add:
         # Clear the trigger flag
         if st.session_state.get(S("trigger_add"), False):
             st.session_state[S("trigger_add")] = False
-        
+
         parsed_df = st.session_state.get(S("parsed_df"))
 
         if not isinstance(parsed_df, pd.DataFrame) or parsed_df.empty:
@@ -1881,52 +1886,36 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             ).all()
 
         target_id: int = 0
-        
+
         # Check if user already selected from popover
         selected_from_popover = st.session_state.get(S("selected_draft_id"))
-        
+
         if selected_from_popover == -1:
-            # User clicked "Nuevo" in popover
-            new_id = _create_draft_and_insert_lines(
-                venue_id=venue_id,
-                actor=actor,
-                df=df_to_use,
-            )
+            new_id = _create_draft_and_insert_lines(venue_id=venue_id, actor=actor, df=df_to_use)
             if new_id:
                 target_id = int(new_id)
                 st.session_state.pop(S("selected_draft_id"), None)
-                
+
         elif selected_from_popover:
-            # User selected a specific draft from popover
             target_id = int(selected_from_popover)
             st.session_state.pop(S("selected_draft_id"), None)
 
-        # Case 1️⃣ — Active draft already set
         elif active_draft_id:
             target_id = int(active_draft_id)
 
-        # Case 2️⃣ — Only ONE draft exists → auto use it
         elif len(drafts) == 1:
             target_id = int(drafts[0].id)
             _set_active_draft(target_id)
 
-        # Case 3️⃣ — Multiple drafts → TRIGGER POPOVER
         elif len(drafts) > 1:
-            # Trigger the discreet popover and stop here
             st.session_state[S("show_draft_popover")] = True
             st.rerun()
 
-        # Case 4️⃣ — No drafts → create new
         else:
-            new_id = _create_draft_and_insert_lines(
-                venue_id=venue_id,
-                actor=actor,
-                df=df_to_use,
-            )
+            new_id = _create_draft_and_insert_lines(venue_id=venue_id, actor=actor, df=df_to_use)
             if new_id:
                 target_id = int(new_id)
 
-        # Add to selected draft
         if target_id:
             _add_lines_to_existing_draft(
                 venue_id=venue_id,
@@ -1944,90 +1933,8 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             time.sleep(0.3)
             _go_orders(target_id)
 
-        if striked_products:
-            keep_mask = []
-            for idx, r in df_filtered.iterrows():
-                name = safe_str(r.get("matched_name") or r.get("spoken_name") or "").strip()
-                qty = r.get("quantity", None)
-                product_key = f"{idx}_{name}_{qty}"
-                keep_mask.append(product_key not in striked_products)
-            df_filtered = df_filtered[keep_mask]
-
-        if df_filtered.empty:
-            st.warning("Todos los productos están tachados. No hay nada que guardar.")
-            st.stop()
-
-        df_to_use = apply_unit_choice(df_filtered)
-        actor = current_actor()
-
-        # ---------------------------------------
-        # Determine draft target intelligently
-        # ---------------------------------------
-        with get_session() as s:
-            drafts = s.exec(
-                select(Order)
-                .where(Order.venue_id == venue_id, Order.status == "draft")
-                .order_by(Order.created_at.desc())
-            ).all()
-
-        target_id: int = 0
-
-        # Case 1️⃣ — Active draft already set
-        if active_draft_id:
-            target_id = int(active_draft_id)
-
-        # Case 2️⃣ — Only ONE draft exists → auto use it
-        elif len(drafts) == 1:
-            target_id = int(drafts[0].id)
-            _set_active_draft(target_id)
-
-        # Case 3️⃣ — Multiple drafts → trigger selection mode (NO blocking)
-        elif len(drafts) > 1:
-            # Store data in session state for the selection UI
-            st.session_state[S("parsed_df_pending")] = parsed_df
-            st.session_state[S("df_to_use_pending")] = df_to_use
-            st.session_state[S("actor_pending")] = actor
-            st.session_state[S("awaiting_draft_selection")] = True
-            st.rerun()
-
-        # Case 4️⃣ — No drafts → create new
-        else:
-            new_id = _create_draft_and_insert_lines(
-                venue_id=venue_id,
-                actor=actor,
-                df=df_to_use,
-            )
-            if new_id:
-                target_id = int(new_id)
-
-        # ---------------------------------------
-        # Apply add-to-draft (if target determined)
-        # ---------------------------------------
-        if not target_id:
-            # This means we triggered draft selection - do nothing here
-            pass
-        else:
-            _add_lines_to_existing_draft(
-                venue_id=venue_id,
-                order_id=int(target_id),
-                actor=actor,
-                df=df_to_use,
-            )
-
-            _set_active_draft(target_id)
-            bump_orders_refresh_token()
-
-            st.success(f"Preparación guardada ✅ (#{target_id})")
-
-            # Clear striked products after saving (your existing behavior)
-            st.session_state[S("striked_products")] = set()
-
-            reset_notes_only(do_rerun=False)
-            _go_orders(target_id)
+        # NOTE: You have a duplicated second "determine draft target" block in your original snippet.
+        # Keep ONLY one of them to avoid double-execution and confusing state.
 
 
-    if limpiar_clicked:
-        reset_notes_only(clear_resolved_picks=False)
-        st.success("Texto limpiado.")
-        st.rerun()
 
