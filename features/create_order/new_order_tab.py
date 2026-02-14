@@ -4,6 +4,7 @@ import time
 import hashlib
 import re
 from typing import Dict, List, Optional, Any, Tuple
+from functools import lru_cache
 
 import pandas as pd
 import streamlit as st
@@ -126,8 +127,10 @@ def load_venue_drafts(venue_id: int, _refresh_token: int = 0):
     return drafts
 
 
-def get_last_sent_pid_for_venue_among_opts(venue_id: int, opts: list[int]) -> int | None:
-    """🕒 Last product among opts that was included in an order that was SENT to its provider (per-provider send)."""
+@st.cache_data(show_spinner=False, ttl=60)
+def get_last_sent_pid_for_venue_among_opts(venue_id: int, opts: tuple[int, ...]) -> int | None:
+    """🕒 Last product among opts that was included in an order that was SENT to its provider (per-provider send).
+    Cached for 60 seconds. opts must be tuple for hashing."""
     if not opts:
         return None
 
@@ -151,8 +154,10 @@ def get_last_sent_pid_for_venue_among_opts(venue_id: int, opts: list[int]) -> in
         return s.exec(stmt).first()
 
 
-def get_most_frequent_sent_pid_for_venue_among_opts(venue_id: int, opts: list[int]) -> int | None:
-    """🔁 Most frequently SENT product among opts to its provider (per-provider send)."""
+@st.cache_data(show_spinner=False, ttl=60)
+def get_most_frequent_sent_pid_for_venue_among_opts(venue_id: int, opts: tuple[int, ...]) -> int | None:
+    """🔁 Most frequently SENT product among opts to its provider (per-provider send).
+    Cached for 60 seconds. opts must be tuple for hashing."""
     if not opts:
         return None
 
@@ -1090,8 +1095,10 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                     if cheapest_pid is not None and _price(cheapest_pid) == float("inf"):
                         cheapest_pid = None
 
-                    last_sent_pid = get_last_sent_pid_for_venue_among_opts(venue_id=venue_id, opts=opts)
-                    most_freq_pid = get_most_frequent_sent_pid_for_venue_among_opts(venue_id=venue_id, opts=opts)
+                    # Convert to tuple for caching
+                    opts_tuple = tuple(opts)
+                    last_sent_pid = get_last_sent_pid_for_venue_among_opts(venue_id=venue_id, opts=opts_tuple)
+                    most_freq_pid = get_most_frequent_sent_pid_for_venue_among_opts(venue_id=venue_id, opts=opts_tuple)
 
                     def _opt_label(pid: int) -> str:
                         p = products_by_id.get(int(pid))
@@ -1411,22 +1418,22 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     striked_products = st.session_state.get(S("striked_products"), set())
 
     if isinstance(parsed_df, pd.DataFrame) and not parsed_df.empty:
-        # Count non-striked products for status
-        any_needs_review = False
-        active_products = 0
-        
-        for idx, r in parsed_df.iterrows():
-            pid = r.get("matched_product_id", None)
-            status = safe_str(r.get("status") or "").lower()
-            name = safe_str(r.get("matched_name") or r.get("spoken_name") or "").strip()
-            qty = r.get("quantity", None)
-            product_key = f"{idx}_{name}_{qty}"
-            
-            if product_key not in striked_products:
-                active_products += 1
-            
-            if pid is None or (isinstance(pid, float) and pd.isna(pid)) or ("revis" in status):
-                any_needs_review = True
+        # Vectorized counting (much faster than iterrows)
+        # Create product keys vectorized
+        names = parsed_df['matched_name'].fillna(parsed_df['spoken_name']).fillna('').astype(str).str.strip()
+        quantities = parsed_df['quantity'].astype(str)
+        indices = parsed_df.index.astype(str)
+        product_keys = indices + '_' + names + '_' + quantities
+
+        # Count active (non-striked) products
+        active_mask = ~product_keys.isin(striked_products)
+        active_products = active_mask.sum()
+
+        # Check if any need review (vectorized)
+        status_series = parsed_df['status'].fillna('').astype(str).str.lower()
+        pid_is_null = parsed_df['matched_product_id'].isna()
+        has_revisar = status_series.str.contains('revis', na=False)
+        any_needs_review = (pid_is_null | has_revisar).any()
         
         # Product list with delete buttons
         # st.markdown('<div class="voi-notebook-products">', unsafe_allow_html=True)
@@ -1674,6 +1681,9 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     if "show_micro" not in st.session_state:
         st.session_state.show_micro = False
 
+    if "show_composer" not in st.session_state:
+        st.session_state.show_composer = False
+
     # Floating UI spacing knobs (modern + consistent)
     BOTTOM_BAR_OFFSET = "5.00rem"          # your bottom nav height
     COMPOSER_BOTTOM = BOTTOM_BAR_OFFSET    # composer sits right above bottom nav
@@ -1682,22 +1692,40 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     SIDE_PAD = "0.55rem"                  # slightly more breathing room than 0.75
 
     # =========================================================
-    # 0) Floating FAB to open mic overlay (kept away from bars)
+    # 0) Floating FABs (kept away from bars)
     # =========================================================
-    fab_btn_container = st.container()
-    with fab_btn_container:
+    # Mic FAB
+    fab_mic_container = st.container()
+    with fab_mic_container:
         if st.button("🎙️", key="smart_add_fab"):
             st.session_state.show_micro = True
             st.rerun()
 
-    fab_btn_css = float_css_helper(
+    fab_mic_css = float_css_helper(
         right="1.10rem",
         bottom="18.0rem",   # above picker/add/composer stack
         width="auto",
         z_index="10000",
     )
-    fab_btn_css += "padding: 0;"
-    fab_btn_container.float(fab_btn_css)
+    fab_mic_css += "padding: 0;"
+    fab_mic_container.float(fab_mic_css)
+
+    # Composer FAB (only show when composer is hidden)
+    if not st.session_state.show_composer:
+        fab_composer_container = st.container()
+        with fab_composer_container:
+            if st.button("✏️", key="smart_composer_fab", help="Escribir pedido"):
+                st.session_state.show_composer = True
+                st.rerun()
+
+        fab_composer_css = float_css_helper(
+            right="1.10rem",
+            bottom="13.5rem",   # below mic FAB
+            width="auto",
+            z_index="10000",
+        )
+        fab_composer_css += "padding: 0;"
+        fab_composer_container.float(fab_composer_css)
     # fab_btn_container.markdown(
     # =========================================================
     # 1) MIC OVERLAY (audio only)
@@ -1803,107 +1831,121 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     add_bar.float(add_css)
 
     # =========================================================
-    # 4) ALWAYS-VISIBLE WHATSAPP COMPOSER BAR → FEEDS SUMMARY PREVIEW
+    # 4) FLOATING WHATSAPP COMPOSER (FAB-STYLE)
     # =========================================================
+    # Initialize defaults
     typed = ""
     send_clicked = False
     clear_clicked = False
 
-    wa_bar = st.container()
-    with wa_bar:
-        with st.form(key=K("wa_compose_form"), clear_on_submit=True):
-            # 
+    # Only show composer when toggled on
+    if st.session_state.show_composer:
+        wa_bar = st.container()
+        with wa_bar:
+            # Header with close button
+            with st.container():
+                col_title, col_close = st.columns([4, 1])
+                with col_title:
+                    st.markdown("**✏️ Escribir pedido**")
+                with col_close:
+                    if st.button("✕", key=K("close_composer"), help="Cerrar"):
+                        st.session_state.show_composer = False
+                        st.rerun()
 
-            with st.container(horizontal=True):
-                c1, c2, c3 = st.columns([10, 1.3, 1.3])
-                with c1:
-                    typed = st.text_input(
-                        "",
-                        placeholder="Escribe como en WhatsApp... ej: 3 coca cola, hielo",
-                        key=K("wa_text_input_field"),
-                        label_visibility="collapsed",
-                    )
+            with st.form(key=K("wa_compose_form"), clear_on_submit=True):
+                with st.container(horizontal=True):
+                    c1, c2, c3 = st.columns([10, 1.3, 1.3])
+                    with c1:
+                        typed = st.text_input(
+                            "",
+                            placeholder="Escribe como en WhatsApp... ej: 3 coca cola, hielo",
+                            key=K("wa_text_input_field"),
+                            label_visibility="collapsed",
+                        )
 
-                # Enter triggers first submit button -> keep SEND first
-                with c2:
-                    send_clicked = st.form_submit_button("➤", use_container_width=True, key=K("btn_send_to_notes"))
+                    # Enter triggers first submit button -> keep SEND first
+                    with c2:
+                        send_clicked = st.form_submit_button("➤", use_container_width=True, key=K("btn_send_to_notes"))
 
-                with c3:
-                    clear_clicked = st.form_submit_button("🗑️", use_container_width=True, key=K("btn_clear_notes"))
+                    with c3:
+                        clear_clicked = st.form_submit_button("🗑️", use_container_width=True, key=K("btn_clear_notes"))
 
-    wa_css = float_css_helper(
-        left=SIDE_PAD,
-        right=SIDE_PAD,
-        bottom=COMPOSER_BOTTOM,
-        width="auto",
-        z_index="9997",
-    )
-    wa_css += """
-    background: rgba(255,255,255,.96);
-    backdrop-filter: saturate(180%) blur(14px);
-    border: 1px solid rgba(148,163,184,.35);
-    border-radius: 22px;
-    padding: 10px 12px calc(10px + env(safe-area-inset-bottom));
-    box-shadow: 0 12px 36px rgba(2,6,23,.14);
-    """
+        # Style the floating composer (more compact FAB-style)
+        wa_css = float_css_helper(
+            left=SIDE_PAD,
+            right=SIDE_PAD,
+            bottom="8.0rem",  # Positioned away from bottom bar
+            width="auto",
+            z_index="9999",
+        )
+        wa_css += """
+        background: rgba(255,255,255,.98);
+        backdrop-filter: saturate(180%) blur(16px);
+        border: 1px solid rgba(148,163,184,.45);
+        border-radius: 20px;
+        padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+        box-shadow: 0 16px 48px rgba(2,6,23,.20), 0 0 0 1px rgba(255,255,255,.5) inset;
+        max-width: 600px;
+        margin: 0 auto;
+        """
 
-    # Force horizontal layout on mobile - prevent column stacking
-    wa_css += """
-    /* Force horizontal layout on all screen sizes */
-    div[data-testid="column"] {
-        flex-shrink: 1 !important;
-        min-width: 0 !important;
-    }
+        # Force horizontal layout on mobile - prevent column stacking
+        wa_css += """
+        /* Force horizontal layout on all screen sizes */
+        div[data-testid="column"] {
+            flex-shrink: 1 !important;
+            min-width: 0 !important;
+        }
 
-    /* Keep horizontal container from wrapping */
-    div[data-testid="stHorizontalBlock"] {
-        flex-wrap: nowrap !important;
-        display: flex !important;
-        gap: 8px !important;
-    }
-
-    /* Ensure text input shrinks appropriately */
-    div[data-testid="stTextInput"] {
-        min-width: 0 !important;
-        flex: 1 !important;
-    }
-
-    div[data-testid="stTextInput"] input {
-        min-width: 0 !important;
-        width: 100% !important;
-        font-size: 0.85rem !important;
-        padding: 8px 10px !important;
-        height: auto !important;
-    }
-
-    div[data-testid="stTextInput"] input::placeholder {
-        font-size: 0.82rem !important;
-    }
-
-    /* Keep buttons at fixed width */
-    button[kind="formSubmit"] {
-        min-width: 40px !important;
-        max-width: 50px !important;
-        white-space: nowrap !important;
-        padding: 8px !important;
-    }
-
-    /* Mobile-specific adjustments */
-    @media (max-width: 640px) {
+        /* Keep horizontal container from wrapping */
         div[data-testid="stHorizontalBlock"] {
-            gap: 6px !important;
+            flex-wrap: nowrap !important;
+            display: flex !important;
+            gap: 8px !important;
         }
 
+        /* Ensure text input shrinks appropriately */
+        div[data-testid="stTextInput"] {
+            min-width: 0 !important;
+            flex: 1 !important;
+        }
+
+        div[data-testid="stTextInput"] input {
+            min-width: 0 !important;
+            width: 100% !important;
+            font-size: 0.85rem !important;
+            padding: 8px 10px !important;
+            height: auto !important;
+        }
+
+        div[data-testid="stTextInput"] input::placeholder {
+            font-size: 0.82rem !important;
+        }
+
+        /* Keep buttons at fixed width */
         button[kind="formSubmit"] {
-            min-width: 36px !important;
-            max-width: 44px !important;
-            padding: 6px !important;
-            font-size: 1.1rem !important;
+            min-width: 40px !important;
+            max-width: 50px !important;
+            white-space: nowrap !important;
+            padding: 8px !important;
         }
-    }
-    """
 
-    wa_bar.float(wa_css)
+        /* Mobile-specific adjustments */
+        @media (max-width: 640px) {
+            div[data-testid="stHorizontalBlock"] {
+                gap: 6px !important;
+            }
+
+            button[kind="formSubmit"] {
+                min-width: 36px !important;
+                max-width: 44px !important;
+                padding: 6px !important;
+                font-size: 1.1rem !important;
+            }
+        }
+        """
+
+        wa_bar.float(wa_css)
 
     # Spacer so page content isn't hidden behind picker + add + composer
     st.markdown("<div style='height:360px'></div>", unsafe_allow_html=True)
@@ -1913,10 +1955,12 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     # =========================================================
     if clear_clicked:
         reset_notes_only(clear_resolved_picks=False)
+        st.session_state.show_composer = False  # Auto-close after clearing
         st.rerun()
 
     if send_clicked and typed and typed.strip():
         append_message("user", typed.strip())
+        # Keep composer open for consecutive entries
         st.rerun()
 
     # =========================================================
@@ -1934,17 +1978,21 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             st.warning("Aún no hay nada parseado para guardar. Añade texto o audio y espera a que se genere el resumen.")
             st.stop()
 
-        # Filter out striked products
+        # Filter out striked products (optimized vectorized approach)
         striked_products = st.session_state.get(S("striked_products"), set())
         df_filtered = parsed_df.copy()
 
-        if striked_products:
-            keep_mask = []
-            for idx, r in df_filtered.iterrows():
-                name = safe_str(r.get("matched_name") or r.get("spoken_name") or "").strip()
-                qty = r.get("quantity", None)
-                product_key = f"{idx}_{name}_{qty}"
-                keep_mask.append(product_key not in striked_products)
+        if striked_products and not df_filtered.empty:
+            # Fully vectorized: create product keys without apply()
+            names = df_filtered['matched_name'].fillna(df_filtered['spoken_name']).fillna('').astype(str).str.strip()
+            quantities = df_filtered['quantity'].astype(str)
+            indices = df_filtered.index.astype(str)
+
+            # Create product keys efficiently
+            product_keys = indices + '_' + names + '_' + quantities
+
+            # Vectorized filter (much faster than iterrows)
+            keep_mask = ~product_keys.isin(striked_products)
             df_filtered = df_filtered[keep_mask]
 
         if df_filtered.empty:
