@@ -597,16 +597,17 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             st.markdown("### ➕ Añadir Productos")
 
             # Buttons row
-            btn_col1, btn_col2 = st.columns([1, 1])
-            with btn_col1:
-                if st.button("← Volver", key=K("back_from_product_adder"), use_container_width=True):
-                    st.session_state.product_adder_fullpage = False
-                    st.rerun()
+            with st.container(horizontal=True ):
+                btn_col1, btn_col2 = st.columns([1, 1])
+                with btn_col1:
+                    if st.button("← Volver", key=K("back_from_product_adder"), use_container_width=True):
+                        st.session_state.product_adder_fullpage = False
+                        st.rerun()
 
-            with btn_col2:
-                if st.button("✓ Añadir seleccionados", key=K("submit_header_btn"), type="primary", use_container_width=True):
-                    st.session_state[K("form_submitted")] = True
-                    st.rerun()
+                with btn_col2:
+                    if st.button("✓ Añadir seleccionados", key=K("submit_header_btn"), type="primary", use_container_width=True):
+                        st.session_state[K("form_submitted")] = True
+                        st.rerun()
 
             # Search bar
             search_query = st.text_input(
