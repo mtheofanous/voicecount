@@ -1163,477 +1163,477 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
 
 
     
-    # -----------------------------
-    # Quick add expander (cascading filters + paging + toggle)
-    # -----------------------------
+#     # -----------------------------
+#     # Quick add expander (cascading filters + paging + toggle)
+#     # -----------------------------
 
-    # (categories/providers maps come from _product_ui_index_cached)
+#     # (categories/providers maps come from _product_ui_index_cached)
 
-    def _qty_by_product(df: pd.DataFrame) -> dict[int, float]:
-        df = _sanitize_editor_df(df)
-        df2 = df.loc[df["delete"] != True].copy()  # noqa: E712
-        df2 = df2.loc[df2["product_id"].notna()].copy()
-        out: dict[int, float] = {}
-        for _, r in df2.iterrows():
-            pid = _pid_to_int(r.get("product_id"))
-            if pid is None:
-                continue
-            out[int(pid)] = float(out.get(int(pid), 0.0) or 0.0) + float(r.get("quantity") or 0.0)
-        return out
+#     def _qty_by_product(df: pd.DataFrame) -> dict[int, float]:
+#         df = _sanitize_editor_df(df)
+#         df2 = df.loc[df["delete"] != True].copy()  # noqa: E712
+#         df2 = df2.loc[df2["product_id"].notna()].copy()
+#         out: dict[int, float] = {}
+#         for _, r in df2.iterrows():
+#             pid = _pid_to_int(r.get("product_id"))
+#             if pid is None:
+#                 continue
+#             out[int(pid)] = float(out.get(int(pid), 0.0) or 0.0) + float(r.get("quantity") or 0.0)
+#         return out
 
-    # NOTE: Resetting number_input inside st.form can be tricky because widget state
-    # is sticky across reruns. A reliable approach is to add a nonce to the widget
-    # key and bump it after submitting (forces Streamlit to recreate the widget).
-    qa_nonce_key = f"{editor_key}__qa_nonce"
-    st.session_state.setdefault(qa_nonce_key, 0)
+#     # NOTE: Resetting number_input inside st.form can be tricky because widget state
+#     # is sticky across reruns. A reliable approach is to add a nonce to the widget
+#     # key and bump it after submitting (forces Streamlit to recreate the widget).
+#     qa_nonce_key = f"{editor_key}__qa_nonce"
+#     st.session_state.setdefault(qa_nonce_key, 0)
 
-    def _add_product_to_df(pid: int, qty_val: float) -> None:
-        qty_val = float(qty_val or 0.0)
-        if qty_val <= 0:
-            return
-        df = _sanitize_editor_df(st.session_state[df_state_key])
-        mask_same = (df["product_id"] == int(pid)) & (df["delete"] != True)  # noqa: E712
-        if mask_same.any():
-            idx = df.index[mask_same][0]
-            df.at[idx, "quantity"] = float(df.at[idx, "quantity"] or 0.0) + qty_val
-        else:
-            unit = (_s(getattr(products_by_id.get(int(pid)), "unit", "")) or "unidad").lower()
-            df = pd.concat(
-                [df, pd.DataFrame([{"line_id": pd.NA, "product_id": int(pid), "quantity": qty_val, "unit": unit, "delete": False}])],
-                ignore_index=True,
-            )
-        st.session_state[df_state_key] = _sanitize_editor_df(df)
-        # Force qty inputs to reset to 0.0
-        st.session_state[qa_nonce_key] = int(st.session_state.get(qa_nonce_key, 0) or 0) + 1
-        st.rerun()
+#     def _add_product_to_df(pid: int, qty_val: float) -> None:
+#         qty_val = float(qty_val or 0.0)
+#         if qty_val <= 0:
+#             return
+#         df = _sanitize_editor_df(st.session_state[df_state_key])
+#         mask_same = (df["product_id"] == int(pid)) & (df["delete"] != True)  # noqa: E712
+#         if mask_same.any():
+#             idx = df.index[mask_same][0]
+#             df.at[idx, "quantity"] = float(df.at[idx, "quantity"] or 0.0) + qty_val
+#         else:
+#             unit = (_s(getattr(products_by_id.get(int(pid)), "unit", "")) or "unidad").lower()
+#             df = pd.concat(
+#                 [df, pd.DataFrame([{"line_id": pd.NA, "product_id": int(pid), "quantity": qty_val, "unit": unit, "delete": False}])],
+#                 ignore_index=True,
+#             )
+#         st.session_state[df_state_key] = _sanitize_editor_df(df)
+#         # Force qty inputs to reset to 0.0
+#         st.session_state[qa_nonce_key] = int(st.session_state.get(qa_nonce_key, 0) or 0) + 1
+#         st.rerun()
         
 
    
-    # Backwards compatible cleanup (older sessions may still carry legacy keys)
-    legacy_reset_flag = f"{editor_key}__qa_reset_qty"
-    if st.session_state.get(legacy_reset_flag):
-        qty_prefix = f"{editor_key}__qa_qty_"
-        for k in list(st.session_state.keys()):
-            if isinstance(k, str) and k.startswith(qty_prefix):
-                st.session_state.pop(k, None)
-        st.session_state.pop(legacy_reset_flag, None)
+#     # Backwards compatible cleanup (older sessions may still carry legacy keys)
+#     legacy_reset_flag = f"{editor_key}__qa_reset_qty"
+#     if st.session_state.get(legacy_reset_flag):
+#         qty_prefix = f"{editor_key}__qa_qty_"
+#         for k in list(st.session_state.keys()):
+#             if isinstance(k, str) and k.startswith(qty_prefix):
+#                 st.session_state.pop(k, None)
+#         st.session_state.pop(legacy_reset_flag, None)
 
-    q = st.text_input(
-            "Buscar",
-            key=f"{editor_key}__qa_search",
-            placeholder="Producto…",
-        ).strip().lower()
+#     q = st.text_input(
+#             "Buscar",
+#             key=f"{editor_key}__qa_search",
+#             placeholder="Producto…",
+#         ).strip().lower()
     
-    with st.container(horizontal=True):
+#     with st.container(horizontal=True):
 
 
-        # Prepare order state for dependent options
-        df_current = _sanitize_editor_df(st.session_state[df_state_key])
-        qty_by_pid = _qty_by_product(df_current)
+#         # Prepare order state for dependent options
+#         df_current = _sanitize_editor_df(st.session_state[df_state_key])
+#         qty_by_pid = _qty_by_product(df_current)
 
-        base_pids = sorted(label_by_id.keys())
-        if q:
-            base_pids = [pid for pid in base_pids if q in label_by_id.get(pid, "").lower()]
+#         base_pids = sorted(label_by_id.keys())
+#         if q:
+#             base_pids = [pid for pid in base_pids if q in label_by_id.get(pid, "").lower()]
 
-        # Session keys
-        cat_key = f"{editor_key}__qa_cat"
-        prov_key = f"{editor_key}__qa_prov"
-        hide_key = f"{editor_key}__qa_hide"
+#         # Session keys
+#         cat_key = f"{editor_key}__qa_cat"
+#         prov_key = f"{editor_key}__qa_prov"
+#         hide_key = f"{editor_key}__qa_hide"
 
-        st.session_state.setdefault(cat_key, "Todas")
-        st.session_state.setdefault(prov_key, "Todos")
+#         st.session_state.setdefault(cat_key, "Todas")
+#         st.session_state.setdefault(prov_key, "Todos")
         
         
-        hide_in_order = bool(st.session_state.get(hide_key, False))
+#         hide_in_order = bool(st.session_state.get(hide_key, False))
 
-        current_cat = st.session_state[cat_key]
-        current_prov = st.session_state[prov_key]
+#         current_cat = st.session_state[cat_key]
+#         current_prov = st.session_state[prov_key]
 
-        # --- Compute cascading options ---
-        cats_for_prov = (
-            sorted({cat_by_pid.get(pid, "") for pid in base_pids if prov_by_pid.get(pid, "") == current_prov})
-            if current_prov != "Todos"
-            else sorted({cat_by_pid.get(pid, "") for pid in base_pids})
-        )
-        cats_for_prov = [c for c in cats_for_prov if c]
+#         # --- Compute cascading options ---
+#         cats_for_prov = (
+#             sorted({cat_by_pid.get(pid, "") for pid in base_pids if prov_by_pid.get(pid, "") == current_prov})
+#             if current_prov != "Todos"
+#             else sorted({cat_by_pid.get(pid, "") for pid in base_pids})
+#         )
+#         cats_for_prov = [c for c in cats_for_prov if c]
 
-        provs_for_cat = (
-            sorted({prov_by_pid.get(pid, "") for pid in base_pids if cat_by_pid.get(pid, "") == current_cat})
-            if current_cat != "Todas"
-            else sorted({prov_by_pid.get(pid, "") for pid in base_pids})
-        )
-        provs_for_cat = [p for p in provs_for_cat if p]
+#         provs_for_cat = (
+#             sorted({prov_by_pid.get(pid, "") for pid in base_pids if cat_by_pid.get(pid, "") == current_cat})
+#             if current_cat != "Todas"
+#             else sorted({prov_by_pid.get(pid, "") for pid in base_pids})
+#         )
+#         provs_for_cat = [p for p in provs_for_cat if p]
 
-        # Reset invalid selections
-        if current_cat != "Todas" and current_cat not in cats_for_prov:
-            st.session_state[cat_key] = "Todas"
-            current_cat = "Todas"
+#         # Reset invalid selections
+#         if current_cat != "Todas" and current_cat not in cats_for_prov:
+#             st.session_state[cat_key] = "Todas"
+#             current_cat = "Todas"
 
-        if current_prov != "Todos" and current_prov not in provs_for_cat:
-            st.session_state[prov_key] = "Todos"
-            current_prov = "Todos"
+#         if current_prov != "Todos" and current_prov not in provs_for_cat:
+#             st.session_state[prov_key] = "Todos"
+#             current_prov = "Todos"
 
 
-        cat_tabs = ["Todas"] + cats_for_prov
-        cat_tab_objs = st.tabs(cat_tabs)
+#         cat_tabs = ["Todas"] + cats_for_prov
+#         cat_tab_objs = st.tabs(cat_tabs)
 
-        selected_cat = "Todas"
-        for i, tab in enumerate(cat_tab_objs):
-            with tab:
-                selected_cat = cat_tabs[i]
-                break
+#         selected_cat = "Todas"
+#         for i, tab in enumerate(cat_tab_objs):
+#             with tab:
+#                 selected_cat = cat_tabs[i]
+#                 break
 
 
     
-        # Re-evaluate providers after category selection
-        prov_opts = (
-            sorted({prov_by_pid.get(pid, "") for pid in base_pids if cat_by_pid.get(pid, "") == selected_cat})
-            if selected_cat != "Todas"
-            else sorted({prov_by_pid.get(pid, "") for pid in base_pids})
-        )
-        prov_opts = [p for p in prov_opts if p]
+#         # Re-evaluate providers after category selection
+#         prov_opts = (
+#             sorted({prov_by_pid.get(pid, "") for pid in base_pids if cat_by_pid.get(pid, "") == selected_cat})
+#             if selected_cat != "Todas"
+#             else sorted({prov_by_pid.get(pid, "") for pid in base_pids})
+#         )
+#         prov_opts = [p for p in prov_opts if p]
 
-        prov_tabs = ["Todos"] + prov_opts
-        prov_tab_objs = st.tabs(prov_tabs)
+#         prov_tabs = ["Todos"] + prov_opts
+#         prov_tab_objs = st.tabs(prov_tabs)
 
-        selected_prov = "Todos"
-        for i, tab in enumerate(prov_tab_objs):
-            with tab:
-                selected_prov = prov_tabs[i]
-                break
+#         selected_prov = "Todos"
+#         for i, tab in enumerate(prov_tab_objs):
+#             with tab:
+#                 selected_prov = prov_tabs[i]
+#                 break
 
 
-        # ---------- Reset paging when filters change ----------
-        filters_sig = (q, selected_cat, selected_prov, bool(hide_in_order))
-        sig_key = f"{editor_key}__qa_filters_sig"
-        page_key = f"{editor_key}__qa_page"
+#         # ---------- Reset paging when filters change ----------
+#         filters_sig = (q, selected_cat, selected_prov, bool(hide_in_order))
+#         sig_key = f"{editor_key}__qa_filters_sig"
+#         page_key = f"{editor_key}__qa_page"
 
-        if st.session_state.get(sig_key) != filters_sig:
-            st.session_state[sig_key] = filters_sig
-            st.session_state[page_key] = 1
+#         if st.session_state.get(sig_key) != filters_sig:
+#             st.session_state[sig_key] = filters_sig
+#             st.session_state[page_key] = 1
 
-        # ---------- Apply filters ----------
-        pids = base_pids
+#         # ---------- Apply filters ----------
+#         pids = base_pids
 
-        if selected_cat != "Todas":
-            pids = [pid for pid in pids if cat_by_pid.get(pid, "") == selected_cat]
+#         if selected_cat != "Todas":
+#             pids = [pid for pid in pids if cat_by_pid.get(pid, "") == selected_cat]
 
-        if selected_prov != "Todos":
-            pids = [pid for pid in pids if prov_by_pid.get(pid, "") == selected_prov]
+#         if selected_prov != "Todos":
+#             pids = [pid for pid in pids if prov_by_pid.get(pid, "") == selected_prov]
 
-        if hide_in_order:
-            pids = [pid for pid in pids if float(qty_by_pid.get(pid, 0.0) or 0.0) <= 0.0]
+#         if hide_in_order:
+#             pids = [pid for pid in pids if float(qty_by_pid.get(pid, 0.0) or 0.0) <= 0.0]
 
-        total = len(pids)
+#         total = len(pids)
 
-    # ---------- Paging ----------
+#     # ---------- Paging ----------
 
-    page_size = 60
+#     page_size = 60
 
-    st.session_state.setdefault(page_key, 1)
-    total_pages = max(1, (total + page_size - 1) // page_size)
-    st.session_state[page_key] = min(st.session_state[page_key], total_pages)
+#     st.session_state.setdefault(page_key, 1)
+#     total_pages = max(1, (total + page_size - 1) // page_size)
+#     st.session_state[page_key] = min(st.session_state[page_key], total_pages)
 
-    with st.container(horizontal=True):
+#     with st.container(horizontal=True):
         
-        if st.button("⬅️", disabled=st.session_state[page_key] <= 1):
-            st.session_state[page_key] -= 1
-            st.rerun()
+#         if st.button("⬅️", disabled=st.session_state[page_key] <= 1):
+#             st.session_state[page_key] -= 1
+#             st.rerun()
 
 
-        if st.button("➡️", disabled=st.session_state[page_key] >= total_pages):
-            st.session_state[page_key] += 1
-            st.rerun()
+#         if st.button("➡️", disabled=st.session_state[page_key] >= total_pages):
+#             st.session_state[page_key] += 1
+#             st.rerun()
 
 
-        st.caption(f"{total} resultados · Página {st.session_state[page_key]} / {total_pages}")
+#         st.caption(f"{total} resultados · Página {st.session_state[page_key]} / {total_pages}")
         
-        hide_in_order = st.toggle(
-            "Ocultar en pedido",
-            key=hide_key,
-        )
+#         hide_in_order = st.toggle(
+#             "Ocultar en pedido",
+#             key=hide_key,
+#         )
 
-# ---------- Grid ----------
-    # ---------- Grid ----------
-    start_i = (st.session_state[page_key] - 1) * page_size
-    end_i = start_i + page_size
-    pids_page = pids[start_i:end_i]
+# # ---------- Grid ----------
+#     # ---------- Grid ----------
+#     start_i = (st.session_state[page_key] - 1) * page_size
+#     end_i = start_i + page_size
+#     pids_page = pids[start_i:end_i]
 
-    # --- helper: session-state key for per-product draft qty ---
-    def ss_qty_key(editor_key, pid):
-        return f"{editor_key}__qa_qty_live_{pid}"
+#     # --- helper: session-state key for per-product draft qty ---
+#     def ss_qty_key(editor_key, pid):
+#         return f"{editor_key}__qa_qty_live_{pid}"
 
-    # --- Global CSS (once) ---
-    st.markdown("""
-    <style>
-    @media (max-width: 700px) {
-    .st-key-my_blue_container [data-testid="stHorizontalBlock"]{
-        display:flex !important;
-        flex-wrap: wrap !important;
-        gap: 12px !important;
-    }
-    .st-key-my_blue_container [data-testid="column"]{
-        flex: 0 0 calc(50% - 12px) !important;
-        width: calc(50% - 12px) !important;
-        max-width: calc(50% - 12px) !important;
-        min-width: 0 !important;
-    }
+#     # --- Global CSS (once) ---
+#     st.markdown("""
+#     <style>
+#     @media (max-width: 700px) {
+#     .st-key-my_blue_container [data-testid="stHorizontalBlock"]{
+#         display:flex !important;
+#         flex-wrap: wrap !important;
+#         gap: 12px !important;
+#     }
+#     .st-key-my_blue_container [data-testid="column"]{
+#         flex: 0 0 calc(50% - 12px) !important;
+#         width: calc(50% - 12px) !important;
+#         max-width: calc(50% - 12px) !important;
+#         min-width: 0 !important;
+#     }
 
-    /* Make widgets shrink properly inside columns */
-    .st-key-my_blue_container [data-testid="stNumberInput"],
-    .st-key-my_blue_container [data-testid="stButton"]{
-        width: 100% !important;
-        min-width: 0 !important;
-    }
-    }
-    </style>
-    """, unsafe_allow_html=True)
+#     /* Make widgets shrink properly inside columns */
+#     .st-key-my_blue_container [data-testid="stNumberInput"],
+#     .st-key-my_blue_container [data-testid="stButton"]{
+#         width: 100% !important;
+#         min-width: 0 !important;
+#     }
+#     }
+#     </style>
+#     """, unsafe_allow_html=True)
 
-    def render_product_card(pid):
-        p = products_by_id.get(pid)
-        if not p:
-            return
+#     def render_product_card(pid):
+#         p = products_by_id.get(pid)
+#         if not p:
+#             return
 
-        label = label_by_id.get(pid, str(pid))
-        parts = label.split(" — ", 1)
-        name = parts[0].strip()
+#         label = label_by_id.get(pid, str(pid))
+#         parts = label.split(" — ", 1)
+#         name = parts[0].strip()
 
-        # ✅ new: description + unit (best-effort)
-        desc = (getattr(p, "description", "") or "").strip()
-        unit = (getattr(p, "unit", "") or "").strip()
-        provider = (getattr(p, "provider_name", "") or "").strip()
+#         # ✅ new: description + unit (best-effort)
+#         desc = (getattr(p, "description", "") or "").strip()
+#         unit = (getattr(p, "unit", "") or "").strip()
+#         provider = (getattr(p, "provider_name", "") or "").strip()
 
 
-        existing_qty = float(qty_by_pid.get(pid, 0.0) or 0.0)
-        in_order = existing_qty > 0
-        qty_txt = f"{existing_qty:g}"
+#         existing_qty = float(qty_by_pid.get(pid, 0.0) or 0.0)
+#         in_order = existing_qty > 0
+#         qty_txt = f"{existing_qty:g}"
 
-        k_qty = ss_qty_key(editor_key, pid)
-        st.session_state.setdefault(k_qty, 0)
+#         k_qty = ss_qty_key(editor_key, pid)
+#         st.session_state.setdefault(k_qty, 0)
 
-        card_key = f"my_product_{pid}"
-        pill_key = f"{card_key}_pill"
+#         card_key = f"my_product_{pid}"
+#         pill_key = f"{card_key}_pill"
 
-        # ✅ tweak these to your taste
-        PILL_SIDE_PAD = 12
-        PILL_BOTTOM_PAD = 12
-        CARD_PAD_BOTTOM = 86  # space reserved so pill never overlaps content
+#         # ✅ tweak these to your taste
+#         PILL_SIDE_PAD = 12
+#         PILL_BOTTOM_PAD = 12
+#         CARD_PAD_BOTTOM = 86  # space reserved so pill never overlaps content
 
-        st.markdown(
-            f"""
-    <style>
-    /* --- Card --- */
-    .st-key-{card_key} {{
-    background:#fff;
-    border:3px solid rgba(0,0,0,.90);
-    border-radius:40px;
-    padding: 6px 6px {CARD_PAD_BOTTOM}px 6px;  /* ✅ reserve space for pill INSIDE */
-    margin-bottom:18px;
-    position:relative;
-    overflow:hidden; /* ✅ keeps pill clipped inside rounded corners */
-    }}
+#         st.markdown(
+#             f"""
+#     <style>
+#     /* --- Card --- */
+#     .st-key-{card_key} {{
+#     background:#fff;
+#     border:3px solid rgba(0,0,0,.90);
+#     border-radius:40px;
+#     padding: 6px 6px {CARD_PAD_BOTTOM}px 6px;  /* ✅ reserve space for pill INSIDE */
+#     margin-bottom:18px;
+#     position:relative;
+#     overflow:hidden; /* ✅ keeps pill clipped inside rounded corners */
+#     }}
 
-    /* Name */
-    .st-key-{card_key} .product-name {{
-    font-weight:900;
-    font-size:1.05rem;
-    line-height:1.2;
-    text-align:center;
-    padding: 24px 10px 6px 10px;
-    min-height: 92px;
-    display:flex;
-    align-items:center;
-    justify-content:center;
-    }}
+#     /* Name */
+#     .st-key-{card_key} .product-name {{
+#     font-weight:900;
+#     font-size:1.05rem;
+#     line-height:1.2;
+#     text-align:center;
+#     padding: 24px 10px 6px 10px;
+#     min-height: 92px;
+#     display:flex;
+#     align-items:center;
+#     justify-content:center;
+#     }}
     
-    /* Provider name (small, subtle) */
-    .st-key-{card_key} .product-provider{{
-    text-align: center;
-    font-size: .78rem;
-    font-weight: 800;
-    letter-spacing: .4px;
-    text-transform: uppercase;
-    opacity: .65;
-    margin-top: -6px;
-    margin-bottom: 6px;
-    }}
+#     /* Provider name (small, subtle) */
+#     .st-key-{card_key} .product-provider{{
+#     text-align: center;
+#     font-size: .78rem;
+#     font-weight: 800;
+#     letter-spacing: .4px;
+#     text-transform: uppercase;
+#     opacity: .65;
+#     margin-top: -6px;
+#     margin-bottom: 6px;
+#     }}
 
 
-    /* ✅ NEW: description + unit (small + muted) */
-    .st-key-{card_key} .product-meta {{
-    text-align:center;
-    margin-top:-4px;
-    padding: 0 14px 6px 14px;
-    }}
-    .st-key-{card_key} .product-desc {{
-    font-size:.78rem;
-    line-height:1.15;
-    opacity:.55;
-    font-weight:700;
-    }}
-    .st-key-{card_key} .product-unit {{
-    font-size:.74rem;
-    opacity:.45;
-    font-weight:800;
-    margin-top:2px;
-    }}
+#     /* ✅ NEW: description + unit (small + muted) */
+#     .st-key-{card_key} .product-meta {{
+#     text-align:center;
+#     margin-top:-4px;
+#     padding: 0 14px 6px 14px;
+#     }}
+#     .st-key-{card_key} .product-desc {{
+#     font-size:.78rem;
+#     line-height:1.15;
+#     opacity:.55;
+#     font-weight:700;
+#     }}
+#     .st-key-{card_key} .product-unit {{
+#     font-size:.74rem;
+#     opacity:.45;
+#     font-weight:800;
+#     margin-top:2px;
+#     }}
 
-    /* Badge */
-    .st-key-{card_key} .badge {{
-    position:absolute;
-    top:12px;
-    right:12px;
-    background: rgba(33,150,243,.95);
-    color:white;
-    font-weight:900;
-    font-size:.72rem;
-    padding: 2px 10px;
-    border-radius:999px;
-    z-index:3;
-    }}
+#     /* Badge */
+#     .st-key-{card_key} .badge {{
+#     position:absolute;
+#     top:12px;
+#     right:12px;
+#     background: rgba(33,150,243,.95);
+#     color:white;
+#     font-weight:900;
+#     font-size:.72rem;
+#     padding: 2px 10px;
+#     border-radius:999px;
+#     z-index:3;
+#     }}
 
-    /* --- Pill INSIDE card (absolute) --- */
-    .st-key-{pill_key} {{
-    position:absolute;
-    left:{PILL_SIDE_PAD}px;
-    right:{PILL_SIDE_PAD}px;
-    bottom:{PILL_BOTTOM_PAD}px;
+#     /* --- Pill INSIDE card (absolute) --- */
+#     .st-key-{pill_key} {{
+#     position:absolute;
+#     left:{PILL_SIDE_PAD}px;
+#     right:{PILL_SIDE_PAD}px;
+#     bottom:{PILL_BOTTOM_PAD}px;
 
-    background:#f3f4f6;
-    border:2px solid rgba(0,0,0,.18);
-    border-radius:45px;
-    padding: 10px 12px;
-    box-shadow: 0 10px 24px rgba(0,0,0,.10);
-    z-index:2;
-    }}
+#     background:#f3f4f6;
+#     border:2px solid rgba(0,0,0,.18);
+#     border-radius:45px;
+#     padding: 10px 12px;
+#     box-shadow: 0 10px 24px rgba(0,0,0,.10);
+#     z-index:2;
+#     }}
 
-    /* Make pill widgets align nicely */
-    .st-key-{pill_key} [data-testid="stHorizontalBlock"] {{
-    align-items:center;
-    gap:10px;
-    }}
+#     /* Make pill widgets align nicely */
+#     .st-key-{pill_key} [data-testid="stHorizontalBlock"] {{
+#     align-items:center;
+#     gap:10px;
+#     }}
 
-    /* Number input: keep compact */
-    .st-key-{pill_key} [data-testid="stNumberInput"] {{
-    max-width:110px;
-    }}
-    .st-key-{pill_key} input {{
-    text-align:center;
-    font-weight:900;
-    }}
+#     /* Number input: keep compact */
+#     .st-key-{pill_key} [data-testid="stNumberInput"] {{
+#     max-width:110px;
+#     }}
+#     .st-key-{pill_key} input {{
+#     text-align:center;
+#     font-weight:900;
+#     }}
 
-    /* Button: full height inside pill */
-    .st-key-{pill_key} [data-testid="stButton"] button {{
-    border-radius:14px;
-    font-weight:900;
-    }}
-    </style>
-    """,
-            unsafe_allow_html=True,
-        )
+#     /* Button: full height inside pill */
+#     .st-key-{pill_key} [data-testid="stButton"] button {{
+#     border-radius:14px;
+#     font-weight:900;
+#     }}
+#     </style>
+#     """,
+#             unsafe_allow_html=True,
+#         )
 
-        with st.container(key=card_key):
-            if in_order:
-                st.markdown(f"<div class='badge'>✓ {qty_txt}</div>", unsafe_allow_html=True)
+#         with st.container(key=card_key):
+#             if in_order:
+#                 st.markdown(f"<div class='badge'>✓ {qty_txt}</div>", unsafe_allow_html=True)
 
-            st.markdown(f"<div class='product-name'>{name}</div>", unsafe_allow_html=True)
+#             st.markdown(f"<div class='product-name'>{name}</div>", unsafe_allow_html=True)
             
-            if provider:
-                st.markdown(f"<div class='product-provider'>{provider}</div>", unsafe_allow_html=True)
+#             if provider:
+#                 st.markdown(f"<div class='product-provider'>{provider}</div>", unsafe_allow_html=True)
 
-            # ✅ NEW meta lines
-            meta_html = "<div class='product-meta'>"
-            if desc:
-                meta_html += f"<div class='product-desc'>{desc}</div>"
-            if unit:
-                meta_html += f"<div class='product-unit'>{unit}</div>"
-            meta_html += "</div>"
-            st.markdown(meta_html, unsafe_allow_html=True)
+#             # ✅ NEW meta lines
+#             meta_html = "<div class='product-meta'>"
+#             if desc:
+#                 meta_html += f"<div class='product-desc'>{desc}</div>"
+#             if unit:
+#                 meta_html += f"<div class='product-unit'>{unit}</div>"
+#             meta_html += "</div>"
+#             st.markdown(meta_html, unsafe_allow_html=True)
 
-            # Pill UI (inside card, anchored at bottom)
-            # Pill UI (inside card, anchored at bottom)
-            with st.container(key=pill_key, horizontal=True, gap="small"):
+#             # Pill UI (inside card, anchored at bottom)
+#             # Pill UI (inside card, anchored at bottom)
+#             with st.container(key=pill_key, horizontal=True, gap="small"):
 
-            # - button (only changes draft qty in session, NO DB)
+#             # - button (only changes draft qty in session, NO DB)
     
-                if st.button("−", key=f"minus_{pid}", use_container_width=True):
-                    st.session_state[k_qty] = max(0, int(st.session_state[k_qty]) - 1)
+#                 if st.button("−", key=f"minus_{pid}", use_container_width=True):
+#                     st.session_state[k_qty] = max(0, int(st.session_state[k_qty]) - 1)
 
-            # qty display (draft)
+#             # qty display (draft)
         
-                st.markdown(
-                    f"<div style='text-align:center;font-weight:900;font-size:1.05rem;padding-top:8px;'>"
-                    f"{int(st.session_state[k_qty])}</div>",
-                    unsafe_allow_html=True
-                )
+#                 st.markdown(
+#                     f"<div style='text-align:center;font-weight:900;font-size:1.05rem;padding-top:8px;'>"
+#                     f"{int(st.session_state[k_qty])}</div>",
+#                     unsafe_allow_html=True
+#                 )
 
-            # + button (only changes draft qty in session, NO DB)
+#             # + button (only changes draft qty in session, NO DB)
         
-                if st.button("+", key=f"plus_{pid}", use_container_width=True):
-                    st.session_state[k_qty] = int(st.session_state[k_qty]) + 1
+#                 if st.button("+", key=f"plus_{pid}", use_container_width=True):
+#                     st.session_state[k_qty] = int(st.session_state[k_qty]) + 1
 
-            # ✅ Commit button (THIS is the only place DB updates happen)
+#             # ✅ Commit button (THIS is the only place DB updates happen)
         
-                action_label = "Sumar" if in_order else "Añadir"
-                if st.button(action_label, key=f"add_{pid}", use_container_width=True, type="primary"):
-                    qty_val = int(st.session_state[k_qty])
-                    if qty_val > 0:
-                        _add_product_to_df(pid, qty_val)  # ✅ DB write ONLY here
-                        st.session_state[k_qty] = 0
-                        st.rerun()
+#                 action_label = "Sumar" if in_order else "Añadir"
+#                 if st.button(action_label, key=f"add_{pid}", use_container_width=True, type="primary"):
+#                     qty_val = int(st.session_state[k_qty])
+#                     if qty_val > 0:
+#                         _add_product_to_df(pid, qty_val)  # ✅ DB write ONLY here
+#                         st.session_state[k_qty] = 0
+#                         st.rerun()
 
 
 
 
-                st.markdown("</div>", unsafe_allow_html=True)
+#                 st.markdown("</div>", unsafe_allow_html=True)
 
 
 
-    st.markdown("""
-    <style>
-    /* Force 2 columns on mobile Safari inside this container */
-    @media (max-width: 900px) {
+#     st.markdown("""
+#     <style>
+#     /* Force 2 columns on mobile Safari inside this container */
+#     @media (max-width: 900px) {
 
-    /* The row wrapper that holds columns */
-    .st-key-my_blue_container [data-testid="stHorizontalBlock"],
-    .st-key-my_blue_container div[data-testid="stHorizontalBlock"]{
-        display: flex !important;
-        flex-wrap: wrap !important;
-        gap: 10px !important;
-    }
+#     /* The row wrapper that holds columns */
+#     .st-key-my_blue_container [data-testid="stHorizontalBlock"],
+#     .st-key-my_blue_container div[data-testid="stHorizontalBlock"]{
+#         display: flex !important;
+#         flex-wrap: wrap !important;
+#         gap: 10px !important;
+#     }
 
-    /* Columns (Streamlit has used different testids across versions) */
-    .st-key-my_blue_container [data-testid="column"],
-    .st-key-my_blue_container [data-testid="stColumn"],
-    .st-key-my_blue_container div[data-testid="column"],
-    .st-key-my_blue_container div[data-testid="stColumn"]{
-        flex: 0 0 calc(50% - 10px) !important;
-        width: calc(50% - 10px) !important;
-        max-width: calc(50% - 10px) !important;
-        min-width: 0 !important;
-    }
+#     /* Columns (Streamlit has used different testids across versions) */
+#     .st-key-my_blue_container [data-testid="column"],
+#     .st-key-my_blue_container [data-testid="stColumn"],
+#     .st-key-my_blue_container div[data-testid="column"],
+#     .st-key-my_blue_container div[data-testid="stColumn"]{
+#         flex: 0 0 calc(50% - 10px) !important;
+#         width: calc(50% - 10px) !important;
+#         max-width: calc(50% - 10px) !important;
+#         min-width: 0 !important;
+#     }
 
-    /* Prevent widgets from imposing min-width that breaks the column */
-    .st-key-my_blue_container *{
-        min-width: 0 !important;
-    }
-    }
-    </style>
-    """, unsafe_allow_html=True)
+#     /* Prevent widgets from imposing min-width that breaks the column */
+#     .st-key-my_blue_container *{
+#         min-width: 0 !important;
+#     }
+#     }
+#     </style>
+#     """, unsafe_allow_html=True)
 
-    with st.container(border=True, key="my_blue_container", height=800):
-        # 2 cards per row
-        for i in range(0, len(pids_page), 2):
-            col1, col2 = st.columns(2, gap="small")
+#     with st.container(border=True, key="my_blue_container", height=800):
+#         # 2 cards per row
+#         for i in range(0, len(pids_page), 2):
+#             col1, col2 = st.columns(2, gap="small")
 
-            pid1 = pids_page[i]
-            with col1:
-                render_product_card(pid1)
+#             pid1 = pids_page[i]
+#             with col1:
+#                 render_product_card(pid1)
 
-            if i + 1 < len(pids_page):
-                pid2 = pids_page[i + 1]
-                with col2:
-                    render_product_card(pid2)
+#             if i + 1 < len(pids_page):
+#                 pid2 = pids_page[i + 1]
+#                 with col2:
+#                     render_product_card(pid2)
 
  
     df_for_editor = _sanitize_editor_df(st.session_state[df_state_key])
