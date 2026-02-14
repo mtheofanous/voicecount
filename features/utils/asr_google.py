@@ -5,6 +5,7 @@ import io
 import struct
 from typing import List, Optional
 import os
+from core.config import ensure_google_credentials_file
 
 
 
@@ -86,25 +87,21 @@ def _guess_google_language_code(language: str, vocab: List[str]) -> str:
 def asr_google(audio_bytes: bytes, vocab: List[str], language: str = "es") -> str:
     """
     Google Cloud Speech-to-Text transcription.
-    Drop-in replacement interface:
-        asr_google(audio_bytes: bytes, vocab: List[str], language: str = "es") -> str
 
-    Requirements:
-      pip install google-cloud-speech
-      and Google credentials via Application Default Credentials:
-        export GOOGLE_APPLICATION_CREDENTIALS="/path/to/service_account.json"
-      OR run in an environment with ADC set up (e.g., GCP).
+    Works locally (GOOGLE_APPLICATION_CREDENTIALS points to a JSON file)
+    and on Streamlit Cloud (GOOGLE_CREDENTIALS_JSON stored in secrets).
     """
 
+    # ✅ Make sure creds exist and GOOGLE_APPLICATION_CREDENTIALS is set to a FILE PATH
+    ensure_google_credentials_file()
 
-    if not os.getenv("GOOGLE_APPLICATION_CREDENTIALS"):
+    credentials_path = (os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
+    if not credentials_path:
         raise RuntimeError(
             "Google Speech credentials missing.\n"
-            "Set GOOGLE_APPLICATION_CREDENTIALS in your environment "
-            "or .env file and restart Streamlit."
+            "On Streamlit Cloud: set GOOGLE_CREDENTIALS_JSON in Secrets.\n"
+            "Locally: set GOOGLE_APPLICATION_CREDENTIALS to a service-account JSON file path."
         )
-        
-    
 
     if not audio_bytes:
         return ""
@@ -117,37 +114,25 @@ def asr_google(audio_bytes: bytes, vocab: List[str], language: str = "es") -> st
     # Google needs language_code
     language_code = _guess_google_language_code(language, vocab)
 
-    # Use catalog phrases as Speech Contexts (very effective for product names)
-    # Keep it bounded; huge lists can slow / reduce quality.
+    # Speech contexts (catalog phrases)
     phrases = [p for p in (vocab or []) if isinstance(p, str) and p.strip()]
-    phrases = phrases[:500]  # safe cap
+    phrases = phrases[:500]
+    speech_contexts = [speech.SpeechContext(phrases=phrases, boost=15.0)] if phrases else []
 
-    speech_contexts = []
-    if phrases:
-        speech_contexts = [speech.SpeechContext(phrases=phrases, boost=15.0)]
-
-    # Detect WAV details if possible
     # Convert audio to Google-compatible WAV (16-bit PCM)
     audio_bytes = convert_to_wav_linear16(audio_bytes)
 
-    # Now parse WAV header
+    # Parse WAV header
     sr, ch, bits = _parse_wav_header(audio_bytes)
 
-
-    # If not WAV, you have two options:
-    #  1) Ensure Streamlit records WAV (recommended; your mic input already requests sample_rate=16000)
-    #  2) Convert with ffmpeg/pydub before calling this function
     if not _looks_like_wav(audio_bytes):
         raise RuntimeError(
             "Google ASR backend expects WAV/LINEAR16 audio_bytes. "
-            "Your audio does not look like WAV. Convert to 16kHz mono WAV before calling asr_google()."
+            "Convert to 16kHz mono WAV before calling asr_google()."
         )
 
-    # Reasonable defaults if header parsing fails
     sample_rate_hz = int(sr or 16000)
     channels = int(ch or 1)
-    bits_per_sample = int(bits or 16)
-
 
     client = speech.SpeechClient()
 
@@ -161,12 +146,9 @@ def asr_google(audio_bytes: bytes, vocab: List[str], language: str = "es") -> st
         speech_contexts=speech_contexts,
     )
 
-
     audio = speech.RecognitionAudio(content=audio_bytes)
-
     resp = client.recognize(config=config, audio=audio)
 
-    # Pick best transcript
     best = ""
     best_conf = -1.0
     for result in resp.results:
@@ -175,8 +157,7 @@ def asr_google(audio_bytes: bytes, vocab: List[str], language: str = "es") -> st
         alt = result.alternatives[0]
         txt = (alt.transcript or "").strip()
         conf = float(getattr(alt, "confidence", 0.0) or 0.0)
-        # Sometimes confidence is 0.0; still keep first non-empty
-        if txt and (conf > best_conf):
+        if txt and conf > best_conf:
             best, best_conf = txt, conf
 
     return best

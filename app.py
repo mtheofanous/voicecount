@@ -445,17 +445,6 @@ def _call_page(fn, venue_id: int, **kwargs):
 
 def main():
     bootstrap_once()
-    import os, pathlib
-    p = (os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
-
-    st.write("GAC starts with { ?", p.startswith("{"))
-    st.write("GAC length:", len(p))
-
-    if p and not p.startswith("{"):
-        st.write("exists?", pathlib.Path(p).exists())
-    else:
-        st.write("exists?", False)
-
 
     _css()
 
