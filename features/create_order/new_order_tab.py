@@ -1410,14 +1410,18 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     # =========================================================
     # Parsed summary preview card (Unified notebook with delete buttons)
     # =========================================================
-    parsed_df = st.session_state.get(S("parsed_df"))
-    order_chat = st.session_state.get(S("order_chat"), []) or []
-    
-    # Initialize strikethrough state
-    st.session_state.setdefault(S("striked_products"), set())
-    striked_products = st.session_state.get(S("striked_products"), set())
+    @st.fragment
+    def render_product_list():
+        """Fragment: Product list with strike/unstrike - isolated reruns for better performance"""
+        parsed_df = st.session_state.get(S("parsed_df"))
 
-    if isinstance(parsed_df, pd.DataFrame) and not parsed_df.empty:
+        # Initialize strikethrough state
+        st.session_state.setdefault(S("striked_products"), set())
+        striked_products = st.session_state.get(S("striked_products"), set())
+
+        if not isinstance(parsed_df, pd.DataFrame) or parsed_df.empty:
+            return
+
         # Vectorized counting (much faster than iterrows)
         # Create product keys vectorized
         names = parsed_df['matched_name'].fillna(parsed_df['spoken_name']).fillna('').astype(str).str.strip()
@@ -1434,9 +1438,8 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         pid_is_null = parsed_df['matched_product_id'].isna()
         has_revisar = status_series.str.contains('revis', na=False)
         any_needs_review = (pid_is_null | has_revisar).any()
-        
+
         # Product list with delete buttons
-        # st.markdown('<div class="voi-notebook-products">', unsafe_allow_html=True)
         css = """
         .st-key-my_blue_container {
             background-color: rgba(254, 249, 231, 1);
@@ -1451,7 +1454,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 pid = r.get("matched_product_id", None)
                 unit = safe_str(r.get("unit") or "unit").strip()
                 provider = safe_str(r.get("provider") or "").strip()
-                
+
                 # Get description
                 description = ""
                 if pid is not None and not (isinstance(pid, float) and pd.isna(pid)):
@@ -1461,20 +1464,17 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                             description = safe_str(getattr(prod, "description", "") or "").strip()
                     except Exception:
                         pass
-                
+
                 if not name:
                     continue
-                
+
                 product_key = f"{row_idx}_{name}_{qty}"
                 is_striked = product_key in striked_products
-                
-                # Create columns for product and delete button
-                # col_product, col_delete = st.columns([11, 1])
-                
+
                 with st.container(horizontal=True):
                     # Product name with quantity
                     strike_style = "text-decoration: line-through; text-decoration-color: #c41e3a; text-decoration-thickness: 2px; opacity: 0.4;" if is_striked else ""
-                    
+
                     qty_badge = ""
                     if qty:
                         try:
@@ -1482,12 +1482,12 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                             qty_badge = f'<span style="display: inline-flex; align-items: center; justify-content: center; min-width: 28px; padding: 2px 8px; background: rgba(196,30,58,0.15); border-radius: 4px; font-weight: 700; font-size: 1.15rem; color: #c41e3a; margin-right: 8px;">{qty_display}</span>'
                         except:
                             pass
-                    
+
                     st.markdown(
                         f'<div style="font-family: \'Inter\', sans-serif; font-size: 0.85rem; font-weight: 600; color: #1a1a1a; padding-top: 8px; {strike_style}">{qty_badge}{name}</div>',
                         unsafe_allow_html=True
                     )
-                    
+
                     # Product details
                     details_parts = []
                     if unit and unit != "unit":
@@ -1496,7 +1496,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                         details_parts.append(f'<span style="font-weight: 600; color: #2a2a2a;"></span> {description}')
                     if provider:
                         details_parts.append(f'<span style="font-weight: 600; color: #2a2a2a;"></span> {provider}')
-                    
+
                     if details_parts:
                         st.markdown(
                             f'<div style="font-family: \'Inter\', sans-serif; font-size: 0.75rem; color: #4a4a4a; padding: 4px 0 8px 0; {strike_style}">{" · ".join(details_parts)}</div>',
@@ -1504,9 +1504,8 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                         )
                     else:
                         st.markdown('<div style="height: 8px;"></div>', unsafe_allow_html=True)
-                
-                # with col_delete:
-                    # Delete button
+
+                    # Delete button (fragment rerun only)
                     btn_label = "↺" if is_striked else "✗"
                     if st.button(
                         btn_label,
@@ -1519,10 +1518,17 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                         else:
                             striked_products.add(product_key)
                         st.session_state[S("striked_products")] = striked_products
-                        st.rerun()
-                
+                        st.rerun(scope="fragment")  # Only rerun this fragment!
+
                 # Separator line
                 st.markdown('<div style="border-bottom: 1px dotted rgba(0,0,0,0.1); margin: 0;"></div>', unsafe_allow_html=True)
+
+    # Call the fragment
+    parsed_df = st.session_state.get(S("parsed_df"))
+    order_chat = st.session_state.get(S("order_chat"), []) or []
+
+    if isinstance(parsed_df, pd.DataFrame) and not parsed_df.empty:
+        render_product_list()
 
         
 
