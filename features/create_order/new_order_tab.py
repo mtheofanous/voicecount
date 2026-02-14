@@ -1794,22 +1794,24 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     wa_bar = st.container()
     with wa_bar:
         with st.form(key=K("wa_compose_form"), clear_on_submit=True):
-            # c1, c2, c3 = st.columns([10, 1.3, 1.3])
+            # 
 
             with st.container(horizontal=True):
-                typed = st.text_input(
-                    "",
-                    placeholder="Escribe como en WhatsApp... ej: 3 coca cola, hielo",
-                    key=K("wa_text_input_field"),
-                    label_visibility="collapsed",
-                )
+                c1, c2, c3 = st.columns([10, 1.3, 1.3])
+                with c1:
+                    typed = st.text_input(
+                        "",
+                        placeholder="Escribe como en WhatsApp... ej: 3 coca cola, hielo",
+                        key=K("wa_text_input_field"),
+                        label_visibility="collapsed",
+                    )
 
-            # Enter triggers first submit button -> keep SEND first
-            # with c2:
-                send_clicked = st.form_submit_button("➤", use_container_width=True, key=K("btn_send_to_notes"))
+                # Enter triggers first submit button -> keep SEND first
+                with c2:
+                    send_clicked = st.form_submit_button("➤", use_container_width=True, key=K("btn_send_to_notes"))
 
-            # with c3:
-                clear_clicked = st.form_submit_button("🗑️", use_container_width=True, key=K("btn_clear_notes"))
+                with c3:
+                    clear_clicked = st.form_submit_button("🗑️", use_container_width=True, key=K("btn_clear_notes"))
 
     wa_css = float_css_helper(
         left=SIDE_PAD,
