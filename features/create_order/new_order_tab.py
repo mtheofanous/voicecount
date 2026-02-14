@@ -628,7 +628,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 ]
 
             # Category selection
-            cat_list = sorted(all_categories)
+            cat_list = ["Todas"] + sorted(all_categories)
             st.session_state.setdefault(K("selected_cat_idx"), 0)
 
             if cat_list:
@@ -643,7 +643,10 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 selected_cat = cat_list[st.session_state[K("selected_cat_idx")]]
 
                 # Filter by category
-                cat_filtered = [p for p in filtered_products if getattr(p, "category", "") == selected_cat]
+                if selected_cat == "Todas":
+                    cat_filtered = filtered_products
+                else:
+                    cat_filtered = [p for p in filtered_products if getattr(p, "category", "") == selected_cat]
 
                 # Provider selection
                 providers_in_cat = sorted({getattr(p, "provider_name", "") or "Sin proveedor" for p in cat_filtered})
