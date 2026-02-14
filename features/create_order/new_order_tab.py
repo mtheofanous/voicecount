@@ -591,13 +591,39 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         # Initialize form data collection
         st.session_state.setdefault(K("form_submitted"), False)
 
+        # CSS to force buttons to stay horizontal on mobile
+        st.markdown("""
+        <style>
+        /* Force header buttons to stay horizontal on all screen sizes */
+        div[data-testid="column"] {
+            min-width: 0 !important;
+            flex-shrink: 1 !important;
+        }
+
+        div[data-testid="stHorizontalBlock"] {
+            flex-wrap: nowrap !important;
+            display: flex !important;
+            gap: 8px !important;
+        }
+
+        /* Ensure buttons stay readable on mobile */
+        @media (max-width: 640px) {
+            .stButton > button {
+                font-size: 0.8rem !important;
+                padding: 0.4rem 0.6rem !important;
+                white-space: nowrap !important;
+            }
+        }
+        </style>
+        """, unsafe_allow_html=True)
+
         # Fixed header container
         header_container = st.container()
         with header_container:
             st.markdown("### ➕ Añadir Productos")
 
             # Buttons row
-            with st.container(horizontal=True ):
+            with st.container(horizontal=True):
                 btn_col1, btn_col2 = st.columns([1, 1])
                 with btn_col1:
                     if st.button("← Volver", key=K("back_from_product_adder"), use_container_width=True):
