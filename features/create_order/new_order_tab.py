@@ -1675,7 +1675,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     )
     fab_btn_css += "padding: 0;"
     fab_btn_container.float(fab_btn_css)
-
+    # fab_btn_container.markdown(
     # =========================================================
     # 1) MIC OVERLAY (audio only)
     # =========================================================
