@@ -1804,15 +1804,23 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     # =========================================================
     # 🎯 DISCREET DRAFT SELECTOR (only if multiple drafts)
     # =========================================================
+    # Check if Add to borrador button should be shown (needed for draft selector logic)
+    parsed_df = st.session_state.get(S("parsed_df"))
+    show_add_button = isinstance(parsed_df, pd.DataFrame) and not parsed_df.empty
+
     # Check if we need to show draft selector
+    # Only show if: Add button exists AND popover flag is set AND multiple drafts exist
     show_draft_selector = False
     drafts_list = []
 
-    if st.session_state.get(S("show_draft_popover"), False):
+    if show_add_button and st.session_state.get(S("show_draft_popover"), False):
         drafts_list = load_venue_drafts(venue_id, _refresh_token=get_drafts_refresh_token())
 
         if len(drafts_list) > 1:
             show_draft_selector = True
+        else:
+            # If there aren't multiple drafts, clear the popover flag
+            st.session_state[S("show_draft_popover")] = False
     
     # Show discreet draft selector if needed
     if show_draft_selector:
@@ -1942,105 +1950,72 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     # =========================================================
     # 1) MIC OVERLAY (audio only)
     # =========================================================
-    mic_container = float_dialog(st.session_state.show_micro)
-    with mic_container:
-        st.markdown("#### 🎙️ Audio")
-        audio_file = st.audio_input("", key=K("audio_msg"), label_visibility="collapsed")
-        if audio_file is not None:
-            st.session_state[S("audio_bytes")] = audio_file.read()
+    if st.session_state.show_micro:
+        mic_container = st.container()
+        with mic_container:
+            st.markdown("#### 🎙️ Audio")
+            audio_file = st.audio_input("", key=K("audio_msg"), label_visibility="collapsed")
+            if audio_file is not None:
+                st.session_state[S("audio_bytes")] = audio_file.read()
 
-        if st.button("Close", key="close_smart_add"):
-            st.session_state.show_micro = False
-            st.rerun()
+            if st.button("Close", key="close_smart_add"):
+                st.session_state.show_micro = False
+                st.rerun()
 
-    # =========================================================
-    # 2) FLOATING "SELECCIONAR BORRADOR" BAR (only when needed)
-    #    This UI appears when your add flow sets show_draft_popover=True
-    # =========================================================
-    # show_picker = st.session_state.get(S("show_draft_popover"), False)
+        mic_overlay_css = float_css_helper(
+            left=SIDE_PAD,
+            right=SIDE_PAD,
+            bottom="10.0rem",
+            width="auto",
+            z_index="10001",
+        )
+        mic_overlay_css += """
+        background: rgba(255,255,255,.98);
+        backdrop-filter: saturate(180%) blur(16px);
+        border: 1px solid rgba(148,163,184,.45);
+        border-radius: 20px;
+        padding: 14px 16px;
+        box-shadow: 0 16px 48px rgba(2,6,23,.20), 0 0 0 1px rgba(255,255,255,.5) inset;
+        max-width: 400px;
+        margin: 0 auto;
+        """
+        mic_container.float(mic_overlay_css)
 
-    # # IMPORTANT: drafts must be available for the picker.
-    # # Fetch only when picker is visible to avoid extra DB calls (cached).
-    # drafts_for_picker = []
-    # if show_picker:
-    #     drafts_for_picker = load_venue_drafts(venue_id, _refresh_token=get_drafts_refresh_token())
-
-    # if show_picker:
-    #     picker_bar = st.container()
-    #     with picker_bar:
-    #         st.markdown("**Seleccionar borrador**")
-
-    #         options = [("Nuevo borrador", -1)] + [(f"Borrador #{d.id}", int(d.id)) for d in drafts_for_picker]
-    #         label_to_id = {lbl: did for (lbl, did) in options}
-    #         labels = [lbl for (lbl, _) in options]
-
-    #         chosen_label = st.selectbox(
-    #             "",
-    #             labels,
-    #             key=K("draft_picker_select"),
-    #             label_visibility="collapsed",
-    #         )
-
-    #         pc1, pc2 = st.columns([1, 1])
-    #         with pc1:
-    #             if st.button("Cancelar", use_container_width=True, key=K("draft_picker_cancel")):
-    #                 st.session_state[S("show_draft_popover")] = False
-    #                 st.rerun()
-
-    #         with pc2:
-    #             if st.button("Confirmar", type="primary", use_container_width=True, key=K("draft_picker_confirm")):
-    #                 st.session_state[S("selected_draft_id")] = label_to_id[chosen_label]
-    #                 st.session_state[S("show_draft_popover")] = False
-    #                 st.session_state[S("trigger_add")] = True  # run existing add flow
-    #                 st.rerun()
-
-    #     picker_css = float_css_helper(
-    #         left="2.0rem",              # more space from left edge
-    #         right="5.0rem",             # more space from right edge
-    #         bottom="11.75rem",     # above Add
-    #         width="auto",
-    #         z_index="9999",
-    #     )
-    #     picker_css += """
-    #     background: rgba(255,255,255,.98);
-    #     backdrop-filter: saturate(180%) blur(14px);
-    #     border: 1px solid rgba(148,163,184,.40);
-    #     border-radius: 20px;
-    #     padding: 12px 12px;
-    #     box-shadow: 0 14px 40px rgba(2,6,23,.16);
-    #     """
-    #     picker_bar.float(picker_css)
 
     # =========================================================
     # 3) FLOATING "ADD TO BORRADOR" BUTTON BAR (above composer)
     # =========================================================
-    add_bar = st.container()
-    with add_bar:
-        # This is the SAME add_clicked you already use to commit parsed_df -> borrador
-        add_clicked = st.button(
-            "Add to borrador",
-            type="primary",
-            use_container_width=True,
-            key=K("btn_add_note"),
-            # disabled=show_picker,  # prevents double interactions while picker is open
-        )
+    # show_add_button is already calculated earlier for draft selector logic
+    if show_add_button:
+        add_bar = st.container()
+        with add_bar:
+            # This is the SAME add_clicked you already use to commit parsed_df -> borrador
+            add_clicked = st.button(
+                "Add to borrador",
+                type="primary",
+                use_container_width=True,
+                key=K("btn_add_note"),
+                # disabled=show_picker,  # prevents double interactions while picker is open
+            )
 
-    add_css = float_css_helper(
-        left=SIDE_PAD,
-        right=SIDE_PAD,
-        bottom="5.75rem",
-        width="auto",
-        z_index="9998",
-    )
-    add_css += """
-    background: rgba(255,255,255,.96);
-    backdrop-filter: saturate(180%) blur(14px);
-    border: 1px solid rgba(148,163,184,.35);
-    border-radius: 20px;
-    padding: 10px 12px;
-    box-shadow: 0 12px 36px rgba(2,6,23,.14);
-    """
-    add_bar.float(add_css)
+        add_css = float_css_helper(
+            left=SIDE_PAD,
+            right=SIDE_PAD,
+            bottom="5.75rem",
+            width="auto",
+            z_index="9998",
+        )
+        add_css += """
+        background: rgba(255,255,255,.96);
+        backdrop-filter: saturate(180%) blur(14px);
+        border: 1px solid rgba(148,163,184,.35);
+        border-radius: 20px;
+        padding: 10px 12px;
+        box-shadow: 0 12px 36px rgba(2,6,23,.14);
+        """
+        add_bar.float(add_css)
+    else:
+        add_clicked = False
 
     # =========================================================
     # 4) FLOATING WHATSAPP COMPOSER (FAB-STYLE)
@@ -2048,7 +2023,6 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     # Initialize defaults
     typed = ""
     send_clicked = False
-    clear_clicked = False
 
     # Only show composer when toggled on
     if st.session_state.show_composer:
@@ -2066,7 +2040,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
             with st.form(key=K("wa_compose_form"), clear_on_submit=True):
                 with st.container(horizontal=True):
-                    c1, c2, c3 = st.columns([10, 1.3, 1.3])
+                    c1, c2 = st.columns([6, 1])
                     with c1:
                         typed = st.text_input(
                             "",
@@ -2079,13 +2053,10 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                     with c2:
                         send_clicked = st.form_submit_button("➤", use_container_width=True, key=K("btn_send_to_notes"))
 
-                    with c3:
-                        clear_clicked = st.form_submit_button("🗑️", use_container_width=True, key=K("btn_clear_notes"))
-
         # Style the floating composer (more compact FAB-style)
         wa_css = float_css_helper(
             left=SIDE_PAD,
-            right=SIDE_PAD,
+            right="1.10rem",  # keep some space from right edge
             bottom="8.0rem",  # Positioned away from bottom bar
             width="auto",
             z_index="9999",
@@ -2158,6 +2129,30 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         """
 
         wa_bar.float(wa_css)
+    else:
+        # Ensure variables are defined when composer is hidden
+        send_clicked = False
+        typed = ""
+
+    # =========================================================
+    # 4.5) FLOATING DELETE BUTTON FAB (below composer FAB)
+    # =========================================================
+    fab_delete_container = st.container()
+    with fab_delete_container:
+        clear_clicked = st.button(
+            "🗑️",
+            key=K("btn_clear_notes"),
+            help="Limpiar todo"
+        )
+
+    fab_delete_css = float_css_helper(
+        right="1.10rem",
+        bottom="9.0rem",   # below composer FAB
+        width="auto",
+        z_index="10000",
+    )
+    fab_delete_css += "padding: 0;"
+    fab_delete_container.float(fab_delete_css)
 
     # Spacer so page content isn't hidden behind picker + add + composer
     st.markdown("<div style='height:360px'></div>", unsafe_allow_html=True)
@@ -2172,7 +2167,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
     if send_clicked and typed and typed.strip():
         append_message("user", typed.strip())
-        # Keep composer open for consecutive entries
+        st.session_state.show_composer = False
         st.rerun()
 
     # =========================================================
