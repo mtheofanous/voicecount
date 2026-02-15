@@ -433,6 +433,33 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             if (m.get("text") or "").strip()
         ).strip()
 
+    def _merge_manual_products_back(parsed_df: pd.DataFrame) -> pd.DataFrame:
+        """Merge back any manually-added products (from Añadir productos) that were
+        preserved before re-parsing from chat."""
+        manual_backup = st.session_state.pop(S("_manual_products_backup"), None)
+        if not isinstance(manual_backup, pd.DataFrame) or manual_backup.empty:
+            return parsed_df
+
+        if not isinstance(parsed_df, pd.DataFrame) or parsed_df.empty:
+            return manual_backup
+
+        # For each manual product, add it or merge quantities with existing
+        for _, mrow in manual_backup.iterrows():
+            pid = mrow.get("matched_product_id")
+            if pid is not None and not pd.isna(pid):
+                existing_mask = parsed_df["matched_product_id"] == int(pid)
+                if existing_mask.any():
+                    # Product also came from voice — sum quantities
+                    idx = parsed_df.index[existing_mask][0]
+                    parsed_df.at[idx, "quantity"] = float(parsed_df.at[idx, "quantity"] or 0) + float(mrow.get("quantity") or 0)
+                    parsed_df.at[idx, "source"] = "manual"
+                else:
+                    parsed_df = pd.concat([parsed_df, pd.DataFrame([mrow])], ignore_index=True)
+            else:
+                parsed_df = pd.concat([parsed_df, pd.DataFrame([mrow])], ignore_index=True)
+
+        return parsed_df
+
     def append_message(role_: str, text_: str) -> None:
         text_ = (text_ or "").strip()
         if not text_:
@@ -443,6 +470,15 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
         # auto-parse after every change
         st.session_state[S("auto_parse_pending")] = True
+
+        # Preserve manually-added products (from Añadir productos) before clearing
+        old_df = st.session_state.get(S("parsed_df"))
+        if isinstance(old_df, pd.DataFrame) and not old_df.empty and "source" in old_df.columns:
+            manual_rows = old_df[old_df["source"] == "manual"].copy()
+            st.session_state[S("_manual_products_backup")] = manual_rows
+        else:
+            st.session_state.pop(S("_manual_products_backup"), None)
+
         st.session_state.pop(S("parsed_df"), None)
         st.session_state.pop(S("parse_candidates_df"), None)
         st.session_state.pop(S("finalize_parse_pending"), None)
@@ -718,7 +754,8 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                                             "suggestions": [],
                                             "recommended_pid": pid,
                                             "status": "OK",
-                                            "provider": pprov
+                                            "provider": pprov,
+                                            "source": "manual",
                                         }])
 
                                         if isinstance(parsed_df, pd.DataFrame) and not parsed_df.empty:
@@ -1347,11 +1384,12 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                     st.session_state[S("parse_candidates_df")] = df2
                     st.session_state[S("finalize_parse_pending")] = False
 
-                    st.session_state[S("parsed_df")] = finalize_candidates_to_df(
+                    new_parsed = finalize_candidates_to_df(
                         df2,
                         products_by_id=products_by_id,
                         venue_id=venue_id,
                     )
+                    st.session_state[S("parsed_df")] = _merge_manual_products_back(new_parsed)
                     st.rerun()
 
 
@@ -1578,11 +1616,18 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             ]
             if needs_choice.empty:
                 st.session_state[S("finalize_parse_pending")] = False
-                st.session_state[S("parsed_df")] = finalize_candidates_to_df(
+                new_parsed = finalize_candidates_to_df(
                     candidates_df,
                     products_by_id=products_by_id,
                     venue_id=venue_id,
                 )
+                st.session_state[S("parsed_df")] = _merge_manual_products_back(new_parsed)
+        else:
+            # No voice products parsed — restore manual products if any
+            manual_backup = st.session_state.pop(S("_manual_products_backup"), None)
+            if isinstance(manual_backup, pd.DataFrame) and not manual_backup.empty:
+                st.session_state[S("parsed_df")] = manual_backup
+                st.session_state[S("finalize_parse_pending")] = False
         st.rerun()
 
 
