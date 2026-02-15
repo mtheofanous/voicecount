@@ -1841,6 +1841,9 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     with fab_product_container:
         if st.button("➕", key="smart_product_add_fab", help="Añadir productos"):
             st.session_state.product_adder_fullpage = True
+            st.session_state.show_micro = False
+            st.session_state.show_composer = False
+            st.session_state.show_draft_selector = False
             st.rerun()
 
     fab_product_css = float_css_helper(
@@ -1857,6 +1860,8 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     with fab_mic_container:
         if st.button("🎙️", key="smart_add_fab"):
             st.session_state.show_micro = True
+            st.session_state.show_composer = False
+            st.session_state.show_draft_selector = False
             st.rerun()
 
     fab_mic_css = float_css_helper(
@@ -1874,6 +1879,8 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         with fab_composer_container:
             if st.button("✏️", key="smart_composer_fab", help="Escribir pedido"):
                 st.session_state.show_composer = True
+                st.session_state.show_micro = False
+                st.session_state.show_draft_selector = False
                 st.rerun()
 
         fab_composer_css = float_css_helper(
@@ -2083,6 +2090,8 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             with fab_draft_container:
                 if st.button("📋", key=K("fab_draft_select"), help="Seleccionar borrador"):
                     st.session_state.show_draft_selector = True
+                    st.session_state.show_micro = False
+                    st.session_state.show_composer = False
                     st.rerun()
 
             fab_draft_css = float_css_helper(
