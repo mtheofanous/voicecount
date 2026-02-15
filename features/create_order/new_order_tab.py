@@ -1957,59 +1957,59 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     # 2) FLOATING "SELECCIONAR BORRADOR" BAR (only when needed)
     #    This UI appears when your add flow sets show_draft_popover=True
     # =========================================================
-    show_picker = st.session_state.get(S("show_draft_popover"), False)
+    # show_picker = st.session_state.get(S("show_draft_popover"), False)
 
-    # IMPORTANT: drafts must be available for the picker.
-    # Fetch only when picker is visible to avoid extra DB calls (cached).
-    drafts_for_picker = []
-    if show_picker:
-        drafts_for_picker = load_venue_drafts(venue_id, _refresh_token=get_drafts_refresh_token())
+    # # IMPORTANT: drafts must be available for the picker.
+    # # Fetch only when picker is visible to avoid extra DB calls (cached).
+    # drafts_for_picker = []
+    # if show_picker:
+    #     drafts_for_picker = load_venue_drafts(venue_id, _refresh_token=get_drafts_refresh_token())
 
-    if show_picker:
-        picker_bar = st.container()
-        with picker_bar:
-            st.markdown("**Seleccionar borrador**")
+    # if show_picker:
+    #     picker_bar = st.container()
+    #     with picker_bar:
+    #         st.markdown("**Seleccionar borrador**")
 
-            options = [("Nuevo borrador", -1)] + [(f"Borrador #{d.id}", int(d.id)) for d in drafts_for_picker]
-            label_to_id = {lbl: did for (lbl, did) in options}
-            labels = [lbl for (lbl, _) in options]
+    #         options = [("Nuevo borrador", -1)] + [(f"Borrador #{d.id}", int(d.id)) for d in drafts_for_picker]
+    #         label_to_id = {lbl: did for (lbl, did) in options}
+    #         labels = [lbl for (lbl, _) in options]
 
-            chosen_label = st.selectbox(
-                "",
-                labels,
-                key=K("draft_picker_select"),
-                label_visibility="collapsed",
-            )
+    #         chosen_label = st.selectbox(
+    #             "",
+    #             labels,
+    #             key=K("draft_picker_select"),
+    #             label_visibility="collapsed",
+    #         )
 
-            pc1, pc2 = st.columns([1, 1])
-            with pc1:
-                if st.button("Cancelar", use_container_width=True, key=K("draft_picker_cancel")):
-                    st.session_state[S("show_draft_popover")] = False
-                    st.rerun()
+    #         pc1, pc2 = st.columns([1, 1])
+    #         with pc1:
+    #             if st.button("Cancelar", use_container_width=True, key=K("draft_picker_cancel")):
+    #                 st.session_state[S("show_draft_popover")] = False
+    #                 st.rerun()
 
-            with pc2:
-                if st.button("Confirmar", type="primary", use_container_width=True, key=K("draft_picker_confirm")):
-                    st.session_state[S("selected_draft_id")] = label_to_id[chosen_label]
-                    st.session_state[S("show_draft_popover")] = False
-                    st.session_state[S("trigger_add")] = True  # run existing add flow
-                    st.rerun()
+    #         with pc2:
+    #             if st.button("Confirmar", type="primary", use_container_width=True, key=K("draft_picker_confirm")):
+    #                 st.session_state[S("selected_draft_id")] = label_to_id[chosen_label]
+    #                 st.session_state[S("show_draft_popover")] = False
+    #                 st.session_state[S("trigger_add")] = True  # run existing add flow
+    #                 st.rerun()
 
-        picker_css = float_css_helper(
-            left=SIDE_PAD,
-            right=SIDE_PAD,
-            bottom=PICKER_BOTTOM,     # above Add
-            width="auto",
-            z_index="9999",
-        )
-        picker_css += """
-        background: rgba(255,255,255,.98);
-        backdrop-filter: saturate(180%) blur(14px);
-        border: 1px solid rgba(148,163,184,.40);
-        border-radius: 20px;
-        padding: 12px 12px;
-        box-shadow: 0 14px 40px rgba(2,6,23,.16);
-        """
-        picker_bar.float(picker_css)
+    #     picker_css = float_css_helper(
+    #         left="2.0rem",              # more space from left edge
+    #         right="5.0rem",             # more space from right edge
+    #         bottom="11.75rem",     # above Add
+    #         width="auto",
+    #         z_index="9999",
+    #     )
+    #     picker_css += """
+    #     background: rgba(255,255,255,.98);
+    #     backdrop-filter: saturate(180%) blur(14px);
+    #     border: 1px solid rgba(148,163,184,.40);
+    #     border-radius: 20px;
+    #     padding: 12px 12px;
+    #     box-shadow: 0 14px 40px rgba(2,6,23,.16);
+    #     """
+    #     picker_bar.float(picker_css)
 
     # =========================================================
     # 3) FLOATING "ADD TO BORRADOR" BUTTON BAR (above composer)
@@ -2022,7 +2022,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             type="primary",
             use_container_width=True,
             key=K("btn_add_note"),
-            disabled=show_picker,  # prevents double interactions while picker is open
+            # disabled=show_picker,  # prevents double interactions while picker is open
         )
 
     add_css = float_css_helper(
