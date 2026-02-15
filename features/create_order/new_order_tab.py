@@ -2028,7 +2028,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     add_css = float_css_helper(
         left=SIDE_PAD,
         right=SIDE_PAD,
-        bottom=ADD_BOTTOM,
+        bottom="5.75rem",
         width="auto",
         z_index="9998",
     )
