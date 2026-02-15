@@ -1801,66 +1801,9 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     # =========================================================
     st.session_state.setdefault(S("wa_text_input"), "")
 
-    # =========================================================
-    # 🎯 DISCREET DRAFT SELECTOR (only if multiple drafts)
-    # =========================================================
-    # Check if Add to borrador button should be shown (needed for draft selector logic)
+    # Draft selector check (rendered as floating container below)
     parsed_df = st.session_state.get(S("parsed_df"))
     show_add_button = isinstance(parsed_df, pd.DataFrame) and not parsed_df.empty
-
-    # Check if we need to show draft selector
-    # Only show if: Add button exists AND popover flag is set AND multiple drafts exist
-    show_draft_selector = False
-    drafts_list = []
-
-    if show_add_button and st.session_state.get(S("show_draft_popover"), False):
-        drafts_list = load_venue_drafts(venue_id, _refresh_token=get_drafts_refresh_token())
-
-        if len(drafts_list) > 1:
-            show_draft_selector = True
-        else:
-            # If there aren't multiple drafts, clear the popover flag
-            st.session_state[S("show_draft_popover")] = False
-    
-    # Show discreet draft selector if needed
-    if show_draft_selector:
-        with st.popover("📋 Seleccionar borrador", use_container_width=False):
-            st.caption("¿A qué borrador quieres añadir?")
-            
-            # Create compact options
-            draft_options = []
-            draft_ids = []
-            for draft in drafts_list:
-                title = draft.title or "Sin título"
-                date = draft.created_at.strftime('%d/%m %H:%M')
-                draft_options.append(f"#{draft.id} {title} · {date}")
-                draft_ids.append(int(draft.id))
-            
-            # Radio selection
-            chosen_idx = st.radio(
-                "Elige:",
-                range(len(draft_options)),
-                format_func=lambda i: draft_options[i],
-                key=K("draft_quick_select"),
-                label_visibility="collapsed"
-            )
-            
-            col1, col2 = st.columns(2)
-            with col1:
-                if st.button("✓ Aquí", key=K("confirm_quick"), use_container_width=True, type="primary"):
-                    # Set the selected draft and trigger add action
-                    st.session_state[S("selected_draft_id")] = draft_ids[chosen_idx]
-                    st.session_state[S("show_draft_popover")] = False
-                    st.session_state[S("trigger_add")] = True  # Signal to process the add
-                    st.rerun()
-                    
-            with col2:
-                if st.button("+ Nuevo", key=K("new_quick"), use_container_width=True):
-                    # Signal to create new draft
-                    st.session_state[S("selected_draft_id")] = -1
-                    st.session_state[S("show_draft_popover")] = False
-                    st.session_state[S("trigger_add")] = True  # Signal to process the add
-                    st.rerun()
 
     st.markdown('<div class="voi-bottom-wrap"><div class="voi-bottom-inner">', unsafe_allow_html=True)
     
@@ -1953,12 +1896,21 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     if st.session_state.show_micro:
         mic_container = st.container()
         with mic_container:
-            st.markdown("#### 🎙️ Audio")
-            audio_file = st.audio_input("", key=K("audio_msg"), label_visibility="collapsed")
-            if audio_file is not None:
-                st.session_state[S("audio_bytes")] = audio_file.read()
+            # Header with close button
+            with st.container():
+                col_title, col_close = st.columns([4, 1])
+                with col_title:
+                    st.markdown("**🎙️ Audio**")
+                with col_close:
+                    if st.button("✕", key=K("close_mic"), help="Cerrar"):
+                        st.session_state.show_micro = False
+                        st.rerun()
 
-            if st.button("Close", key="close_smart_add"):
+            audio_file = st.audio_input("", key=K("audio_msg"), label_visibility="collapsed")
+
+            if st.button("➤ Enviar audio", key=K("btn_send_audio"), use_container_width=True, type="primary"):
+                if audio_file is not None:
+                    st.session_state[S("audio_bytes")] = audio_file.read()
                 st.session_state.show_micro = False
                 st.rerun()
 
@@ -1981,41 +1933,6 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         """
         mic_container.float(mic_overlay_css)
 
-
-    # =========================================================
-    # 3) FLOATING "ADD TO BORRADOR" BUTTON BAR (above composer)
-    # =========================================================
-    # show_add_button is already calculated earlier for draft selector logic
-    if show_add_button:
-        add_bar = st.container()
-        with add_bar:
-            # This is the SAME add_clicked you already use to commit parsed_df -> borrador
-            add_clicked = st.button(
-                "Add to borrador",
-                type="primary",
-                use_container_width=True,
-                key=K("btn_add_note"),
-                # disabled=show_picker,  # prevents double interactions while picker is open
-            )
-
-        add_css = float_css_helper(
-            left=SIDE_PAD,
-            right=SIDE_PAD,
-            bottom="5.75rem",
-            width="auto",
-            z_index="9998",
-        )
-        add_css += """
-        background: rgba(255,255,255,.96);
-        backdrop-filter: saturate(180%) blur(14px);
-        border: 1px solid rgba(148,163,184,.35);
-        border-radius: 20px;
-        padding: 10px 12px;
-        box-shadow: 0 12px 36px rgba(2,6,23,.14);
-        """
-        add_bar.float(add_css)
-    else:
-        add_clicked = False
 
     # =========================================================
     # 4) FLOATING WHATSAPP COMPOSER (FAB-STYLE)
@@ -2154,6 +2071,100 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     fab_delete_css += "padding: 0;"
     fab_delete_container.float(fab_delete_css)
 
+    # =========================================================
+    # 🎯 FLOATING DRAFT SELECTOR FAB + PANEL
+    # =========================================================
+    st.session_state.setdefault("show_draft_selector", False)
+
+    if show_add_button:
+        # FAB button (show when panel is closed)
+        if not st.session_state.show_draft_selector:
+            fab_draft_container = st.container()
+            with fab_draft_container:
+                if st.button("📋", key=K("fab_draft_select"), help="Seleccionar borrador"):
+                    st.session_state.show_draft_selector = True
+                    st.rerun()
+
+            fab_draft_css = float_css_helper(
+                right="1.10rem",
+                bottom="5.75rem",
+                width="auto",
+                z_index="10000",
+            )
+            fab_draft_css += "padding: 0;"
+            fab_draft_container.float(fab_draft_css)
+
+        # Expanded panel (show when toggled on)
+        if st.session_state.show_draft_selector:
+            drafts_list = load_venue_drafts(venue_id, _refresh_token=get_drafts_refresh_token())
+
+            draft_panel = st.container()
+            with draft_panel:
+                col_title, col_close = st.columns([4, 1])
+                with col_title:
+                    st.caption("📋 ¿A qué borrador quieres añadir?")
+                with col_close:
+                    if st.button("✕", key=K("close_draft_selector"), help="Cerrar"):
+                        st.session_state.show_draft_selector = False
+                        st.rerun()
+
+                if drafts_list:
+                    draft_options = []
+                    draft_ids = []
+                    for draft in drafts_list:
+                        title = draft.title or "Sin título"
+                        date = draft.created_at.strftime('%d/%m %H:%M')
+                        draft_options.append(f"#{draft.id} {title} · {date}")
+                        draft_ids.append(int(draft.id))
+
+                    chosen_idx = st.radio(
+                        "Elige:",
+                        range(len(draft_options)),
+                        format_func=lambda i: draft_options[i],
+                        key=K("draft_quick_select"),
+                        label_visibility="collapsed"
+                    )
+
+                    col1, col2 = st.columns(2)
+                    with col1:
+                        if st.button("✓ Aquí", key=K("confirm_quick"), use_container_width=True, type="primary"):
+                            st.session_state[S("selected_draft_id")] = draft_ids[chosen_idx]
+                            st.session_state[S("trigger_add")] = True
+                            st.session_state.show_draft_selector = False
+                            st.rerun()
+
+                    with col2:
+                        if st.button("+ Nuevo", key=K("new_quick"), use_container_width=True):
+                            st.session_state[S("selected_draft_id")] = -1
+                            st.session_state[S("trigger_add")] = True
+                            st.session_state.show_draft_selector = False
+                            st.rerun()
+                else:
+                    if st.button("+ Nuevo borrador", key=K("new_quick"), use_container_width=True, type="primary"):
+                        st.session_state[S("selected_draft_id")] = -1
+                        st.session_state[S("trigger_add")] = True
+                        st.session_state.show_draft_selector = False
+                        st.rerun()
+
+            draft_panel_css = float_css_helper(
+                left=SIDE_PAD,
+                right=SIDE_PAD,
+                bottom="5.75rem",
+                width="auto",
+                z_index="10001",
+            )
+            draft_panel_css += """
+            background: rgba(255,255,255,.98);
+            backdrop-filter: saturate(180%) blur(16px);
+            border: 1px solid rgba(148,163,184,.45);
+            border-radius: 20px;
+            padding: 14px 16px;
+            box-shadow: 0 16px 48px rgba(2,6,23,.20), 0 0 0 1px rgba(255,255,255,.5) inset;
+            max-width: 400px;
+            margin: 0 auto;
+            """
+            draft_panel.float(draft_panel_css)
+
     # Spacer so page content isn't hidden behind picker + add + composer
     st.markdown("<div style='height:360px'></div>", unsafe_allow_html=True)
 
@@ -2171,9 +2182,9 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         st.rerun()
 
     # =========================================================
-    # 6) YOUR EXISTING "ADD TO BORRADOR" LOGIC (UNCHANGED)
+    # 6) ADD TO BORRADOR LOGIC (triggered from draft selector popover)
     # =========================================================
-    trigger_add = add_clicked or st.session_state.get(S("trigger_add"), False)
+    trigger_add = st.session_state.get(S("trigger_add"), False)
     if trigger_add:
         # Clear the trigger flag
         if st.session_state.get(S("trigger_add"), False):
@@ -2233,10 +2244,6 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         elif len(drafts) == 1:
             target_id = int(drafts[0].id)
             _set_active_draft(target_id)
-
-        elif len(drafts) > 1:
-            st.session_state[S("show_draft_popover")] = True
-            st.rerun()
 
         else:
             new_id = _create_draft_and_insert_lines(venue_id=venue_id, actor=actor, df=df_to_use)
