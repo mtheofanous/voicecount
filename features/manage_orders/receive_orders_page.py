@@ -2645,23 +2645,20 @@ def _render_receive_form(ctx: OrderContext, provider: str) -> None:
         needs_issue_qty = status_now in {"Missing", "Damaged", "Wrong item"}
         needs_invoice = status_now == "Missing"
 
-        c0, c1, c2, c3 = st.columns([2.4, 1.25, 1.1, 1.2], vertical_alignment="center")
+        # --- Product name row ---
+        st.markdown(f"**{name}**")
+        if supplier_confirmed_missing:
+            st.caption("🚫 Supplier confirmed: **Not sending**")
 
-        with c0:
-            st.markdown(f"**{name}**")
-            if supplier_confirmed_missing:
-                st.caption("🚫 Supplier confirmed: **Not sending**")
-            # st.caption(f"Expected: {qty_expected:g} {unit} · Ordered: {qty_ordered:g} {unit}")
-
-        # Status selectbox
-        with c1:
+        # --- Widgets row (stays horizontal on mobile) ---
+        with st.container(key=f"recv_row_{int(order.id)}_{prov}_{lid}", horizontal=True):
             st.selectbox(
                 "Status",
                 STATUS_OPTIONS,
                 index=0 if supplier_confirmed_missing else STATUS_OPTIONS.index(st.session_state[status_key]),
                 key=status_key,
                 label_visibility="collapsed",
-                disabled=supplier_confirmed_missing,  # ✅ lock if supplier said not sending
+                disabled=supplier_confirmed_missing,
                 on_change=None if supplier_confirmed_missing else _on_status_change,
                 kwargs=None if supplier_confirmed_missing else dict(
                     status_key=status_key,
@@ -2671,26 +2668,24 @@ def _render_receive_form(ctx: OrderContext, provider: str) -> None:
                 ),
             )
 
-        # Re-read after widget
-        status_now = _s(st.session_state.get(status_key, default_status))
-        needs_issue_qty = status_now in {"Missing", "Damaged", "Wrong item"}
-        needs_invoice = status_now == "Missing"
+            # Re-read after widget
+            status_now = _s(st.session_state.get(status_key, default_status))
+            needs_issue_qty = status_now in {"Missing", "Damaged", "Wrong item"}
+            needs_invoice = status_now == "Missing"
 
-        # Enforce issue qty rules + bounds
-        if supplier_confirmed_missing:
-            # locked to ordered qty missing, no editing
-            st.session_state[issue_key] = float(qty_ordered) if qty_ordered > 0 else 0.0
-        else:
-            if status_now == "OK":
-                st.session_state[issue_key] = 0.0
-            elif needs_issue_qty:
-                cur = _safe_float(st.session_state.get(issue_key, 0.0), 0.0)
-                if cur < 1:
-                    st.session_state[issue_key] = 1.0
-                elif cur > float(issue_max_base):
-                    st.session_state[issue_key] = float(issue_max_base)
+            # Enforce issue qty rules + bounds
+            if supplier_confirmed_missing:
+                st.session_state[issue_key] = float(qty_ordered) if qty_ordered > 0 else 0.0
+            else:
+                if status_now == "OK":
+                    st.session_state[issue_key] = 0.0
+                elif needs_issue_qty:
+                    cur = _safe_float(st.session_state.get(issue_key, 0.0), 0.0)
+                    if cur < 1:
+                        st.session_state[issue_key] = 1.0
+                    elif cur > float(issue_max_base):
+                        st.session_state[issue_key] = float(issue_max_base)
 
-        with c2:
             st.number_input(
                 "Issue qty",
                 min_value=1.0 if needs_issue_qty else 0.0,
@@ -2701,23 +2696,20 @@ def _render_receive_form(ctx: OrderContext, provider: str) -> None:
                 label_visibility="collapsed",
             )
 
-        # Invoice selector rules:
-        # - Only relevant for Missing
-        # - Locked to "Not in invoice" when supplier confirmed missing
-        if supplier_confirmed_missing:
-            st.session_state[invoice_key] = "Not in invoice"
-        else:
-            if status_now == "OK":
+            # Invoice selector rules
+            if supplier_confirmed_missing:
                 st.session_state[invoice_key] = "Not in invoice"
-            elif status_now in {"Damaged", "Wrong item"}:
-                st.session_state[invoice_key] = "In invoice"
+            else:
+                if status_now == "OK":
+                    st.session_state[invoice_key] = "Not in invoice"
+                elif status_now in {"Damaged", "Wrong item"}:
+                    st.session_state[invoice_key] = "In invoice"
 
-        with c3:
             st.selectbox(
                 "Invoice listed",
                 INVOICE_OPTIONS,
                 index=0 if supplier_confirmed_missing else INVOICE_OPTIONS.index(st.session_state[invoice_key]),
-                disabled=(not needs_invoice) or supplier_confirmed_missing,  # ✅ lock
+                disabled=(not needs_invoice) or supplier_confirmed_missing,
                 key=invoice_key,
                 label_visibility="collapsed",
             )
