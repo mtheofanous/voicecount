@@ -26,6 +26,7 @@ import math
 import re
 import pandas as pd
 import streamlit as st
+from streamlit.components.v1 import html as components_html
 
 
 def _orders_refresh_token(venue_id: int) -> int:
@@ -84,18 +85,36 @@ def _inject_css() -> None:
 
 .voi-hr{height:1px;background:var(--border);margin:12px 0;}
 
-.voi-kpi{display:flex;gap:10px;flex-wrap:wrap;margin:8px 0;}
-.voi-kpi .k{flex:1;min-width:140px;border:1px solid var(--border);border-radius:16px;padding:10px;background:#ffffff;cursor:pointer;transition:all .15s ease;}
-.voi-kpi .k:hover{border-color:#94a3b8;background:#f8fafc;box-shadow:0 2px 8px rgba(2,6,23,.08);}
-.voi-kpi .k.active{border-color:var(--info);background:#eff6ff;box-shadow:0 2px 12px rgba(37,99,235,.12);}
-.voi-kpi .k .t{font-weight:900;font-size:.85rem;}
-.voi-kpi .k .v{font-weight:950;font-size:1.25rem;margin-top:4px;}
-@media(max-width:640px){
-.voi-kpi{gap:6px;}
-.voi-kpi .k{min-width:calc(50% - 6px);padding:8px;border-radius:12px;}
-.voi-kpi .k .t{font-size:.75rem;}
-.voi-kpi .k .v{font-size:1.05rem;}
+/* --- KPI floating nav bar --- */
+.voi-kpi-bar{
+  position:sticky;top:0;z-index:999;
+  background:rgba(255,255,255,.96);
+  backdrop-filter:saturate(180%) blur(12px);
+  border-bottom:1px solid rgba(148,163,184,.35);
+  padding:8px 4px;
+  margin:0 -0.75rem 10px;
 }
+.voi-kpi{display:flex;gap:8px;justify-content:space-between;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;}
+.voi-kpi::-webkit-scrollbar{display:none;}
+.voi-kpi .k{
+  flex:1 0 auto;min-width:0;
+  border:1px solid var(--border);border-radius:14px;padding:8px 12px;
+  background:#fff;text-align:center;
+  cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;
+  transition:all .15s ease;
+}
+.voi-kpi .k:hover{border-color:#94a3b8;background:#f8fafc;box-shadow:0 2px 8px rgba(2,6,23,.08);}
+.voi-kpi .k.active{border-color:rgba(37,99,235,.45);background:#eff6ff;box-shadow:0 4px 14px rgba(37,99,235,.10);}
+.voi-kpi .k .t{font-weight:900;font-size:.78rem;white-space:nowrap;opacity:.85;}
+.voi-kpi .k .v{font-weight:950;font-size:1.15rem;margin-top:2px;}
+@media(max-width:640px){
+  .voi-kpi{gap:6px;}
+  .voi-kpi .k{padding:6px 10px;border-radius:12px;}
+  .voi-kpi .k .t{font-size:.7rem;}
+  .voi-kpi .k .v{font-size:.95rem;}
+}
+/* Hide offscreen KPI trigger buttons */
+[class*="st-key-_kpi_"]{position:fixed!important;left:-9999px!important;height:0!important;overflow:hidden!important;pointer-events:none!important;}
 
 .line{border:1px solid var(--border);border-radius:16px;padding:12px;margin:10px 0;background:#fff;}
 .line.bad{border-color:#fecaca;background:#fef2f2;}
@@ -5530,12 +5549,13 @@ def tracking_dashboard(
         credit_notes_pending = 0
         urgent_requests_pending = 0
 
-    # --- KPI navigation buttons ---
+    # --- KPI floating nav (same pattern as app.py bottom tab bar) ---
     _KPI_VIEWS = ["pending_products", "open_incidences", "re_deliveries", "credit_notes", "urgent_requests"]
     tab_key = f"tracking_global_tab_{int(venue_id)}"
     st.session_state.setdefault(tab_key, _KPI_VIEWS[0])
     if st.session_state[tab_key] not in _KPI_VIEWS:
         st.session_state[tab_key] = _KPI_VIEWS[0]
+    active_view = st.session_state[tab_key]
 
     _kpi_data = [
         ("pending_products",  "Pending products",  pending_products),
@@ -5545,27 +5565,50 @@ def tracking_dashboard(
         ("urgent_requests",   "Urgent requests",    urgent_requests_pending),
     ]
 
-    active_view = st.session_state[tab_key]
-    kpi_html_parts = []
+    # 1) Hidden offscreen Streamlit buttons (trigger rerun on click)
+    for view_key, _lbl, _val in _kpi_data:
+        if st.button("_", key=f"_kpi_{view_key}_{int(venue_id)}"):
+            st.session_state[tab_key] = view_key
+            st.rerun()
+
+    # 2) Visual HTML floating bar
+    cards = []
     for view_key, label, value in _kpi_data:
         cls = "k active" if view_key == active_view else "k"
-        kpi_html_parts.append(f"<div class='{cls}' onclick=\"(() => {{ document.querySelector('[data-kpi-btn={view_key}]').click(); }})()\"><div class='t'>{label}</div><div class='v'>{value}</div></div>")
-    st.markdown("<div class='voi-kpi'>" + "".join(kpi_html_parts) + "</div>", unsafe_allow_html=True)
+        cards.append(
+            f'<div class="{cls}" data-kpi="{view_key}">'
+            f'<div class="t">{label}</div>'
+            f'<div class="v">{value}</div>'
+            f'</div>'
+        )
+    st.markdown(
+        '<div class="voi-kpi-bar"><div class="voi-kpi">' + "".join(cards) + '</div></div>',
+        unsafe_allow_html=True,
+    )
 
-    # Hidden buttons for KPI navigation (Streamlit callback targets)
-    _kpi_cols = st.columns(len(_KPI_VIEWS))
-    for i, (view_key, label, _val) in enumerate(_kpi_data):
-        with _kpi_cols[i]:
-            if st.button(label, key=f"kpi_btn_{view_key}_{int(venue_id)}", use_container_width=True, type="primary" if view_key == active_view else "secondary"):
-                st.session_state[tab_key] = view_key
-                st.rerun()
+    # 3) JS bridge: KPI card click → hidden Streamlit button
+    components_html("""
+    <script>
+    var doc = window.parent.document;
+    doc.querySelectorAll('.voi-kpi .k[data-kpi]').forEach(function(card) {
+        card.onclick = function() {
+            var view = this.getAttribute('data-kpi');
+            var wrapper = doc.querySelector('[class*="st-key-_kpi_' + view + '"]');
+            if (wrapper) {
+                var btn = wrapper.querySelector('button');
+                if (btn) btn.click();
+            }
+        };
+    });
+    </script>
+    """, height=0)
 
-    selected_tab = st.session_state[tab_key]
+    active_view = st.session_state[tab_key]
 
     # -----------------------------
     # 📦 Pending products (Receive)
     # -----------------------------
-    if selected_tab == "pending_products":
+    if active_view == "pending_products":
         tasks = _list_pending_receive_items(int(venue_id))
         if not tasks:
             st.success("✅ Nothing pending to receive right now.")
@@ -5607,7 +5650,7 @@ def tracking_dashboard(
     # -----------------------------
     # 🚨 Open incidences (all)
     # -----------------------------
-    if selected_tab == "open_incidences":
+    if active_view == "open_incidences":
         items = _list_open_incidences_items(int(venue_id))
         if not items:
             st.success("✅ No open incidences.")
@@ -5647,7 +5690,7 @@ def tracking_dashboard(
     # -----------------------------
     # 🚚 Re-deliveries (filtered incidences)
     # -----------------------------
-    if selected_tab == "re_deliveries":
+    if active_view == "re_deliveries":
         items = _list_open_incidences_items(int(venue_id))
         REDEL_SET = {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}
         items = _filter_incidences_by_resolution(items, int(venue_id), REDEL_SET) if items else []
@@ -5670,7 +5713,7 @@ def tracking_dashboard(
     # -----------------------------
     # 🧾 Credit notes (filtered incidences)
     # -----------------------------
-    if selected_tab == "credit_notes":
+    if active_view == "credit_notes":
         items = _list_open_incidences_items(int(venue_id))
         items = _filter_incidences_by_resolution(items, int(venue_id), {"credit_note"}) if items else []
         if not items:
@@ -5692,6 +5735,6 @@ def tracking_dashboard(
     # -----------------------------
     # ⚡ Urgent requests
     # -----------------------------
-    if selected_tab == "urgent_requests":
+    if active_view == "urgent_requests":
         _render_urgent_tab(ctx)
 
