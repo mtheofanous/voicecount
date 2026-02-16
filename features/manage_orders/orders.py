@@ -2019,8 +2019,9 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
                             alert = (
                                 "<div class='voi-alert'>"
                                 "<div class='voi-alert-icon'>🏷️</div>"
-                                f"Con <b>{prod_txt}</b> de <b>{sp}</b> "
-                                f"ahorras <b>{vv}€</b></div>"
+                                "<div class='voi-alert-text'>"
+                                f"<b>Ahorra {vv}€</b><br/>"
+                                f"{prod_txt} · {sp}</div>"
                                 "</div>"
                             )
 
