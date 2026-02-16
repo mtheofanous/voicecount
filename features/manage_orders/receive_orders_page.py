@@ -5465,7 +5465,7 @@ def tracking_dashboard(
         )
         open_total = sum(int(it.get("open_count") or 0) for it in inc_items)
 
-        # Pending products (global): lines pending "Receive" across all active orders/providers
+        # Pending (global): lines pending "Receive" across all active orders/providers
         DONE_STATES = {
             "RECEIVED",
             "INVOICE_DISCREPANCY",
@@ -5558,7 +5558,7 @@ def tracking_dashboard(
     active_view = st.session_state[tab_key]
 
     _kpi_data = [
-        ("pending_products",  "Pending products",  pending_products),
+        ("pending_products",  "Pending",  pending_products),
         ("open_incidences",   "Open incidences",    open_total),
         ("re_deliveries",     "Re-deliveries",      redeliveries_pending),
         ("credit_notes",      "Credit notes",       credit_notes_pending),
@@ -5592,7 +5592,7 @@ def tracking_dashboard(
 
         av = st.session_state[tab_key]
 
-        # 📦 Pending products (Receive)
+        # 📦 Pending (Receive)
         if av == "pending_products":
             tasks = _list_pending_receive_items(int(venue_id))
             if not tasks:
