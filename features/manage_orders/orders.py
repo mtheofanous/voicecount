@@ -1664,7 +1664,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
                     format_func=lambda pid: label_by_id.get(_pid_to_int(pid) or -1, str(pid)),
                     required=True,
                     disabled=True,
-                    width="medium",
+                    width="large",
                 ),
                 "quantity": st.column_config.NumberColumn("Qty", min_value=0, step=1, width="small"),
                 "unit": st.column_config.TextColumn("Unidad", disabled=True, width="small"),
