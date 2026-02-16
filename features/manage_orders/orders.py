@@ -1101,9 +1101,10 @@ def _chip_for_send(sent: bool, last_error: str) -> tuple[str, str]:
 
 
 def _render_header(order: Order) -> None:
-    with st.container(horizontal=True):
-        st.markdown(f"<div class='voi-chip'>{_status_chip(order.status)}</div>", unsafe_allow_html=True)
-        st.caption(f"Creado: {getattr(order,'created_at',None).strftime('%Y-%m-%d %H:%M') if getattr(order,'created_at',None) else '—'}")
+    created_at = getattr(order, 'created_at', None)
+    created_by = getattr(order, 'created_by', None) or '—'
+    date_str = created_at.strftime('%Y-%m-%d %H:%M') if created_at else '—'
+    st.caption(f"Creado: {date_str} · Por: {created_by}")
     
  
 
@@ -1114,7 +1115,7 @@ def _render_workflow_actions(*, venue_id: int, order: Order, role: Optional[str]
     can_manage = (_s(role)).lower() in {"owner", "manager"}
     with st.container(horizontal=True):
         if status == "draft":
-            if st.button("✅ Pasar a Listo", type="primary", use_container_width=True):
+            if st.button("✅ Pasar a Cesta", type="primary", use_container_width=True):
                 _set_order_status(int(order.id), "ready_to_send", actor)
                 st.session_state.pop(f"orders_active_order_id_{venue_id}", None)
                 st.session_state[f"orders_active_order_id_{venue_id}"] = int(order.id)
@@ -1662,6 +1663,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
                     options=sorted(label_by_id.keys()),
                     format_func=lambda pid: label_by_id.get(_pid_to_int(pid) or -1, str(pid)),
                     required=True,
+                    disabled=True,
                     width="medium",
                 ),
                 "quantity": st.column_config.NumberColumn("Qty", min_value=0, step=1, width="small"),
@@ -2518,7 +2520,7 @@ def borrador_tab(
         or current_actor()
     )
 
-    st.markdown("## 📝 Borradores")
+    st.markdown("#### 📝 Borradores")
 
     active_key = f"borrador_active_order_id_{venue_id}"
 
