@@ -5759,6 +5759,11 @@ def tracking_dashboard(
     # --- Content area (fragment = only this reruns on KPI click) ---
     @st.fragment
     def _kpi_content():
+        
+        # ✅ Fragment-safe init (because fragment can rerun without parent)
+        st.session_state.setdefault(tab_key, _KPI_VIEWS[0])
+        if st.session_state[tab_key] not in _KPI_VIEWS:
+            st.session_state[tab_key] = _KPI_VIEWS[0]
         # Hidden offscreen buttons (inside fragment so only fragment reruns)
         for view_key, _lbl, _val in _kpi_data:
             if st.button("_", key=f"_kpi_{view_key}_{int(venue_id)}"):
