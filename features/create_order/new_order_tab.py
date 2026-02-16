@@ -1662,6 +1662,20 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         .st-key-my_blue_container {
             background-color: rgba(254, 249, 231, 1);
         }
+        /* Keep strike button on same line as product name */
+        .st-key-my_blue_container [data-testid="stHorizontalBlock"] {
+            flex-wrap: nowrap !important;
+            align-items: center !important;
+            gap: 4px !important;
+        }
+        .st-key-my_blue_container [data-testid="stHorizontalBlock"] > [data-testid="stVerticalBlockBorderWrapper"]:first-child {
+            flex: 1 1 0% !important;
+            min-width: 0 !important;
+            overflow: hidden !important;
+        }
+        .st-key-my_blue_container [data-testid="stHorizontalBlock"] > [data-testid="stVerticalBlockBorderWrapper"]:last-child {
+            flex: 0 0 auto !important;
+        }
         """
 
         st.html(f"<style>{css}</style>")
@@ -1690,7 +1704,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 is_striked = product_key in striked_products
 
                 with st.container(horizontal=True):
-                    # Product name with quantity
+                    # Product name + details combined in one element
                     strike_style = "text-decoration: line-through; text-decoration-color: #c41e3a; text-decoration-thickness: 2px; opacity: 0.4;" if is_striked else ""
 
                     qty_badge = ""
@@ -1701,27 +1715,25 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                         except:
                             pass
 
-                    st.markdown(
-                        f'<div style="font-family: \'Inter\', sans-serif; font-size: 0.85rem; font-weight: 600; color: #1a1a1a; padding-top: 8px; {strike_style}">{qty_badge}{name}</div>',
-                        unsafe_allow_html=True
-                    )
-
-                    # Product details
                     details_parts = []
                     if unit and unit != "unit":
-                        details_parts.append(f'<span style="font-weight: 600; color: #2a2a2a;"></span> {unit}')
+                        details_parts.append(unit)
                     if description:
-                        details_parts.append(f'<span style="font-weight: 600; color: #2a2a2a;"></span> {description}')
+                        details_parts.append(description)
                     if provider:
-                        details_parts.append(f'<span style="font-weight: 600; color: #2a2a2a;"></span> {provider}')
+                        details_parts.append(provider)
 
+                    details_html = ""
                     if details_parts:
-                        st.markdown(
-                            f'<div style="font-family: \'Inter\', sans-serif; font-size: 0.75rem; color: #4a4a4a; padding: 4px 0 8px 0; {strike_style}">{" · ".join(details_parts)}</div>',
-                            unsafe_allow_html=True
-                        )
-                    else:
-                        st.markdown('<div style="height: 8px;"></div>', unsafe_allow_html=True)
+                        details_html = f'<div style="font-family: \'Inter\', sans-serif; font-size: 0.75rem; color: #4a4a4a; padding: 2px 0 6px 0; {strike_style}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{" · ".join(details_parts)}</div>'
+
+                    st.markdown(
+                        f'<div style="overflow: hidden;">'
+                        f'<div style="font-family: \'Inter\', sans-serif; font-size: 0.85rem; font-weight: 600; color: #1a1a1a; padding-top: 8px; {strike_style}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{qty_badge}{name}</div>'
+                        f'{details_html}'
+                        f'</div>',
+                        unsafe_allow_html=True
+                    )
 
                     # Delete button (fragment rerun only)
                     btn_label = "↺" if is_striked else "✗"
@@ -1827,6 +1839,8 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                     transcript = ""
 
             st.session_state[S("last_audio_hash")] = audio_hash
+            # Clear audio bytes to avoid recomputing hash and bloating session state on every rerun
+            st.session_state[S("audio_bytes")] = b""
             transcript = cleanup_asr_transcript(transcript)
             transcript = " | ".join(tokenize_items(transcript))
             append_message("asr", transcript)
