@@ -242,6 +242,108 @@ def _inject_css() -> None:
   font-size:.68rem;
 }
 
+/* ---------- Expected lines – mobile-friendly cards ---------- */
+.el-list{display:flex;flex-direction:column;gap:6px;margin-top:8px;}
+.el-card{
+  border:1px solid var(--border);
+  border-radius:12px;
+  background:#fff;
+  padding:10px 12px;
+  font-size:.82rem;
+}
+.el-row{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex-wrap:wrap;
+  min-height:26px;
+}
+.el-name{
+  flex:1 1 auto;
+  min-width:0;
+  font-weight:900;
+  color:var(--text);
+  white-space:nowrap;
+  overflow:hidden;
+  text-overflow:ellipsis;
+  font-size:.84rem;
+}
+.el-pills{
+  display:flex;
+  align-items:center;
+  gap:5px;
+  flex-shrink:0;
+  flex-wrap:wrap;
+}
+.el-pill{
+  display:inline-flex;
+  align-items:center;
+  gap:3px;
+  padding:2px 7px;
+  border-radius:8px;
+  font-size:.72rem;
+  font-weight:800;
+  white-space:nowrap;
+  background:#f1f5f9;
+  color:#475569;
+  border:1px solid #e2e8f0;
+}
+.el-pill b{font-weight:950;}
+.el-pill.miss{background:#fee2e2;color:#991b1b;border-color:#fca5a5;}
+.el-pill.part{background:#fef9c3;color:#854d0e;border-color:#fde68a;}
+.el-pill.ok{background:#dcfce7;color:#166534;border-color:#86efac;}
+.el-pill.warn{background:#fff7ed;color:#9a3412;border-color:#fed7aa;}
+.el-badge{
+  display:inline-flex;
+  padding:2px 8px;
+  border-radius:999px;
+  font-size:.68rem;
+  font-weight:900;
+  white-space:nowrap;
+}
+.el-badge.miss{background:#fee2e2;color:#991b1b;}
+.el-badge.ok{background:#dcfce7;color:#166534;}
+.el-badge.warn{background:#fff7ed;color:#9a3412;}
+.el-price-row{
+  display:flex;
+  align-items:center;
+  gap:8px;
+  flex-wrap:wrap;
+  margin-top:4px;
+  padding-top:4px;
+  border-top:1px dashed var(--border);
+  font-size:.74rem;
+  color:var(--muted);
+  font-weight:800;
+}
+.el-price-row span{white-space:nowrap;}
+.el-price-row .el-total{color:var(--text);font-weight:950;font-size:.78rem;}
+.el-price-row .el-disc{color:#b45309;font-weight:900;}
+.el-footer{
+  display:flex;
+  justify-content:space-between;
+  align-items:center;
+  padding:10px 12px;
+  margin-top:4px;
+  border:1px solid var(--border);
+  border-radius:12px;
+  background:#f8fafc;
+  font-weight:950;
+  font-size:.84rem;
+}
+.el-footer-right{text-align:right;}
+.el-desc{color:var(--muted);font-size:.72rem;font-weight:700;margin-top:1px;}
+.el-not-inv{
+  display:inline-flex;
+  padding:1px 6px;
+  border-radius:999px;
+  border:1px solid var(--border);
+  background:#fff7ed;
+  color:#9a3412;
+  font-weight:900;
+  font-size:.64rem;
+  margin-left:4px;
+}
 
 .small{font-size:.85rem;color:var(--muted);}
 
@@ -2227,8 +2329,8 @@ def _render_expected_lines(
         unsafe_allow_html=True,
     )
 
-    # ---------- Render invoice-like list (many products) ----------
-    rows_html = ""
+    # ---------- Render mobile-friendly card list ----------
+    cards_html = ""
     table_subtotal = 0.0
     table_iva = 0.0
     table_total = 0.0
@@ -2249,111 +2351,122 @@ def _render_expected_lines(
         # RECEIVED + REASON
         if issue_status == "ok":
             received_qty = expected_qty
-            reason_cell = "—"
+            reason_text = ""
         else:
             received_qty = float(venue_received_qty or 0.0)
-
-            # ✅ BUSINESS RULE:
-            # missing + present in invoice => invoice discrepancy
             if issue_status == "missing" and in_invoice is True:
-                reason_cell = "Invoice discrepancy"
+                reason_text = "Invoice discrepancy"
             else:
-                reason_cell = (
+                reason_text = (
                     reason
                     if reason and reason != "—"
-                    else (issue_status.upper() if issue_status not in ("unknown", "") else "—")
+                    else (issue_status.upper() if issue_status not in ("unknown", "") else "")
                 )
 
-        # ✅ SOLUTION column (supplier-only)
-        if issue_status == "ok":
-            solution_cell = "—"
-        else:
-            solution_cell = ""  # empty until supplier resolution exists
-
-        if supplier_resolution_by_line_id:
+        # SOLUTION (supplier-only)
+        solution_text = ""
+        if issue_status != "ok" and supplier_resolution_by_line_id:
             r = (supplier_resolution_by_line_id.get(lid) or "").strip().lower()
             if r == "credit_note":
-                solution_cell = "Credit note"
+                solution_text = "Credit note"
             elif r in {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}:
-                solution_cell = "Re-delivery"
+                solution_text = "Re-delivery"
             elif r == "reject":
-                solution_cell = "Rejected"
+                solution_text = "Rejected"
             elif r == "partial_delivery":
-                solution_cell = "Partial delivery"
+                solution_text = "Partial delivery"
 
         # PRICING quantity
         price_qty = expected_qty
-
-        # If supplier decided re-delivery, invoice shouldn’t be credited for missing qty
         if supplier_resolution_by_line_id:
             r = (supplier_resolution_by_line_id.get(lid) or "").strip().lower()
             if r in {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}:
                 price_qty = received_qty
-
-        # fallback legacy rule
         elif issue_status == "missing" and (in_invoice is False):
             price_qty = received_qty
 
-        # Cells
-        net_unit_cell = "—"
-        base_cell = "—"
-        disc_cell = "—"
-        iva_cell = "—"
-        total_cell = "—"
+        # Price computation
+        has_price = False
+        line_total_val = 0.0
+        price_html = ""
 
         if show_prices and ("net_unit" in c) and price_qty >= 0:
+            has_price = True
             unit_net = float(c.get("net_unit", 0.0) or 0.0)
             gross_unit = float(c.get("gross_unit", unit_net) or unit_net)
             disc_pct = float(c.get("disc_pct", 0.0) or 0.0)
             iva_pct = float(c.get("iva_pct", 0.0) or 0.0) if include_iva else 0.0
 
-            net_unit_cell = f"€{unit_net:,.2f}"
-
             subtotal = price_qty * unit_net
             iva_eur = subtotal * (iva_pct / 100.0) if include_iva else 0.0
             total = subtotal + iva_eur
+            line_total_val = total if include_iva else subtotal
 
             base_before_disc = price_qty * gross_unit
             discount_eur = max(0.0, base_before_disc - subtotal)
-
-            base_cell = f"€{subtotal:,.2f}"
-            if disc_pct > 0.0001 or discount_eur > 0.004:
-                disc_cell = f"<span class='inv-neg'>-€{discount_eur:,.2f}</span>"
-            else:
-                disc_cell = "—"
-
-            iva_cell = f"€{iva_eur:,.2f}" if include_iva else "—"
-            total_cell = f"€{total:,.2f}" if include_iva else f"€{subtotal:,.2f}"
 
             table_subtotal += subtotal
             table_iva += iva_eur
             table_total += total
 
-        desc_html = f"<div class='inv-desc'>{desc}</div>" if desc else ""
-        not_in_invoice_badge = "" if (in_invoice is not False) else " <span class='inv-flag'>NOT IN INVOICE</span>"
+            # Build compact price row
+            price_parts = [f"<span>€{unit_net:,.2f}/{unit}</span>"]
+            if disc_pct > 0.0001 or discount_eur > 0.004:
+                price_parts.append(f"<span class='el-disc'>-€{discount_eur:,.2f}</span>")
+            price_parts.append(f"<span>Net €{subtotal:,.2f}</span>")
+            if include_iva:
+                price_parts.append(f"<span>IVA €{iva_eur:,.2f}</span>")
+            price_parts.append(f"<span class='el-total'>€{line_total_val:,.2f}</span>")
+            price_html = (
+                "<div class='el-price-row'>"
+                + " · ".join(price_parts)
+                + "</div>"
+            )
 
-        rows_html += (
-            "<tr>"
-            f"<td class='name'>{name}{not_in_invoice_badge}{desc_html}</td>"
-            f"<td class='num'>{ordered_qty:g} {unit}</td>"
-            f"<td class='num'>{expected_qty:g} {unit}</td>"
-            f"<td class='num'>{received_qty:g} {unit}</td>"
-            f"<td class='reason'>{reason_cell}</td>"
-            f"<td class='reason'>{solution_cell}</td>"
-            f"<td class='num'>{net_unit_cell}</td>"
-            f"<td class='num'>{base_cell}</td>"
-            f"<td class='num'>{disc_cell}</td>"
-            f"<td class='num'>{iva_cell}</td>"
-            f"<td class='num'><b>{total_cell}</b></td>"
-            "</tr>"
+        # --- Build the quantity pills ---
+        # Status-based coloring for the received pill
+        if issue_status == "ok":
+            recv_cls = "ok"
+        elif issue_status == "missing":
+            recv_cls = "miss"
+        elif issue_status in ("damaged", "wrong item", "partial"):
+            recv_cls = "warn"
+        else:
+            recv_cls = ""
+
+        pills = (
+            f"<span class='el-pill'><b>{ordered_qty:g}</b> ord</span>"
+            f"<span class='el-pill'><b>{expected_qty:g}</b> exp</span>"
+            f"<span class='el-pill {recv_cls}'><b>{received_qty:g}</b> recv</span>"
+        )
+
+        # Reason / solution badges
+        badges = ""
+        if reason_text:
+            badges += f"<span class='el-badge warn'>{reason_text}</span>"
+        if solution_text:
+            badges += f"<span class='el-badge miss'>{solution_text}</span>"
+        if in_invoice is False:
+            badges += "<span class='el-not-inv'>NOT IN INVOICE</span>"
+
+        desc_html = f"<div class='el-desc'>{desc}</div>" if desc else ""
+
+        cards_html += (
+            "<div class='el-card'>"
+            "<div class='el-row'>"
+            f"<div class='el-name'>{name}{desc_html}</div>"
+            f"<div class='el-pills'>{pills}{badges}</div>"
+            "</div>"
+            f"{price_html}"
+            "</div>"
         )
 
     # Footer totals
-    footer_subtotal = f"€{table_subtotal:,.2f}" if show_prices else "—"
-    footer_iva = f"€{table_iva:,.2f}" if (show_prices and include_iva) else "—"
+    footer_subtotal = f"€{table_subtotal:,.2f}" if show_prices else ""
+    footer_iva = f"€{table_iva:,.2f}" if (show_prices and include_iva) else ""
     footer_total = (
         f"€{table_total:,.2f}" if (show_prices and include_iva)
-        else (f"€{table_subtotal:,.2f}" if show_prices else "—")
+        else (f"€{table_subtotal:,.2f}" if show_prices else "")
     )
 
     # Invoice header
@@ -2368,51 +2481,43 @@ def _render_expected_lines(
         else:
             summary_right = f"Est. subtotal: {footer_subtotal}"
 
-    invoice_html = (
+    # Build footer
+    footer_html = ""
+    if show_prices:
+        footer_left = invoice_label or "TOTAL"
+        footer_right_parts = []
+        if footer_subtotal:
+            footer_right_parts.append(f"Net {footer_subtotal}")
+        if footer_iva:
+            footer_right_parts.append(f"IVA {footer_iva}")
+        if footer_total:
+            footer_right_parts.append(f"<b>{footer_total}</b>")
+        footer_html = (
+            "<div class='el-footer'>"
+            f"<div>{footer_left}</div>"
+            f"<div class='el-footer-right'>{' · '.join(footer_right_parts)}</div>"
+            "</div>"
+        )
+
+    # Header + cards + footer
+    header_html = ""
+    if invoice_label or summary_right:
+        header_html = (
+            "<div class='inv-head'>"
+            f"<div class='inv-head-left'>{invoice_label}</div>"
+            f"<div class='inv-head-right'>{summary_right}</div>"
+            "</div>"
+        )
+
+    full_html = (
         "<div class='inv-wrap'>"
-        "<div class='inv-head'>"
-        f"<div class='inv-head-left'>{invoice_label}</div>"
-        f"<div class='inv-head-right'>{summary_right}</div>"
-        "</div>"
-        "<table class='inv-table'>"
-        "<thead>"
-        "<tr>"
-        "<th>Product</th>"
-        "<th class='num'>Ordered</th>"
-        "<th class='num'>Expected</th>"
-        "<th class='num'>Received</th>"
-        "<th>Reason</th>"
-        "<th>Solution</th>"
-        "<th class='num'>Net €/unit</th>"
-        "<th class='num'>Disc%</th>"
-        "<th class='num'>Net</th>"
-        "<th class='num'>IVA</th>"
-        "<th class='num'>Total</th>"
-        "</tr>"
-        "</thead>"
-        "<tbody>"
-        f"{rows_html}"
-        "</tbody>"
-        "<tfoot>"
-        "<tr>"
-        "<td class='muted'>TOTAL</td>"
-        "<td class='num'></td>"
-        "<td class='num'></td>"
-        "<td class='num'></td>"
-        "<td></td>"
-        "<td></td>"
-        "<td></td>"  # Net €/unit column
-        f"<td class='num'>{footer_subtotal}</td>"
-        "<td class='num'></td>"
-        f"<td class='num'>{footer_iva}</td>"
-        f"<td class='num'>{footer_total}</td>"
-        "</tr>"
-        "</tfoot>"
-        "</table>"
+        f"{header_html}"
+        f"<div class='el-list'>{cards_html}</div>"
+        f"{footer_html}"
         "</div>"
     )
 
-    st.markdown(invoice_html, unsafe_allow_html=True)
+    st.markdown(full_html, unsafe_allow_html=True)
 
 
 def _render_receive_form(ctx: OrderContext, provider: str) -> None:
@@ -5599,11 +5704,12 @@ def tracking_dashboard(
                 st.success("✅ Nothing pending to receive right now.")
                 return
 
-            f1, f2 = st.columns([2.2, 1.0], vertical_alignment="center")
-            with f1:
-                q = st.text_input("Search provider / invoice / order", placeholder="e.g. makro, 2026-, #12").strip().lower()
-            with f2:
-                expand_all = st.toggle("Expand all", value=False)
+            # f1, f2 = st.columns([2.2, 1.0], vertical_alignment="center")
+            # with f1:
+            #     q = st.text_input("Search provider / invoice / order", placeholder="e.g. makro, 2026-, #12").strip().lower()
+            # with f2:
+            #     expand_all = st.toggle("Expand all", value=False)
+            q = ""  # search disabled – keep filter as pass-through
 
             def _matches(t: Dict[str, Any]) -> bool:
                 if not q:
