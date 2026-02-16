@@ -5335,7 +5335,7 @@ def _render_receive_provider_panel(ctx: OrderContext, provider: str) -> None:
             show_prices=True,
             include_iva=True,
         )
-        _render_receive_form(ctx, current_provider)
+
 
 
 
@@ -5532,7 +5532,7 @@ def tracking_dashboard(
             del st.session_state["fullpage_receive"]
             st.rerun()
 
-        st.markdown(f"## Receive — {fp_provider}")
+        st.markdown(f"#### Receive — {fp_provider}")
 
         fp_ctx = _load_order_context(
             fp_venue_id, fp_order_id,
