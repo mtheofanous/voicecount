@@ -1979,14 +1979,24 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
                 provider = _s(r.get("Proveedor") or r.get("Provider"))
                 qty_txt = f"{float(r.get('Qty') or 0.0):g} {_s(r.get('Unidad'))}"
 
-                label_txt = (
-                    f"{label} <span style='color:#64748b;font-weight:700'>— {provider}</span>"
-                    if provider else label
-                )
+                if " — " in label:
+                    name_part, desc_part = label.split(" — ", 1)
+                else:
+                    name_part, desc_part = label, ""
+
+                suffix_parts: list[str] = []
+                if desc_part:
+                    suffix_parts.append(f"<span style='font-size:.78rem;color:#64748b;font-weight:400'>{desc_part}</span>")
+                if provider and sum_mode != "por_proveedor":
+                    suffix_parts.append(f"<span style='font-size:.75rem;color:#94a3b8;font-weight:500'>{provider}</span>")
+                suffix_html = (" <span style='color:#cbd5e1;font-size:.75rem'>·</span> ".join(suffix_parts))
+                label_line = f"<span style='font-weight:850'>{name_part}</span>"
+                if suffix_html:
+                    label_line += f" <span style='color:#cbd5e1'>·</span> {suffix_html}"
 
                 top = (
                     "<div style=\"display:flex;gap:10px;justify-content:space-between;align-items:baseline;flex-wrap:wrap\">"
-                    f"<div style=\"font-weight:850;flex:1;min-width:220px\">{label_txt}</div>"
+                    f"<div style=\"flex:1;min-width:180px;line-height:1.4\">{label_line}</div>"
                     f"<div style=\"font-weight:850;white-space:nowrap\">{qty_txt}</div>"
                     "</div>"
                 )
