@@ -70,9 +70,9 @@ def _inject_css() -> None:
         """
 <style>
 :root{--card:#ffffff;--text:#0f172a;--muted:#64748b;--border:#e2e8f0;--ok:#16a34a;--warn:#f59e0b;--bad:#ef4444;--info:#2563eb;}
-.block-container{padding-top:1.1rem;max-width:1200px;}
+.block-container{padding-top:1.1rem;max-width:100%;}
 
-.voi-card{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:14px 14px;margin:12px 0;box-shadow:0 4px 16px rgba(2,6,23,.04);} 
+.voi-card{background:var(--card);border:1px solid var(--border);border-radius:18px;padding:14px 14px;margin:12px 0;box-shadow:0 4px 16px rgba(2,6,23,.04);}
 .voi-title{font-weight:900;font-size:1.05rem;color:var(--text);}
 .voi-muted{color:var(--muted);font-size:.92rem;}
 
@@ -85,9 +85,17 @@ def _inject_css() -> None:
 .voi-hr{height:1px;background:var(--border);margin:12px 0;}
 
 .voi-kpi{display:flex;gap:10px;flex-wrap:wrap;margin:8px 0;}
-.voi-kpi .k{flex:1;min-width:160px;border:1px solid var(--border);border-radius:16px;padding:10px;background:#ffffff;}
-.voi-kpi .k .t{font-weight:900;}
+.voi-kpi .k{flex:1;min-width:140px;border:1px solid var(--border);border-radius:16px;padding:10px;background:#ffffff;cursor:pointer;transition:all .15s ease;}
+.voi-kpi .k:hover{border-color:#94a3b8;background:#f8fafc;box-shadow:0 2px 8px rgba(2,6,23,.08);}
+.voi-kpi .k.active{border-color:var(--info);background:#eff6ff;box-shadow:0 2px 12px rgba(37,99,235,.12);}
+.voi-kpi .k .t{font-weight:900;font-size:.85rem;}
 .voi-kpi .k .v{font-weight:950;font-size:1.25rem;margin-top:4px;}
+@media(max-width:640px){
+.voi-kpi{gap:6px;}
+.voi-kpi .k{min-width:calc(50% - 6px);padding:8px;border-radius:12px;}
+.voi-kpi .k .t{font-size:.75rem;}
+.voi-kpi .k .v{font-size:1.05rem;}
+}
 
 .line{border:1px solid var(--border);border-radius:16px;padding:12px;margin:10px 0;background:#fff;}
 .line.bad{border-color:#fecaca;background:#fef2f2;}
@@ -5308,6 +5316,37 @@ def _list_open_incidences_items(
     return out
 
 
+def _filter_incidences_by_resolution(
+    items: List[Dict[str, Any]],
+    venue_id: int,
+    resolution_types: set,
+) -> List[Dict[str, Any]]:
+    """Filter incidence items to only those whose open tickets match given resolution types."""
+    REDEL_RESOLUTIONS = {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}
+    filtered = []
+    for it in items:
+        oid = int(it["order_id"])
+        prov = it["provider"]
+        provn = norm_provider(prov)
+        ctx = _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
+        open_t = _provider_open_tickets(ctx, provn)
+        if not open_t:
+            continue
+        match = False
+        for t in open_t:
+            meta = _parse_ticket_resolution_note(_s(getattr(t, "resolution_note", None)))
+            r = _s(meta.get("resolution")).strip().lower()
+            if resolution_types == {"credit_note"} and r == "credit_note":
+                match = True
+                break
+            if resolution_types == REDEL_RESOLUTIONS and r in REDEL_RESOLUTIONS:
+                match = True
+                break
+        if match:
+            filtered.append(it)
+    return filtered
+
+
 # def _list_open_urgent_requests_grouped() -> Dict[int, List[UrgentReorderRequest]]:
 #     """Group pending urgent requests by the *source order id* (via incidence SeguimientoTicket)."""
 #     reqs = _list_open_urgent_requests()
@@ -5491,36 +5530,42 @@ def tracking_dashboard(
         credit_notes_pending = 0
         urgent_requests_pending = 0
 
-    st.markdown(
-        "<div class='voi-kpi'>"
-        # f"<div class='k'><div class='t'>Providers</div><div class='v'>{providers_global}</div></div>"
-        f"<div class='k'><div class='t'>Pending products</div><div class='v'>{pending_products}</div></div>"
-        f"<div class='k'><div class='t'>Open incidences</div><div class='v'>{open_total}</div></div>"
-        f"<div class='k'><div class='t'>Re-deliveries</div><div class='v'>{redeliveries_pending}</div></div>"
-        f"<div class='k'><div class='t'>Credit notes</div><div class='v'>{credit_notes_pending}</div></div>"
-        f"<div class='k'><div class='t'>Urgent requests</div><div class='v'>{urgent_requests_pending}</div></div>"
-        "</div>",
-        unsafe_allow_html=True,
-    )
-
-    tab_labels = ["📦 Receive", "🚨 Incidences", "⚡ Urgent"]
+    # --- KPI navigation buttons ---
+    _KPI_VIEWS = ["pending_products", "open_incidences", "re_deliveries", "credit_notes", "urgent_requests"]
     tab_key = f"tracking_global_tab_{int(venue_id)}"
-    st.session_state.setdefault(tab_key, tab_labels[0])
-    if st.session_state[tab_key] not in tab_labels:
-        st.session_state[tab_key] = tab_labels[0]
+    st.session_state.setdefault(tab_key, _KPI_VIEWS[0])
+    if st.session_state[tab_key] not in _KPI_VIEWS:
+        st.session_state[tab_key] = _KPI_VIEWS[0]
 
-    selected_tab = st.radio(
-        "Tracking navigation",
-        tab_labels,
-        horizontal=True,
-        key=tab_key,
-        label_visibility="collapsed",
-    )
+    _kpi_data = [
+        ("pending_products",  "Pending products",  pending_products),
+        ("open_incidences",   "Open incidences",    open_total),
+        ("re_deliveries",     "Re-deliveries",      redeliveries_pending),
+        ("credit_notes",      "Credit notes",       credit_notes_pending),
+        ("urgent_requests",   "Urgent requests",    urgent_requests_pending),
+    ]
+
+    active_view = st.session_state[tab_key]
+    kpi_html_parts = []
+    for view_key, label, value in _kpi_data:
+        cls = "k active" if view_key == active_view else "k"
+        kpi_html_parts.append(f"<div class='{cls}' onclick=\"(() => {{ document.querySelector('[data-kpi-btn={view_key}]').click(); }})()\"><div class='t'>{label}</div><div class='v'>{value}</div></div>")
+    st.markdown("<div class='voi-kpi'>" + "".join(kpi_html_parts) + "</div>", unsafe_allow_html=True)
+
+    # Hidden buttons for KPI navigation (Streamlit callback targets)
+    _kpi_cols = st.columns(len(_KPI_VIEWS))
+    for i, (view_key, label, _val) in enumerate(_kpi_data):
+        with _kpi_cols[i]:
+            if st.button(label, key=f"kpi_btn_{view_key}_{int(venue_id)}", use_container_width=True, type="primary" if view_key == active_view else "secondary"):
+                st.session_state[tab_key] = view_key
+                st.rerun()
+
+    selected_tab = st.session_state[tab_key]
 
     # -----------------------------
-    # 📦 Receive (global)
+    # 📦 Pending products (Receive)
     # -----------------------------
-    if selected_tab == "📦 Receive":
+    if selected_tab == "pending_products":
         tasks = _list_pending_receive_items(int(venue_id))
         if not tasks:
             st.success("✅ Nothing pending to receive right now.")
@@ -5545,41 +5590,24 @@ def tracking_dashboard(
             st.info("No matches.")
             return
 
-        def _pretty_actor(actor: str) -> str:
-            actor = (actor or "").strip()
-            if not actor:
-                return "Unknown user"
-            # If it's an email, show a nicer label (before @), but keep full email if you prefer
-            if "@" in actor:
-                short = actor.split("@", 1)[0].replace(".", " ").replace("_", " ").strip()
-                return short.title() if short else actor
-            return actor
-
         for t in tasks2:
             oid = int(t["order_id"])
-            prov = t["provider_display"] or "—"
             prov_norm = t["provider_norm"] or ""
-            inv = t["invoice_number"] or "—"
-            order = t.get("order")  # this exists because _list_pending_receive_items adds it
 
-            created_at = getattr(order, "created_at", None)
-            created_txt = created_at.strftime("%d %b %Y, %H:%M") if created_at else "—"
-
-            # URL sync (optional)
             if qp_int("order_id") != oid:
                 set_query_params(page="tracking", order_id=str(oid), provider=prov_norm)
 
             ctx = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
             _render_receive_provider_panel(ctx, prov_norm)
-            
+
             st.empty()
 
         return
 
     # -----------------------------
-    # 🚨 Incidences (global)
+    # 🚨 Open incidences (all)
     # -----------------------------
-    if selected_tab == "🚨 Incidences":
+    if selected_tab == "open_incidences":
         items = _list_open_incidences_items(int(venue_id))
         if not items:
             st.success("✅ No open incidences.")
@@ -5607,12 +5635,7 @@ def tracking_dashboard(
         for t in items2:
             oid = int(t["order_id"])
             prov = _s(t.get("provider") or "—")
-            inv = _s(t.get("invoice_number") or "—")
-            n = int(t.get("open_count") or 0)
-            title = f"{prov} · 🧾 {inv} · #{oid} · {n} open"
 
-            # expanded = bool(expand_all) or (deep_order_id is not None and int(deep_order_id) == oid)
-            # with st.expander(title, expanded=expanded):
             if qp_int("order_id") != oid:
                 set_query_params(page="tracking", order_id=str(oid), provider=norm_provider(prov))
 
@@ -5622,8 +5645,53 @@ def tracking_dashboard(
         return
 
     # -----------------------------
-    # ⚡ Urgent (global)
+    # 🚚 Re-deliveries (filtered incidences)
     # -----------------------------
-    if selected_tab == "⚡ Urgent":
+    if selected_tab == "re_deliveries":
+        items = _list_open_incidences_items(int(venue_id))
+        REDEL_SET = {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}
+        items = _filter_incidences_by_resolution(items, int(venue_id), REDEL_SET) if items else []
+        if not items:
+            st.success("✅ No pending re-deliveries.")
+            return
+
+        for t in items:
+            oid = int(t["order_id"])
+            prov = _s(t.get("provider") or "—")
+
+            if qp_int("order_id") != oid:
+                set_query_params(page="tracking", order_id=str(oid), provider=norm_provider(prov))
+
+            ctx = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
+            _render_incidences_cards(ctx, [prov], show_prices=True, include_iva=True)
+
+        return
+
+    # -----------------------------
+    # 🧾 Credit notes (filtered incidences)
+    # -----------------------------
+    if selected_tab == "credit_notes":
+        items = _list_open_incidences_items(int(venue_id))
+        items = _filter_incidences_by_resolution(items, int(venue_id), {"credit_note"}) if items else []
+        if not items:
+            st.success("✅ No pending credit notes.")
+            return
+
+        for t in items:
+            oid = int(t["order_id"])
+            prov = _s(t.get("provider") or "—")
+
+            if qp_int("order_id") != oid:
+                set_query_params(page="tracking", order_id=str(oid), provider=norm_provider(prov))
+
+            ctx = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
+            _render_incidences_cards(ctx, [prov], show_prices=True, include_iva=True)
+
+        return
+
+    # -----------------------------
+    # ⚡ Urgent requests
+    # -----------------------------
+    if selected_tab == "urgent_requests":
         _render_urgent_tab(ctx)
 
