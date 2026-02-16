@@ -615,8 +615,6 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             st.session_state.product_adder_fullpage = False
             st.rerun()
 
-
-
         # Search bar
         search_query = st.text_input(
             "Buscar producto",
@@ -625,33 +623,29 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         ).strip().lower()
 
         # Create product lookup maps
-        products_by_cat = {}
-        products_by_prov = {}
-        all_categories = set()
-        all_providers = set()
+        with st.spinner("Cargando catálogo de productos..."):
+            products_by_cat = {}
+            products_by_prov = {}
+            all_categories = set()
+            all_providers = set()
 
-        for p in products:
-            cat = getattr(p, "category", "") or "Sin categoría"
-            prov = getattr(p, "provider_name", "") or "Sin proveedor"
-            all_categories.add(cat)
-            all_providers.add(prov)
-            products_by_cat.setdefault(cat, []).append(p)
-            products_by_prov.setdefault(prov, []).append(p)
+            for p in products:
+                cat = getattr(p, "category", "") or "Sin categoría"
+                prov = getattr(p, "provider_name", "") or "Sin proveedor"
+                all_categories.add(cat)
+                all_providers.add(prov)
+                products_by_cat.setdefault(cat, []).append(p)
+                products_by_prov.setdefault(prov, []).append(p)
 
-        # DEBUG: Show provider distribution
-
-        # for prov, prods in products_by_prov.items():
-        #     st.caption(f"  - '{prov}': {len(prods)} products")
-
-        # Filter products by search
-        filtered_products = products
-        if search_query:
-            filtered_products = [
-                p for p in products
-                if search_query in (getattr(p, "name", "") or "").lower()
-                or search_query in (getattr(p, "provider_name", "") or "").lower()
-                or search_query in (getattr(p, "description", "") or "").lower()
-            ]
+            # Filter products by search
+            filtered_products = products
+            if search_query:
+                filtered_products = [
+                    p for p in products
+                    if search_query in (getattr(p, "name", "") or "").lower()
+                    or search_query in (getattr(p, "provider_name", "") or "").lower()
+                    or search_query in (getattr(p, "description", "") or "").lower()
+                ]
 
         # Provider selection (using selectbox instead of tabs for better performance)
         with st.container():
@@ -696,12 +690,16 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                         continue
 
                     st.caption(f"{len(final_products)} producto(s)")
-                    with st.container(height=600):
-                        # Display products in a form
-                        with st.form(key=K(f"add_form_{selected_prov}_{j}")):
-                            added_any = False
-                            products_to_add = []
+                    with st.form(key=K(f"add_form_{selected_prov}_{j}")):
+                        # Submit button above the scrollable product list
+                        submit_clicked = st.form_submit_button(
+                            "✓ Añadir seleccionados", type="primary", use_container_width=True
+                        )
 
+                        added_any = False
+                        products_to_add = []
+
+                        with st.container(height=600):
                             for prod in final_products:
                                 pid = int(prod.id)
                                 pname = getattr(prod, "name", "")
@@ -737,51 +735,47 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                                         if qty > 0:
                                             products_to_add.append((pid, pname, qty, punit, pprov))
 
-                            # Submit button
-                            if st.form_submit_button("✓ Añadir seleccionados", type="primary", use_container_width=True):
-                                if products_to_add:
-                                    parsed_df = st.session_state.get(S("parsed_df"))
+                        # Handle submit (button is at top of form)
+                        if submit_clicked:
+                            if products_to_add:
+                                parsed_df = st.session_state.get(S("parsed_df"))
 
-                                    for pid, pname, qty, punit, pprov in products_to_add:
-                                        new_row = pd.DataFrame([{
-                                            "spoken_name": pname,
-                                            "matched_product_id": pid,
-                                            "matched_name": pname,
-                                            "confidence": 100.0,
-                                            "quantity": qty,
-                                            "unit": punit,
-                                            "unit_custom": "",
-                                            "suggestions": [],
-                                            "recommended_pid": pid,
-                                            "status": "OK",
-                                            "provider": pprov,
-                                            "source": "manual",
-                                        }])
+                                for pid, pname, qty, punit, pprov in products_to_add:
+                                    new_row = pd.DataFrame([{
+                                        "spoken_name": pname,
+                                        "matched_product_id": pid,
+                                        "matched_name": pname,
+                                        "confidence": 100.0,
+                                        "quantity": qty,
+                                        "unit": punit,
+                                        "unit_custom": "",
+                                        "suggestions": [],
+                                        "recommended_pid": pid,
+                                        "status": "OK",
+                                        "provider": pprov,
+                                        "source": "manual",
+                                    }])
 
-                                        if isinstance(parsed_df, pd.DataFrame) and not parsed_df.empty:
-                                            # Check if product already exists
-                                            existing_mask = parsed_df['matched_product_id'] == pid
-                                            if existing_mask.any():
-                                                # Update quantity
-                                                idx = parsed_df.index[existing_mask][0]
-                                                parsed_df.at[idx, 'quantity'] = float(parsed_df.at[idx, 'quantity']) + qty
-                                            else:
-                                                # Append new row
-                                                parsed_df = pd.concat([parsed_df, new_row], ignore_index=True)
+                                    if isinstance(parsed_df, pd.DataFrame) and not parsed_df.empty:
+                                        existing_mask = parsed_df['matched_product_id'] == pid
+                                        if existing_mask.any():
+                                            idx = parsed_df.index[existing_mask][0]
+                                            parsed_df.at[idx, 'quantity'] = float(parsed_df.at[idx, 'quantity']) + qty
                                         else:
-                                            # Create new df
-                                            if parsed_df is None:
-                                                parsed_df = new_row
-                                            else:
-                                                parsed_df = pd.concat([parsed_df, new_row], ignore_index=True)
+                                            parsed_df = pd.concat([parsed_df, new_row], ignore_index=True)
+                                    else:
+                                        if parsed_df is None:
+                                            parsed_df = new_row
+                                        else:
+                                            parsed_df = pd.concat([parsed_df, new_row], ignore_index=True)
 
-                                    st.session_state[S("parsed_df")] = parsed_df
-                                    st.success(f"✓ Añadidos {len(products_to_add)} producto(s)")
-                                    time.sleep(0.5)
-                                    st.session_state.product_adder_fullpage = False
-                                    st.rerun()
-                                else:
-                                    st.warning("No seleccionaste ningún producto")
+                                st.session_state[S("parsed_df")] = parsed_df
+                                st.success(f"✓ Añadidos {len(products_to_add)} producto(s)")
+                                time.sleep(0.5)
+                                st.session_state.product_adder_fullpage = False
+                                st.rerun()
+                            else:
+                                st.warning("No seleccionaste ningún producto")
 
         # Stop rendering the rest of the page
         return
@@ -1871,6 +1865,9 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     if "product_adder_fullpage" not in st.session_state:
         st.session_state.product_adder_fullpage = False
 
+    if "fab_menu_open" not in st.session_state:
+        st.session_state.fab_menu_open = False
+
     # Floating UI spacing knobs (modern + consistent)
     BOTTOM_BAR_OFFSET = "5.00rem"          # your bottom nav height
     COMPOSER_BOTTOM = BOTTOM_BAR_OFFSET    # composer sits right above bottom nav
@@ -1878,64 +1875,125 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     PICKER_BOTTOM = "14.75rem"            # draft picker above add
     SIDE_PAD = "0.55rem"                  # slightly more breathing room than 0.75
 
+    # Uniform FAB spacing: 5 buttons stacked from bottom
+    FAB_RIGHT = "1.10rem"
+    FAB_SIZE = "3.2rem"
+    FAB_GAP = "3.8rem"          # distance between each FAB center
+    FAB_BASE = "5.5rem"         # bottom of lowest FAB (draft)
+
+    # iOS glass-morphism CSS for all FABs
+    FAB_GLASS_CSS = f"""
+    padding: 0;
+    & button {{
+        width: {FAB_SIZE} !important;
+        height: {FAB_SIZE} !important;
+        min-height: {FAB_SIZE} !important;
+        border-radius: 50% !important;
+        background: rgba(255, 255, 255, 0.35) !important;
+        backdrop-filter: saturate(180%) blur(20px) !important;
+        -webkit-backdrop-filter: saturate(180%) blur(20px) !important;
+        border: 1px solid rgba(255, 255, 255, 0.55) !important;
+        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.10),
+                    0 0 0 0.5px rgba(255, 255, 255, 0.4) inset !important;
+        padding: 0 !important;
+        display: flex !important;
+        align-items: center !important;
+        justify-content: center !important;
+        font-size: 1.25rem !important;
+        transition: transform 0.18s ease, box-shadow 0.18s ease !important;
+    }}
+    & button:hover {{
+        transform: scale(1.08) !important;
+        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.15),
+                    0 0 0 0.5px rgba(255, 255, 255, 0.5) inset !important;
+        background: rgba(255, 255, 255, 0.50) !important;
+    }}
+    & button:active {{
+        transform: scale(0.95) !important;
+    }}
+    """
+
     # =========================================================
-    # 0) Floating FABs (kept away from bars)
+    # 0) Floating FAB menu trigger (⋯ / ✕)
     # =========================================================
-    # Product Adder FAB (topmost)
-    fab_product_container = st.container()
-    with fab_product_container:
-        if st.button("➕", key="smart_product_add_fab", help="Añadir productos"):
-            st.session_state.product_adder_fullpage = True
-            st.session_state.show_micro = False
-            st.session_state.show_composer = False
-            st.session_state.show_draft_selector = False
+    fab_menu_container = st.container()
+    with fab_menu_container:
+        menu_label = "✕" if st.session_state.fab_menu_open else "⋯"
+        if st.button(menu_label, key="fab_menu_toggle", help="Menú"):
+            st.session_state.fab_menu_open = not st.session_state.fab_menu_open
             st.rerun()
 
-    fab_product_css = float_css_helper(
-        right="1.10rem",
-        bottom="22.5rem",   # above mic
+    fab_menu_css = float_css_helper(
+        right=FAB_RIGHT,
+        bottom=FAB_BASE,
         width="auto",
-        z_index="10000",
+        z_index="10001",
     )
-    fab_product_css += "padding: 0;"
-    fab_product_container.float(fab_product_css)
+    fab_menu_css += FAB_GLASS_CSS
+    fab_menu_container.float(fab_menu_css)
 
-    # Mic FAB
-    fab_mic_container = st.container()
-    with fab_mic_container:
-        if st.button("🎙️", key="smart_add_fab"):
-            st.session_state.show_micro = True
-            st.session_state.show_composer = False
-            st.session_state.show_draft_selector = False
-            st.rerun()
-
-    fab_mic_css = float_css_helper(
-        right="1.10rem",
-        bottom="18.0rem",   # above picker/add/composer stack
-        width="auto",
-        z_index="10000",
-    )
-    fab_mic_css += "padding: 0;"
-    fab_mic_container.float(fab_mic_css)
-
-    # Composer FAB (only show when composer is hidden)
-    if not st.session_state.show_composer:
-        fab_composer_container = st.container()
-        with fab_composer_container:
-            if st.button("✏️", key="smart_composer_fab", help="Escribir pedido"):
-                st.session_state.show_composer = True
+    # =========================================================
+    # 0.1) Expanded FABs (only when menu is open)
+    # =========================================================
+    if st.session_state.fab_menu_open:
+        # Product Adder FAB (position 5 — topmost)
+        fab_product_container = st.container()
+        with fab_product_container:
+            if st.button("➕", key="smart_product_add_fab", help="Añadir productos"):
+                st.session_state.product_adder_fullpage = True
                 st.session_state.show_micro = False
+                st.session_state.show_composer = False
                 st.session_state.show_draft_selector = False
+                st.session_state.fab_menu_open = False
                 st.rerun()
 
-        fab_composer_css = float_css_helper(
-            right="1.10rem",
-            bottom="13.5rem",   # below mic FAB
+        fab_product_css = float_css_helper(
+            right=FAB_RIGHT,
+            bottom=f"calc({FAB_BASE} + {FAB_GAP} * 5)",
             width="auto",
             z_index="10000",
         )
-        fab_composer_css += "padding: 0;"
-        fab_composer_container.float(fab_composer_css)
+        fab_product_css += FAB_GLASS_CSS
+        fab_product_container.float(fab_product_css)
+
+        # Mic FAB (position 4)
+        fab_mic_container = st.container()
+        with fab_mic_container:
+            if st.button("🎙️", key="smart_add_fab"):
+                st.session_state.show_micro = True
+                st.session_state.show_composer = False
+                st.session_state.show_draft_selector = False
+                st.session_state.fab_menu_open = False
+                st.rerun()
+
+        fab_mic_css = float_css_helper(
+            right=FAB_RIGHT,
+            bottom=f"calc({FAB_BASE} + {FAB_GAP} * 4)",
+            width="auto",
+            z_index="10000",
+        )
+        fab_mic_css += FAB_GLASS_CSS
+        fab_mic_container.float(fab_mic_css)
+
+        # Composer FAB (position 3)
+        if not st.session_state.show_composer:
+            fab_composer_container = st.container()
+            with fab_composer_container:
+                if st.button("✏️", key="smart_composer_fab", help="Escribir pedido"):
+                    st.session_state.show_composer = True
+                    st.session_state.show_micro = False
+                    st.session_state.show_draft_selector = False
+                    st.session_state.fab_menu_open = False
+                    st.rerun()
+
+            fab_composer_css = float_css_helper(
+                right=FAB_RIGHT,
+                bottom=f"calc({FAB_BASE} + {FAB_GAP} * 3)",
+                width="auto",
+                z_index="10000",
+            )
+            fab_composer_css += FAB_GLASS_CSS
+            fab_composer_container.float(fab_composer_css)
     # fab_btn_container.markdown(
     # =========================================================
     # 0.5) PRODUCT ADDER - Now handled by full-page mode above
@@ -2104,24 +2162,26 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         typed = ""
 
     # =========================================================
-    # 4.5) FLOATING DELETE BUTTON FAB (below composer FAB)
+    # 4.5) FLOATING DELETE BUTTON FAB (inside menu)
     # =========================================================
-    fab_delete_container = st.container()
-    with fab_delete_container:
-        clear_clicked = st.button(
-            "🗑️",
-            key=K("btn_clear_notes"),
-            help="Limpiar todo"
-        )
+    clear_clicked = False
+    if st.session_state.fab_menu_open:
+        fab_delete_container = st.container()
+        with fab_delete_container:
+            clear_clicked = st.button(
+                "🗑️",
+                key=K("btn_clear_notes"),
+                help="Limpiar todo"
+            )
 
-    fab_delete_css = float_css_helper(
-        right="1.10rem",
-        bottom="9.0rem",   # below composer FAB
-        width="auto",
-        z_index="10000",
-    )
-    fab_delete_css += "padding: 0;"
-    fab_delete_container.float(fab_delete_css)
+        fab_delete_css = float_css_helper(
+            right=FAB_RIGHT,
+            bottom=f"calc({FAB_BASE} + {FAB_GAP} * 2)",
+            width="auto",
+            z_index="10000",
+        )
+        fab_delete_css += FAB_GLASS_CSS
+        fab_delete_container.float(fab_delete_css)
 
     # =========================================================
     # 🎯 FLOATING DRAFT SELECTOR FAB + PANEL
@@ -2129,23 +2189,24 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     st.session_state.setdefault("show_draft_selector", False)
 
     if show_add_button:
-        # FAB button (show when panel is closed)
-        if not st.session_state.show_draft_selector:
+        # FAB button (show when menu is open and panel is closed)
+        if st.session_state.fab_menu_open and not st.session_state.show_draft_selector:
             fab_draft_container = st.container()
             with fab_draft_container:
                 if st.button("📋", key=K("fab_draft_select"), help="Seleccionar borrador"):
                     st.session_state.show_draft_selector = True
                     st.session_state.show_micro = False
                     st.session_state.show_composer = False
+                    st.session_state.fab_menu_open = False
                     st.rerun()
 
             fab_draft_css = float_css_helper(
-                right="1.10rem",
-                bottom="5.75rem",
+                right=FAB_RIGHT,
+                bottom=f"calc({FAB_BASE} + {FAB_GAP} * 1)",
                 width="auto",
                 z_index="10000",
             )
-            fab_draft_css += "padding: 0;"
+            fab_draft_css += FAB_GLASS_CSS
             fab_draft_container.float(fab_draft_css)
 
         # Expanded panel (show when toggled on)
@@ -2228,6 +2289,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     if clear_clicked:
         reset_notes_only(clear_resolved_picks=False)
         st.session_state.show_composer = False  # Auto-close after clearing
+        st.session_state.fab_menu_open = False
         st.rerun()
 
     if send_clicked and typed and typed.strip():
