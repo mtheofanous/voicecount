@@ -1736,31 +1736,31 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
     st.markdown("### Summary")
 
     with st.container(horizontal=True, gap="small"):
-        cA, cC, cD = st.columns([1.15, 1.2, 1.6], vertical_alignment="center")
-        with cA:
-            show_prices = st.toggle(
-                "Mostrar importes",
-                value=False,
-                key=f"sum_show_prices_{int(order.id)}",
-                help="Estimación basada en precios del catálogo y reglas de descuento. No es una factura.",
-            )
+        # cA, cC, cD = st.columns([1.15, 1.2, 1.6], vertical_alignment="center")
+        # with cA:
+        show_prices = st.toggle(
+            "Mostrar importes",
+            value=False,
+            key=f"sum_show_prices_{int(order.id)}",
+            help="Estimación basada en precios del catálogo y reglas de descuento. No es una factura.",
+        )
         include_iva = show_prices
-        with cC:
-            compact = st.toggle(
-                "Compacto",
-                value=True,
-                key=f"sum_compact_{int(order.id)}",
-                help="Mejor en móvil: tarjetas.",
-            )
-        with cD:
-            sum_mode = st.radio(
-                "Resumen",
-                options=["por_proveedor", "total"],
-                format_func=lambda x: "Por proveedor" if x == "por_proveedor" else "Total",
-                horizontal=True,
-                label_visibility="collapsed",
-                key=f"sum_mode_{int(order.id)}",
-            )
+        # with cC:
+        compact = st.toggle(
+            "Compacto",
+            value=True,
+            key=f"sum_compact_{int(order.id)}",
+            help="Mejor en móvil: tarjetas.",
+        )
+    # with cD:
+        sum_mode = st.radio(
+            "Resumen",
+            options=["por_proveedor", "total"],
+            format_func=lambda x: "Por proveedor" if x == "por_proveedor" else "Total",
+            horizontal=True,
+            label_visibility="collapsed",
+            key=f"sum_mode_{int(order.id)}",
+        )
 
         apply_smart_prices = st.toggle(
             "🧠 Aplicar precios inteligentes",
