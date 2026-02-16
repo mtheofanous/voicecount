@@ -198,6 +198,7 @@ def _bottom_tabbar(current_page: str) -> None:
 
     tabbar = st.container()
     with tabbar:
+        st.markdown('<div class="voi-tabbar-anchor"></div>', unsafe_allow_html=True)
         cols = st.columns(len(tabs), gap="small")
         for col, (key, icon, label) in zip(cols, tabs):
             is_active = key == current_page
@@ -223,15 +224,23 @@ def _bottom_tabbar(current_page: str) -> None:
     """
     tabbar.float(tabbar_css)
 
-    # Style the buttons to match the original tab design
+    # Force columns horizontal on all screen sizes (Streamlit stacks them on mobile)
     st.markdown("""
     <style>
-    /* Tabbar button styling */
-    [data-testid="stVerticalBlockBorderWrapper"]:has(button[key^="_tabbar_"]) button,
-    button[kind="secondary"][data-testid="stBaseButton-secondary"],
-    button[kind="primary"][data-testid="stBaseButton-primary"] {
-        white-space: pre-line !important;
-        line-height: 1.15 !important;
+    /* Hide the anchor div itself */
+    .voi-tabbar-anchor { display: none; }
+
+    /* Target the horizontal block inside the container that has our anchor */
+    [data-testid="stVerticalBlockBorderWrapper"]:has(.voi-tabbar-anchor)
+    [data-testid="stHorizontalBlock"] {
+        flex-wrap: nowrap !important;
+        gap: 8px !important;
+    }
+    [data-testid="stVerticalBlockBorderWrapper"]:has(.voi-tabbar-anchor)
+    [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
+        min-width: 0 !important;
+        flex: 1 1 0 !important;
+        width: auto !important;
     }
     </style>
     """, unsafe_allow_html=True)
