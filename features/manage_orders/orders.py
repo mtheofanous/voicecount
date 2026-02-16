@@ -1117,21 +1117,25 @@ def _render_workflow_actions(*, venue_id: int, order: Order, role: Optional[str]
             if st.button("✅ Pasar a Listo", type="primary", use_container_width=True):
                 _set_order_status(int(order.id), "ready_to_send", actor)
                 st.session_state.pop(f"orders_active_order_id_{venue_id}", None)
+                st.session_state[f"orders_active_order_id_{venue_id}"] = int(order.id)
                 _bump_refresh(venue_id)
-                set_query_params(page="orders", status="ready_to_send", order_id=str(int(order.id)))
+                st.session_state["page"] = "orders"
+                set_query_params(page="orders", order_id=str(int(order.id)))
                 st.rerun()
 
         elif status == "ready_to_send":
             if st.button("↩️ Volver a Borrador", use_container_width=True):
-                _set_order_status(int(order.id), "draft", actor); _bump_refresh(venue_id); st.rerun()
+                _set_order_status(int(order.id), "draft", actor)
+                st.session_state.pop(f"orders_active_order_id_{venue_id}", None)
+                st.session_state[f"borrador_active_order_id_{venue_id}"] = int(order.id)
+                _bump_refresh(venue_id)
+                st.session_state["page"] = "borrador"
+                set_query_params(page="borrador", order_id=str(int(order.id)))
+                st.rerun()
 
         if status == "pending_receive":
             if st.button("✅ Cerrar (Historial)", type="primary", use_container_width=True):
                 _set_order_status(int(order.id), "final", actor); _bump_refresh(venue_id); st.rerun()
-
-        if status == "draft" and can_manage:
-            if st.button("🗑️ Eliminar", use_container_width=True):
-                _delete_order(int(order.id)); _bump_refresh(venue_id); st.session_state.pop(f"orders_active_order_id_{venue_id}", None); st.rerun()
 
 
 def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: list[Product], lines: list[OrderLine]) -> None:
@@ -1652,7 +1656,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
             num_rows="dynamic",
             use_container_width=True,
             column_config={
-                "line_id": st.column_config.NumberColumn("ID", disabled=True, width="small"),
+                "line_id": None,
                 "product_id": st.column_config.SelectboxColumn(
                     "Producto",
                     options=sorted(label_by_id.keys()),
@@ -1670,19 +1674,19 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
 
         with st.container(horizontal=True):
             guardar = st.form_submit_button("💾 Guardar", type="primary", use_container_width=True)
-   
-            descartar = st.form_submit_button("↩️ Descartar cambios", use_container_width=True)
 
-    
+            eliminar = st.form_submit_button("🗑️ Eliminar", use_container_width=True)
+
+
     # -----------------------------
     # --- Handle submits (ONLY runs when one of the form buttons is clicked) ---
-    if guardar or descartar:
-        # Read whatever is currently in the editor, sanitize + recompute unit
-        edited = _sanitize_editor_df(edited)
-        edited["unit"] = edited["product_id"].map(_unit_for_pid)
-        edited = _sanitize_editor_df(edited)
-
+    if guardar or eliminar:
         if guardar:
+            # Read whatever is currently in the editor, sanitize + recompute unit
+            edited = _sanitize_editor_df(edited)
+            edited["unit"] = edited["product_id"].map(_unit_for_pid)
+            edited = _sanitize_editor_df(edited)
+
             # ✅ Only here we persist + save to DB
             st.session_state[df_state_key] = edited
 
@@ -1705,8 +1709,10 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
             st.success("Guardado ✓")
             st.rerun()
 
-        elif descartar:
-            # ✅ Discard means: reset editor + revert df_state_key to last saved snapshot
+        elif eliminar:
+            _delete_order(int(order.id))
+            _bump_refresh(venue_id)
+            st.session_state.pop(f"borrador_active_order_id_{venue_id}", None)
             st.session_state.pop(df_state_key, None)
             st.session_state.pop(editor_key, None)
             st.rerun()
@@ -2496,13 +2502,94 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
                         st.button("📲 WhatsApp", use_container_width=True, disabled=True, key=f"wa_bad_{int(order.id)}_{prov_norm}")
 
 
+def borrador_tab(
+    venue_id: int,
+    venue_role: Optional[str],
+    *,
+    deep_order_id: Optional[int] = None,
+) -> None:
+    """Page for draft (borrador) orders only."""
+
+    _inject_css()
+    actor = _s(
+        st.session_state.get("user_email")
+        or st.session_state.get("actor")
+        or st.session_state.get("email")
+        or current_actor()
+    )
+
+    st.markdown("## 📝 Borradores")
+
+    active_key = f"borrador_active_order_id_{venue_id}"
+
+    # Load orders
+    orders_all = _list_orders_cached(get_session, venue_id, _refresh_token(venue_id))
+
+    # Deep-link: consume once
+    deep_order_id_once_key = f"borrador_deep_order_consumed_{venue_id}"
+    if deep_order_id is not None and not st.session_state.get(deep_order_id_once_key):
+        st.session_state[deep_order_id_once_key] = True
+        st.session_state[active_key] = int(deep_order_id)
+    else:
+        deep_order_id = None
+
+    # Filter draft only
+    orders = [o for o in orders_all if _s(getattr(o, "status", "draft")).lower() == "draft"]
+    if not orders:
+        st.info("No hay borradores.")
+        return
+
+    # Order picker
+    ids = [int(o.id) for o in orders if o.id is not None]
+    labels = {int(o.id): _order_label(o) for o in orders if o.id is not None}
+
+    default_oid = int(st.session_state.get(active_key) or ids[0])
+    if default_oid not in ids:
+        default_oid = ids[0]
+
+    picked = st.selectbox(
+        "Pedido",
+        options=ids,
+        index=ids.index(default_oid),
+        format_func=lambda oid: labels.get(int(oid), str(oid)),
+        key=f"borrador_picker_{venue_id}",
+    )
+    st.session_state[active_key] = int(picked)
+
+    # URL sync
+    cur_oid = qp_int("order_id")
+    if cur_oid != int(picked):
+        set_query_params(page="borrador", order_id=str(int(picked)))
+
+    # Load + render
+    with get_session() as s:
+        order = s.exec(
+            select(Order).where(Order.id == int(picked), Order.venue_id == int(venue_id))
+        ).first()
+
+    if not order:
+        st.error("Pedido no encontrado.")
+        return
+
+    products, products_by_id, label_by_id, cat_by_pid, prov_by_pid, all_categories, all_providers, base_pids = _product_ui_index_cached(get_session, venue_id)
+    lines = _order_lines_cached(get_session, int(order.id), _refresh_token(venue_id))
+
+    _render_header(order)
+    _render_workflow_actions(venue_id=venue_id, order=order, role=venue_role, actor=actor)
+    st.markdown("<div class='voi-divider'></div>", unsafe_allow_html=True)
+
+    _render_lines_editor(venue_id=venue_id, order=order, actor=actor, products=products, lines=lines)
+
+
 def orders_tab(
     venue_id: int,
     venue_role: Optional[str],
     *,
     deep_order_id: Optional[int] = None,
+    deep_provider: Optional[str] = None,
     deep_status: Optional[str] = None,
 ) -> None:
+    """Page for ready-to-send (listo) orders only."""
 
     _inject_css()
     actor = _s(
@@ -2514,111 +2601,26 @@ def orders_tab(
 
     st.markdown("## 🧾 Pedidos")
 
-    # -----------------------------
-    # Deep-link PRE-SEED (must happen BEFORE widgets are created)
-    # -----------------------------
-    status_key = f"orders_status_{venue_id}"          # widget key
-    active_key = f"orders_active_order_id_{venue_id}" # non-widget key
-    allowed_status = {"draft", "ready_to_send"}
+    active_key = f"orders_active_order_id_{venue_id}"
 
-    # Pre-seed status from URL ONLY if widget not created yet in this run
-    # (Prevents StreamlitAPIException)
-    if deep_status in allowed_status and status_key not in st.session_state:
-        st.session_state[status_key] = deep_status
-
-    # -----------------------------
-    # Status filter + New order button (creates the radio widget)
-    # -----------------------------
-    top1, top2 = st.columns([4.6, 1.4], vertical_alignment="center")
-    with top1:
-        status_filter = st.radio(
-            "Estado",
-            ["draft", "ready_to_send"],
-            horizontal=True,
-            label_visibility="collapsed",
-            format_func=lambda x: {"draft": "Borradores", "ready_to_send": "Listo"}.get(x, x),
-            key=status_key,
-        )
-
-    with top2:
-        if status_filter == "draft":
-            if st.button("➕ Nuevo", type="primary", use_container_width=True):
-                oid = _create_empty_draft(venue_id, actor)
-                _bump_refresh(venue_id)
-                st.session_state[active_key] = int(oid)
-                set_query_params(page="orders", status="draft", order_id=str(int(oid)))
-                st.rerun()
-
-    # -----------------------------
     # Load orders
-    # -----------------------------
     orders_all = _list_orders_cached(get_session, venue_id, _refresh_token(venue_id))
-    
-    # If the user is already navigating inside the app, don't keep forcing deep-link behavior forever
+
+    # Deep-link: consume once
     deep_order_id_once_key = f"orders_deep_order_consumed_{venue_id}"
     if deep_order_id is not None and not st.session_state.get(deep_order_id_once_key):
         st.session_state[deep_order_id_once_key] = True
+        st.session_state[active_key] = int(deep_order_id)
     else:
         deep_order_id = None
 
-
-    # -----------------------------
-    # Deep-link: order_id may imply a different status (SAFE)
-    # We MUST NOT set st.session_state[status_key] here because the radio exists already.
-    # Instead: update URL + rerun so the radio is built with correct initial state.
-    # -----------------------------
-    if deep_order_id is not None:
-        match = next(
-            (
-                o
-                for o in orders_all
-                if getattr(o, "id", None) is not None and int(o.id) == int(deep_order_id)
-            ),
-            None,
-        )
-        if match:
-            mstatus = _s(getattr(match, "status", "draft")).lower()
-            if mstatus in allowed_status:
-                # Set active order (safe)
-                st.session_state[active_key] = int(deep_order_id)
-
-                # If the status implied by the order differs from the current radio value,
-                # do NOT mutate session_state; instead update URL and rerun.
-                if _s(status_filter).lower() != mstatus:
-                    set_query_params(page="orders", status=mstatus, order_id=str(int(deep_order_id)))
-                    st.rerun()
-
-    # Always normalize local status_filter
-    status_filter = _s(status_filter).lower()
-
-    # -----------------------------
-    # URL sync: status (when user clicks the radio)
-    # If current order_id isn't in this filtered list, drop it.
-    # -----------------------------
-    cur_status = (qp_str("status", "").strip().lower() or "")
-    if cur_status != status_filter:
-        cur_oid = qp_int("order_id")
-        keep_oid = ""
-        if cur_oid is not None:
-            # only keep it if it's visible in the current filter
-            visible_ids = {int(o.id) for o in orders_all if getattr(o, "id", None) is not None and _s(getattr(o, "status", "")).lower() == status_filter}
-            if int(cur_oid) in visible_ids:
-                keep_oid = str(int(cur_oid))
-
-        set_query_params(page="orders", status=status_filter, order_id=keep_oid)
-
-
-    # -----------------------------
-    # Filter orders by status
-    # -----------------------------
-    orders = [o for o in orders_all if _s(getattr(o, "status", "draft")).lower() == status_filter]
+    # Filter ready_to_send only
+    orders = [o for o in orders_all if _s(getattr(o, "status", "draft")).lower() == "ready_to_send"]
     if not orders:
-        st.info("No hay pedidos para este filtro.")
+        st.info("No hay pedidos listos para enviar.")
         return
 
-    # -----------------------------
     # Order picker
-    # -----------------------------
     ids = [int(o.id) for o in orders if o.id is not None]
     labels = {int(o.id): _order_label(o) for o in orders if o.id is not None}
 
@@ -2634,16 +2636,12 @@ def orders_tab(
     )
     st.session_state[active_key] = int(picked)
 
-    # -----------------------------
-    # URL sync: active order (when user selects an order)
-    # -----------------------------
+    # URL sync
     cur_oid = qp_int("order_id")
     if cur_oid != int(picked):
-        set_query_params(page="orders", status=status_filter, order_id=str(int(picked)))
+        set_query_params(page="orders", order_id=str(int(picked)))
 
-    # -----------------------------
-    # Load selected order + render
-    # -----------------------------
+    # Load + render
     with get_session() as s:
         order = s.exec(
             select(Order).where(Order.id == int(picked), Order.venue_id == int(venue_id))
@@ -2654,16 +2652,10 @@ def orders_tab(
         return
 
     products, products_by_id, label_by_id, cat_by_pid, prov_by_pid, all_categories, all_providers, base_pids = _product_ui_index_cached(get_session, venue_id)
-    # keep the original variable name expected by render functions
-    products = products
     lines = _order_lines_cached(get_session, int(order.id), _refresh_token(venue_id))
 
     _render_header(order)
     _render_workflow_actions(venue_id=venue_id, order=order, role=venue_role, actor=actor)
     st.markdown("<div class='voi-divider'></div>", unsafe_allow_html=True)
 
-    status = _s(order.status).lower()
-    if status == "draft":
-        _render_lines_editor(venue_id=venue_id, order=order, actor=actor, products=products, lines=lines)
-    elif status == "ready_to_send":
-        _render_send_section(venue_id=venue_id, order=order, products=products, lines=lines, actor=actor)
+    _render_send_section(venue_id=venue_id, order=order, products=products, lines=lines, actor=actor)

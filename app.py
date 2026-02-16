@@ -192,6 +192,7 @@ def _go(page_key: str, **extra_qp: str) -> None:
 def _bottom_tabbar(current_page: str) -> None:
     tabs = [
         ("new", "➕", "New"),
+        ("borrador", "📝", "Borrador"),
         ("orders", "📦", "Orders"),
         ("tracking", "✅", "Receive"),
     ]
@@ -401,6 +402,10 @@ def _page_new_order():
     from features.create_order.new_order_tab import new_order_tab
     return new_order_tab
 
+def _page_borrador():
+    from features.manage_orders.orders import borrador_tab
+    return borrador_tab
+
 def _page_orders():
     from features.manage_orders.orders import orders_tab
     return orders_tab
@@ -421,6 +426,7 @@ def _page_history():
 #pages
 PAGES = {
     "new": ("➕", _page_new_order),
+    "borrador": ("📝", _page_borrador),
     "orders": ("📦", _page_orders),
     "tracking": ("✅", _page_tracking),
     "history": ("📈", _page_history),
@@ -429,7 +435,7 @@ PAGES = {
 }
 
 # Preferred order for the segmented control
-PAGE_KEYS = ["new", "orders", "tracking", "history", "catalog", "manage_org"]
+PAGE_KEYS = ["new", "borrador", "orders", "tracking", "history", "catalog", "manage_org"]
 
 
 def _home_card():
@@ -613,6 +619,13 @@ def main():
             venue_role=venue_role,
             deep_order_id=deep_order_id,
             deep_provider=(deep_provider or None),
+        )
+    elif page_key == "borrador":
+        _call_page(
+            page_fn,
+            venue_id,
+            venue_role=venue_role,
+            deep_order_id=deep_order_id,
         )
     elif page_key == "orders":
         _call_page(
