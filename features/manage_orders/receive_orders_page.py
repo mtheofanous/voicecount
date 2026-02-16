@@ -361,6 +361,42 @@ def _inject_css() -> None:
 .voi-commentline .lbl{color:var(--muted);font-weight:900;margin-right:6px;}
 .voi-commentline .txt{font-weight:800; color:var(--text); opacity:.92;}
 
+/* ── Receive-form row: force horizontal on mobile ── */
+[class*="st-key-recv_row_"] .stHorizontalBlock{
+  flex-wrap:nowrap!important;
+  overflow-x:auto;
+  -webkit-overflow-scrolling:touch;
+  gap:4px!important;
+}
+[class*="st-key-recv_row_"] .stHorizontalBlock > div{
+  min-width:0!important;
+  flex-shrink:1!important;
+}
+[class*="st-key-recv_row_"] .stHorizontalBlock > div:first-child{
+  flex:1 1 30%!important;min-width:80px!important;
+}
+[class*="st-key-recv_row_"] .stHorizontalBlock > div:nth-child(2){
+  flex:0 1 25%!important;min-width:60px!important;
+}
+[class*="st-key-recv_row_"] .stHorizontalBlock > div:last-child{
+  flex:1 1 30%!important;min-width:90px!important;
+}
+
+/* ── Credit note / re-delivery card layout (mobile-friendly) ── */
+.cn-wrap{border:1px solid var(--border);border-radius:14px;overflow:hidden;margin:10px 0;background:#fff;}
+.cn-header{padding:10px 12px;background:#fffbeb;border-bottom:1px solid #fde68a;font-size:.85rem;color:var(--text);}
+.cn-row{margin:2px 0;}
+.cn-lbl{color:var(--muted);font-weight:800;}
+.cn-line{padding:10px 12px;border-bottom:1px solid var(--border);}
+.cn-line:last-of-type{border-bottom:none;}
+.cn-line-top{display:flex;justify-content:space-between;align-items:baseline;gap:8px;}
+.cn-name{font-weight:900;font-size:.9rem;color:var(--text);}
+.cn-total{font-weight:900;font-size:.9rem;white-space:nowrap;}
+.cn-line-meta{display:flex;flex-wrap:wrap;gap:4px 8px;margin-top:3px;}
+.cn-detail{font-size:.78rem;color:var(--muted);white-space:nowrap;}
+.cn-reason{font-weight:800;color:#92400e;font-size:.78rem;}
+.cn-footer{display:flex;justify-content:space-between;padding:10px 12px;border-top:2px solid var(--border);font-weight:900;font-size:.95rem;background:#f8fafc;}
+
 </style>
 """,
         unsafe_allow_html=True,
@@ -2324,10 +2360,6 @@ def _render_expected_lines(
     if missing_lines or partial_lines or mismatch_lines:
         summary_left += f" · ❌ {missing_lines} missing · 🟡 {partial_lines} partial · ⚠️ {mismatch_lines} mismatch"
 
-    st.markdown(
-        f"<div class='voi-muted'><b>Supplier confirmation</b> · {summary_left}</div>",
-        unsafe_allow_html=True,
-    )
 
     # ---------- Render mobile-friendly card list ----------
     cards_html = ""
@@ -2434,9 +2466,12 @@ def _render_expected_lines(
         else:
             recv_cls = ""
 
+        stt = c.get("stt", "")
+        exp_cls = "miss" if stt == "missing" else ("warn" if stt == "partial" else "")
+
         pills = (
             f"<span class='el-pill'><b>{ordered_qty:g}</b> ord</span>"
-            f"<span class='el-pill'><b>{expected_qty:g}</b> exp</span>"
+            f"<span class='el-pill {exp_cls}'><b>{expected_qty:g}</b> exp</span>"
             f"<span class='el-pill {recv_cls}'><b>{received_qty:g}</b> recv</span>"
         )
 
@@ -2646,7 +2681,10 @@ def _render_receive_form(ctx: OrderContext, provider: str) -> None:
         needs_invoice = status_now == "Missing"
 
         # --- Product name row ---
-        st.markdown(f"**{name}**")
+        desc = _line_desc(ln, ctx.products_by_id)
+        desc_html = f" <span style='font-size:.82em;opacity:.5;font-weight:400;'>{desc}</span>" if desc else ""
+        exp_html = f" <span style='font-size:.82em;opacity:.7;font-weight:700;'>· {qty_expected:g} {unit}</span>"
+        st.markdown(f"**{name}**{desc_html}{exp_html}", unsafe_allow_html=True)
         if supplier_confirmed_missing:
             st.caption("🚫 Supplier confirmed: **Not sending**")
 
@@ -3947,107 +3985,68 @@ def _render_incidences_cards(
                 }
             )
 
+        reasons = sorted({_credit_reason(_s(getattr(t, "kind", None))) for t in credit_candidates})
+        reason_txt = ", ".join(reasons) if reasons else "Correction"
+        cn_dt = _fmt_dt(getattr(wf, "updated_at", None))
+
         st.markdown(
             "<div class='voi-card' style='border-color:#fde68a;background:#fffbeb'>"
             "<div class='voi-title'>🧾 Expected credit note (preview)</div>"
             f"<div class='voi-muted'>Reference invoice: <b>{html.escape(inv_no)}</b> · Date: <b>{html.escape(_fmt_dt(inv_dt))}</b></div>"
-            f"<div class='voi-muted'>Credit note number: <b>{html.escape(cn_no)}</b></div>"
+            f"<div class='voi-muted'>Credit note number: <b>{html.escape(cn_no)}</b> · Date: <b>{html.escape(cn_dt)}</b></div>"
+            f"<div class='voi-muted'>Reason for issuance: <b>{reason_txt}</b></div>"
             "</div>",
             unsafe_allow_html=True,
         )
 
-        reasons = sorted({_credit_reason(_s(getattr(t, "kind", None))) for t in credit_candidates})
-        reason_txt = ", ".join(reasons) if reasons else "Correction"
-        st.markdown(
-            "- **Reference to original invoice:** "
-            f"`{inv_no}` · {_fmt_dt(inv_dt)}\n"
-            "- **Reason for issuance:** "
-            f"{reason_txt}\n"
-            "- **Products/quantities being credited:** see table below\n"
-            + (
-                "- **VAT + total credit amount:** see totals below"
-                if include_iva
-                else "- **Total credit amount (net):** see totals below"
-            )
-        )
-
         if rows:
-            rows_html = ""
-
-            for r in rows:
-                nm = html.escape(_s(r.get("Product", "")))
-                qty = float(r.get("Qty", 0) or 0)
-                unit = html.escape(_s(r.get("Unit", "")))
-                reason = html.escape(_s(r.get("Reason", "")))
-
-                netu = float(r.get("Net €/unit", 0.0) or 0.0)
-                disc = float(r.get("Disc%", 0.0) or 0.0)
-                net_amount = float(r.get("Net amount", 0.0) or 0.0)
-
-                vat_eur = float(r.get("VAT €", 0.0) or 0.0)
-                vat_cell = f"€{vat_eur:,.2f}" if include_iva else "—"
-
-                total = float(r.get("Total", net_amount) or net_amount)
-
-                rows_html += (
-                    "<tr>"
-                    f"<td class='name'>{nm}</td>"
-                    f"<td class='num'>{qty:g} {unit}</td>"
-                    f"<td class='reason'>{reason}</td>"
-                    f"<td class='num'>€{netu:,.2f}</td>"
-                    f"<td class='num'>{disc:g}%</td>"
-                    f"<td class='num'>€{net_amount:,.2f}</td>"
-                    f"<td class='num'>{vat_cell}</td>"  # ✅ ALWAYS show IVA column, but dash when disabled
-                    f"<td class='num'><b>€{total:,.2f}</b></td>"
-                    "</tr>"
-                )
-
             footer_net = f"€{total_net:,.2f}"
             footer_vat = f"€{total_vat:,.2f}" if include_iva else "—"
             footer_total = f"€{(total_net + total_vat):,.2f}" if include_iva else footer_net
 
-            receipt = ctx.receipts_by_provider.get(provn)
-            inv_no = _s(getattr(receipt, "invoice_number", None)) or "—"
-            inv_dt = _invoice_date_for_provider(provn)
-            cn_no = _s(sol.get("credit_note_invoice")) or "—"
+            # Build mobile-friendly card rows
+            cn_cards = ""
+            for r in rows:
+                nm = html.escape(_s(r.get("Product", "")))
+                qty = float(r.get("Qty", 0) or 0)
+                unit_r = html.escape(_s(r.get("Unit", "")))
+                reason = html.escape(_s(r.get("Reason", "")))
+                netu = float(r.get("Net €/unit", 0.0) or 0.0)
+                disc = float(r.get("Disc%", 0.0) or 0.0)
+                net_amount = float(r.get("Net amount", 0.0) or 0.0)
+                vat_eur = float(r.get("VAT €", 0.0) or 0.0)
+                total_r = float(r.get("Total", net_amount) or net_amount)
+                disc_html = f"<span class='cn-detail'>Disc {disc:g}%</span>" if disc > 0 else ""
+                vat_html = f"<span class='cn-detail'>IVA €{vat_eur:,.2f}</span>" if include_iva else ""
 
-            head_left = (
-                "Credit note (expected)"
-                f" · Ref invoice Nº {html.escape(inv_no)}"
-                f" · {html.escape(_fmt_dt(inv_dt))}"
-            )
-            head_right = f"Est. total: {footer_total}"
+                cn_cards += (
+                    "<div class='cn-line'>"
+                    f"<div class='cn-line-top'>"
+                    f"<span class='cn-name'>{nm}</span>"
+                    f"<span class='cn-total'>€{total_r:,.2f}</span>"
+                    "</div>"
+                    f"<div class='cn-line-meta'>"
+                    f"<span class='cn-detail'>{qty:g} {unit_r}</span>"
+                    f"<span class='cn-detail'>€{netu:,.2f}/{unit_r}</span>"
+                    f"{disc_html}"
+                    f"<span class='cn-detail'>Net €{net_amount:,.2f}</span>"
+                    f"{vat_html}"
+                    f"<span class='cn-reason'>{reason}</span>"
+                    "</div>"
+                    "</div>"
+                )
 
             cn_html = (
-                "<div class='inv-wrap'>"
-                "<div class='inv-head'>"
-                f"<div class='inv-head-left'>{head_left}</div>"
-                f"<div class='inv-head-right'>{head_right}</div>"
+                "<div class='cn-wrap'>"
+                "<div class='cn-header'>"
+                f"<div class='cn-row'><span class='cn-lbl'>Invoice:</span> <b>{html.escape(inv_no)}</b> · {html.escape(_fmt_dt(inv_dt))}</div>"
+                f"<div class='cn-row'><span class='cn-lbl'>Credit note:</span> <b>{html.escape(cn_no)}</b> · {html.escape(cn_dt)}</div>"
                 "</div>"
-                "<table class='inv-table'>"
-                "<thead><tr>"
-                "<th>Product</th>"
-                "<th class='num'>Credited</th>"
-                "<th>Reason</th>"
-                "<th class='num'>Net €/unit</th>"
-                "<th class='num'>Disc%</th>"
-                "<th class='num'>Net</th>"
-                "<th class='num'>IVA</th>"  # ✅ ALWAYS show IVA column
-                "<th class='num'>Total</th>"
-                "</tr></thead>"
-                f"<tbody>{rows_html}</tbody>"
-                "<tfoot><tr>"
-                "<td class='muted'>TOTAL</td>"
-                "<td class='num'></td>"
-                "<td></td>"
-                "<td class='num'></td>"
-                "<td class='num'></td>"
-                f"<td class='num'>{footer_net}</td>"
-                f"<td class='num'>{footer_vat}</td>"
-                f"<td class='num'>{footer_total}</td>"
-                "</tr></tfoot>"
-                "</table>"
-                f"<div class='voi-muted' style='margin-top:.35rem'>Credit note number: <b>{html.escape(cn_no)}</b></div>"
+                f"{cn_cards}"
+                "<div class='cn-footer'>"
+                f"<span>TOTAL</span>"
+                f"<span><b>{footer_total}</b></span>"
+                "</div>"
                 "</div>"
             )
 
@@ -4204,55 +4203,86 @@ def _render_incidences_cards(
             elif len(by_eta) > 1:
                 header_eta = "Multiple deliveries"
 
-        # Render header card
+        # Render header card (includes supplier details)
+        supplier_html = ""
+        if emails or phone or address:
+            details = []
+            if emails:
+                email_txt = html.escape(emails[0]) + (f" (+{len(emails)-1} more)" if len(emails) > 1 else "")
+                details.append(f"<span class='cn-detail'>Email: <b>{email_txt}</b></span>")
+            if phone:
+                ph_esc = html.escape(phone)
+                details.append(f"<span class='cn-detail'>Phone: <b><a href='tel:{ph_esc}' style='color:inherit;text-decoration:none;'>{ph_esc}</a></b></span>")
+            if address:
+                details.append(f"<span class='cn-detail'>Address: <b>{html.escape(address)}</b></span>")
+            supplier_html = "<div class='cn-line-meta' style='margin-top:6px;'>" + "".join(details) + "</div>"
+
         st.markdown(
             "<div class='voi-card' style='border-color:#bfdbfe;background:#eff6ff'>"
             "<div class='voi-title'>🚚 Expected re-delivery (preview)</div>"
             f"<div class='voi-muted'>Supplier: <b>{html.escape(prov)}</b></div>"
-            + (f"<div class='voi-muted'>Expected: <b>{html.escape(header_eta)}</b></div>" if header_eta else "")
+            + supplier_html
             + "</div>",
             unsafe_allow_html=True,
         )
 
-        # Supplier details
-        if emails or phone or address:
-            st.markdown("**Supplier details**")
-            if emails:
-                st.markdown(
-                    f"- **Email:** `{emails[0]}`" + (f" (+{len(emails)-1} more)" if len(emails) > 1 else "")
+        # -----------------------------
+        # Render content (card layout)
+        # -----------------------------
+        def _build_redel_cards(item_list: list, inv_ref: str = "") -> str:
+            """Build mobile-friendly card HTML for re-delivery items."""
+            cards = ""
+            for it in item_list:
+                if isinstance(it, dict):
+                    nm = html.escape(_s(it.get("name", "")))
+                    desc = html.escape(_s(it.get("desc", "")))
+                    qty = _s(it.get("qty", ""))
+                    unit_r = html.escape(_s(it.get("unit", "")))
+                    why = html.escape((_s(it.get("reason", ""))).replace("_", " "))
+                else:
+                    nm = html.escape(_s(getattr(it, "product_name", None)) or "Product")
+                    desc = ""
+                    unit_r = html.escape(_s(getattr(it, "unit", None)) or "unit")
+                    q = _safe_float(getattr(it, "qty_invoiced", None), 0.0)
+                    if q <= 0:
+                        q = _safe_float(getattr(it, "qty_expected", None), 0.0)
+                    qty = f"{q:g}"
+                    why = html.escape((_s(getattr(it, "kind", None)) or "re delivery").replace("_", " "))
+                desc_html = f"<div style='font-size:.78rem;color:var(--muted);margin-top:1px;'>{desc}</div>" if desc else ""
+                cards += (
+                    "<div class='cn-line'>"
+                    "<div class='cn-line-top'>"
+                    f"<span class='cn-name'>{nm}</span>"
+                    f"<span class='cn-total'>{qty} {unit_r}</span>"
+                    "</div>"
+                    + desc_html
+                    + (f"<div class='cn-line-meta'><span class='cn-reason'>{why}</span></div>" if why else "")
+                    + "</div>"
                 )
-            if phone:
-                st.markdown(f"- **Phone:** `{phone}`")
-            if address:
-                st.markdown(f"- **Address:** `{address}`")
+            header = ""
+            if inv_ref:
+                header = (
+                    "<div class='cn-header' style='background:#eff6ff;border-color:#bfdbfe;'>"
+                    f"<div class='cn-row'><span class='cn-lbl'>Invoice:</span> <b>{html.escape(inv_ref)}</b></div>"
+                    "</div>"
+                )
+            return f"<div class='cn-wrap' style='border-color:#bfdbfe;'>{header}{cards}</div>"
 
-        # -----------------------------
-        # Render content
-        # -----------------------------
         if redel_items:
-            # Legacy workflow-based list (single window)
-            eta = _s(sol.get("eta")).strip()
-            inv_ref = _s(sol.get("invoice")).strip()
-
-            if eta or inv_ref:
-                st.markdown("**Delivery window:**")
-                if eta:
-                    st.markdown(f"- **Expected:** {eta}")
-                if inv_ref:
-                    st.markdown(f"- **Reference invoice:** {inv_ref}")
-
-            st.markdown("**Products/quantities being re-delivered:**")
+            # Legacy workflow-based list — add descriptions via name lookup
+            lines_all = ctx.lines_by_provider.get(provn, []) or []
             for it in redel_items:
-                nm = _s(it.get("name"))
-                qty = _s(it.get("qty"))
-                unit = _s(it.get("unit"))
-                why = (_s(it.get("reason"))).replace("_", " ")
-                st.markdown(f"- **{nm}** · {qty} {unit} · {why}")
+                if isinstance(it, dict) and not it.get("desc"):
+                    nm_lower = _s(it.get("name", "")).strip().lower()
+                    for ln in lines_all:
+                        if _line_name(ln, ctx.products_by_id).strip().lower() == nm_lower:
+                            it["desc"] = _line_desc(ln, ctx.products_by_id)
+                            break
+            inv_ref = _s(sol.get("invoice")).strip()
+            st.markdown(_build_redel_cards(redel_items, inv_ref=inv_ref), unsafe_allow_html=True)
             return
 
         # Ticket-based grouped schedule
-        st.markdown("**Re-delivery plan:**")
-
         # ✅ Robust sort: parse date + start time; unknown goes last
         eta_keys_sorted = sorted(by_eta.keys(), key=_parse_eta_sort_key)
 
@@ -4261,41 +4291,29 @@ def _render_incidences_cards(
             inv_ref = _s(bucket.get("invoice") or "").strip()
             tickets_for_eta: List[SeguimientoTicket] = bucket.get("tickets") or []
 
-            if eta and eta != "—":
-                st.markdown(f"### 🚚 Delivery window: **{eta}**")
-            else:
-                st.markdown("### 🚚 Delivery window: **—**")
-
-            if inv_ref:
-                st.caption(f"Reference invoice: {inv_ref}")
-
-            st.markdown("**Products/quantities being re-delivered:**")
+            # Resolve ticket items for card rendering
+            ticket_items = []
             for t in tickets_for_eta:
                 lid = int(getattr(t, "order_line_id", 0) or 0)
-
-                # best-effort line lookup
                 ln = None
                 try:
                     ln = next(
-                        (
-                            x
-                            for x in (ctx.lines_by_provider.get(provn, []) or [])
-                            if int(getattr(x, "id", 0) or 0) == lid
-                        ),
+                        (x for x in (ctx.lines_by_provider.get(provn, []) or []) if int(getattr(x, "id", 0) or 0) == lid),
                         None,
                     )
                 except Exception:
                     ln = None
 
                 nm = _s(getattr(t, "product_name", None)) or (_line_name(ln, ctx.products_by_id) if ln else "Product")
-                unit = _s(getattr(t, "unit", None)) or (_line_unit(ln, ctx.products_by_id) if ln else "unit")
-
-                qty = _safe_float(getattr(t, "qty_invoiced", None), 0.0)
-                if qty <= 0:
-                    qty = _safe_float(getattr(t, "qty_expected", None), 0.0)
-
+                desc = _line_desc(ln, ctx.products_by_id) if ln else ""
+                unit_t = _s(getattr(t, "unit", None)) or (_line_unit(ln, ctx.products_by_id) if ln else "unit")
+                q = _safe_float(getattr(t, "qty_invoiced", None), 0.0)
+                if q <= 0:
+                    q = _safe_float(getattr(t, "qty_expected", None), 0.0)
                 why = (_s(getattr(t, "kind", None)) or "re_delivery").replace("_", " ")
-                st.markdown(f"- **{nm}** · {qty:g} {unit} · {why}")
+                ticket_items.append({"name": nm, "desc": desc, "qty": f"{q:g}", "unit": unit_t, "reason": why})
+
+            st.markdown(_build_redel_cards(ticket_items, inv_ref=inv_ref), unsafe_allow_html=True)
 
 
 
@@ -4818,7 +4836,7 @@ def _render_incidences_cards(
                 # This prevents the button persisting after request.
                 if not locked:
                     venue_msg = st.text_area(
-                        "Message to supplier (optional)",
+                        "Message to supplier",
                         value="",
                         placeholder="e.g. Please confirm ETA / credit note number. Any substitution acceptable?",
                         key=f"venue_msg_{order.id}_{provn}",
@@ -4830,22 +4848,6 @@ def _render_incidences_cards(
                         st.session_state[decisions_key] = True
 
                         _apply_inline_reorders_for_provider(close_non_urgent_op_missing=True)
-
-                        # OP missing has the extra auto-close logic
-                        if state_u == "OPERATIONAL_MISSING_PRODUCT":
-                            ctx2 = _load_order_context(int(ctx.order.venue_id), int(ctx.order.id))
-                            if len(_provider_open_tickets(ctx2, provn)) == 0:
-                                _set_workflow_state(
-                                    venue_id=int(order.venue_id),
-                                    order_id=int(order.id),
-                                    provider=provn,
-                                    to_state="CLOSED",
-                                    actor_role="venue",
-                                    actor="venue",
-                                    note="Operational missing: non-urgent items ignored (not reordered).",
-                                )
-                                st.success("Saved ✓")
-                                st.rerun()
 
                         # Default path: request supplier resolution link
                         ok, msg = request_supplier_resolution(int(order.venue_id), int(order.id), provn, venue_comment=venue_msg)
@@ -5339,44 +5341,44 @@ def _render_receive_provider_panel(ctx: OrderContext, provider: str) -> None:
 
 
 
-        # ---------- Action row (invoice + expected popover + save) ----------
-        c1, c2 = st.columns(2, vertical_alignment="center")
+        # # ---------- Action row (invoice + expected popover + save) ----------
+        # c1, c2 = st.columns(2, vertical_alignment="center")
 
-        with c1:
-            inv_val = st.text_input(
-                "Invoice #",
-                key=inv_key,
-                placeholder="Invoice # (required)",
-                disabled=invoice_locked,
-                label_visibility="collapsed",
-            )
+        # with c1:
+        #     inv_val = st.text_input(
+        #         "Invoice #",
+        #         key=inv_key,
+        #         placeholder="Invoice # (required)",
+        #         disabled=invoice_locked,
+        #         label_visibility="collapsed",
+        #     )
 
-            inv_required_missing = (not invoice_locked) and (not (inv_val or "").strip())
-
-
-
-        with c2:
-            save_all = st.button(
-                "💾 Save",
-                type="primary",
-                use_container_width=True,
-                disabled=invoice_locked or inv_required_missing,
-                key=f"btn_save_all_{int(ctx.order.id)}_{prov_key}",
-            )
-
-            # if inv_required_missing:
-            #     st.caption("⚠️ Invoice number is required to save.")
+        #     inv_required_missing = (not invoice_locked) and (not (inv_val or "").strip())
 
 
-        if save_all:
-            ok, msg = save_all_received_for_provider(ctx=ctx, provider=current_provider)
-            if ok:
-                st.success("Saved ✓")
-                st.rerun()
-            else:
-                st.error(msg)
 
-        st.markdown("<div class='voi-hr'></div>", unsafe_allow_html=True)
+        # with c2:
+        #     save_all = st.button(
+        #         "💾 Save",
+        #         type="primary",
+        #         use_container_width=True,
+        #         disabled=invoice_locked or inv_required_missing,
+        #         key=f"btn_save_all_{int(ctx.order.id)}_{prov_key}",
+        #     )
+
+        #     # if inv_required_missing:
+        #     #     st.caption("⚠️ Invoice number is required to save.")
+
+
+        # if save_all:
+        #     ok, msg = save_all_received_for_provider(ctx=ctx, provider=current_provider)
+        #     if ok:
+        #         st.success("Saved ✓")
+        #         st.rerun()
+        #     else:
+        #         st.error(msg)
+
+        # st.markdown("<div class='voi-hr'></div>", unsafe_allow_html=True)
 
 @st.cache_data(show_spinner=False, ttl=15)
 def _list_open_incidences_items(
@@ -5532,17 +5534,14 @@ def tracking_dashboard(
             del st.session_state["fullpage_receive"]
             st.rerun()
 
-        st.markdown(f"#### Receive — {fp_provider}")
+        st.markdown(f"#### Receive · {fp_provider}")
 
         fp_ctx = _load_order_context(
             fp_venue_id, fp_order_id,
             refresh_token=_orders_refresh_token(fp_venue_id),
         )
 
-        _render_expected_lines(fp_ctx, fp_provider, show_prices=True, include_iva=True)
-        _render_receive_form(fp_ctx, fp_provider)
-
-        # ── Invoice + Save row ──
+        # ── Invoice + Save row (right under title) ──
         fp_prov_key = norm_provider(fp_provider)
         fp_receipt = fp_ctx.receipts_by_provider.get(fp_prov_key)
         fp_wf = fp_ctx.workflows_by_provider.get(fp_prov_key)
@@ -5554,29 +5553,54 @@ def tracking_dashboard(
         if fp_inv_key not in st.session_state:
             st.session_state[fp_inv_key] = fp_db_inv
 
-        fc1, fc2 = st.columns(2, vertical_alignment="center")
-        with fc1:
-            fp_inv_val = st.text_input(
-                "Invoice #",
-                key=fp_inv_key,
-                placeholder="Invoice # (required)",
-                disabled=fp_invoice_locked,
-                label_visibility="collapsed",
-            )
-            fp_inv_missing = (not fp_invoice_locked) and (not (fp_inv_val or "").strip())
-        with fc2:
-            fp_save = st.button(
-                "💾 Save",
-                type="primary",
-                use_container_width=True,
-                disabled=fp_invoice_locked or fp_inv_missing,
-                key=f"btn_fp_save_{fp_order_id}_{fp_prov_key}",
-            )
+        with st.container(horizontal=True):
+            fc1, fc2 = st.columns([3, 1], vertical_alignment="center")
+            with fc1:
+                fp_inv_val = st.text_input(
+                    "Invoice #",
+                    key=fp_inv_key,
+                    placeholder="Invoice # (required)",
+                    disabled=fp_invoice_locked,
+                    label_visibility="collapsed",
+                )
+                fp_inv_missing = (not fp_invoice_locked) and (not (fp_inv_val or "").strip())
+            with fc2:
+                fp_inv_save = st.button(
+                    "💾 Save",
+                    use_container_width=True,
+                    disabled=fp_invoice_locked or fp_inv_missing,
+                    key=f"btn_fp_inv_save_{fp_order_id}_{fp_prov_key}",
+                )
 
-        if fp_save:
+        if fp_inv_save:
+            ok, msg = upsert_provider_invoice_number(
+                venue_id=fp_venue_id,
+                order_id=fp_order_id,
+                provider_name=fp_prov_key,
+                invoice_number=fp_inv_val,
+                actor_role="venue",
+                actor="",
+            )
+            if ok:
+                st.success("Invoice # saved ✓")
+                st.rerun()
+            else:
+                st.error(msg)
+
+        # _render_expected_lines(fp_ctx, fp_provider, show_prices=True, include_iva=True)
+        _render_receive_form(fp_ctx, fp_provider)
+
+        fp_save_all = st.button(
+            "💾 Save All",
+            type="primary",
+            use_container_width=True,
+            disabled=fp_invoice_locked or fp_inv_missing,
+            key=f"btn_fp_save_{fp_order_id}_{fp_prov_key}",
+        )
+        if fp_save_all:
             ok, msg = save_all_received_for_provider(ctx=fp_ctx, provider=fp_provider)
             if ok:
-                st.success("Saved ✓")
+                del st.session_state["fullpage_receive"]
                 st.rerun()
             else:
                 st.error(msg)

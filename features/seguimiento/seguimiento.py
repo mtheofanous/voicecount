@@ -879,11 +879,8 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
     tickets: List[SeguimientoTicket] = list(ctx.get("tickets") or [])
     open_t = [
         t for t in tickets
-        if (t.state or "").lower() != "resolved"
-        and (
-            (getattr(t, "kind", "") or "").lower() != "operational_missing"
-            or (getattr(t, "state", "") or "").lower() == "open_send"
-        )
+        if (t.state or "").lower() not in ("resolved", "resolved_not_reordered", "urgent_requested")
+        and getattr(t, "resolved_at", None) is None
     ]
 
     receipt: Optional[ProviderReceipt] = ctx.get("receipt")
@@ -1112,32 +1109,26 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
     st.markdown("<div class='hr'></div>", unsafe_allow_html=True)
 
     # Shared credit note number
-    # Shared credit note number
     credit_note_no: Optional[str] = None
 
     if credit_note_ids:
-        cn1, cn2 = st.columns([4, 1], vertical_alignment="bottom")
-
-        with cn1:
+        cn_key = f"credit_note_no_{ctx['order'].id}_{ctx['provider_name']}"
+        if cn_key not in st.session_state:
+            st.session_state[cn_key] = ""
+        cc1, cc2 = st.columns([4, 1], vertical_alignment="bottom")
+        with cc1:
             credit_note_input = st.text_input(
                 "Credit note invoice number (applies to all credit note items)",
-                key=f"credit_note_no_{ctx['order'].id}_{ctx['provider_name']}",
+                key=cn_key,
                 placeholder="e.g. CN-2026-001",
             )
-
-        with cn2:
-            if st.button(
-                "Save",
-                type="primary",
-                use_container_width=True,
-                key=f"save_credit_note_{ctx['order'].id}_{ctx['provider_name']}",
-            ):
+        with cc2:
+            if st.button("Save", type="primary", use_container_width=True, key=f"save_cn_{cn_key}"):
                 credit_note_no = (credit_note_input or "").strip() or None
-                st.caption(
-                    "All products marked as *Credit note* will share the same credit note number."
-                )
                 st.success("Credit note number saved")
                 st.rerun()
+        credit_note_no = (credit_note_input or "").strip() or None
+        st.caption("All products marked as *Credit note* will share the same credit note number.")
 
 
     # Re-delivery grouping
