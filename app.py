@@ -575,27 +575,41 @@ def main():
     account_role = (u.get("account_role") or "member").lower()
     acc = current_account()
 
-    # Resolve active venue (based on st.session_state["active_venue_id"], fallback to first)
-    active = current_active_venue()  # expected: (venue_dict, role)
+    page_key = st.session_state.get("page", "orders")
 
-    # If user has NO venues yet
+    active = current_active_venue()
+
+    # ✅ Let Manage Org work even if user has no venue yet
     if not active:
         st.warning("You don't have access to any venue yet.")
+
+        u0 = current_user() or {}
+        account_role = (u0.get("account_role") or "member").lower()
+
+        if page_key == "manage_org":
+            # Render org management so user can create the first venue
+            # manage_organization_ui expects a venue_role; without venues, treat owner/admin/manager as owner
+            can_create = account_role in {"owner", "admin", "manager"}
+            manage_organization_ui(venue_role=("owner" if can_create else "viewer"))
+            st.stop()
+
+        # Default message for other pages
         if account_role in {"owner", "admin", "manager"}:
             st.info("Create your first venue in Manage Org.")
         else:
             st.info("Ask an admin to grant you access.")
         return
 
+
     venue, venue_role = active
     venue_id = int(venue["id"])
-    venue_name = venue.get("name", "â€”")
+    venue_name = venue.get("name", "")
 
     logging.debug(f"Resolved page_key after deep-link sync: {st.session_state['page']}")
 
     # ---------------- TOP BAR (true fixed) ----------------
-    account_name = acc["name"] if acc else "â€”"
-    page_key = st.session_state.get("page", "orders")
+    account_name = acc["name"] if acc else ""
+    # page_key = st.session_state.get("page", "orders")
 
     show_manage_org = account_role in {"owner", "admin", "manager"}
 
