@@ -3784,6 +3784,7 @@ def _render_incidences_cards(
     providers: List[str],
     show_prices: bool = False,
     include_iva: bool = False,
+    view_mode: str = "all",
 ) -> None:
     order = ctx.order
     actor = "venue"
@@ -4602,9 +4603,10 @@ def _render_incidences_cards(
                             cn_no = _s(sol_wf.get("credit_note_invoice") or sol_wf.get("credit_note_number") or "")
 
                         cn_input_key = f"inc_cn_no_{order.id}_{provn}"
+                        if cn_input_key not in st.session_state:
+                            st.session_state[cn_input_key] = cn_no
                         cn_val = st.text_input(
                             "Credit note number",
-                            value=cn_no,
                             placeholder="e.g. CN-123 / ΠΙΣ-45",
                             key=cn_input_key,
                         )
@@ -4632,20 +4634,22 @@ def _render_incidences_cards(
                             if st.button(
                                 "✅ Verify credit note & close",
                                 use_container_width=True,
-                                disabled=(not _s(cn_val).strip()),
                                 key=f"inc_verify_cn_{order.id}_{provn}",
                             ):
-                                res_close = venue_verify_and_close(
-                                    ctx=ctx,
-                                    provider=provn,
-                                    mode="credit_note",
-                                    credit_note_invoice=_s(cn_val).strip(),
-                                )
-                                if res_close == "ok":
-                                    st.success("Credit note closed")
-                                    st.rerun()
+                                if not _s(cn_val).strip():
+                                    st.warning("⚠️ Please enter the credit note number before closing.")
                                 else:
-                                    st.error(res_close)
+                                    res_close = venue_verify_and_close(
+                                        ctx=ctx,
+                                        provider=provn,
+                                        mode="credit_note",
+                                        credit_note_invoice=_s(cn_val).strip(),
+                                    )
+                                    if res_close == "ok":
+                                        st.success("Credit note closed")
+                                        st.rerun()
+                                    else:
+                                        st.error(res_close)
 
                     tab_idx += 1
 
@@ -5720,20 +5724,13 @@ def tracking_dashboard(
                 if not open_t:
                     continue
 
-                has_credit_pending = False
-                has_redel_pending = False
                 for t in open_t:
                     meta = _parse_ticket_resolution_note(_s(getattr(t, "resolution_note", None)))
                     r = _s(meta.get("resolution")).strip().lower()
                     if r == "credit_note":
-                        has_credit_pending = True
+                        credit_notes_pending += 1
                     elif r in {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}:
-                        has_redel_pending = True
-
-                if has_redel_pending:
-                    redeliveries_pending += 1
-                if has_credit_pending:
-                    credit_notes_pending += 1
+                        redeliveries_pending += 1
 
         # Urgent: pending urgent requests
         try:
