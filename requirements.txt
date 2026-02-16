@@ -11,7 +11,7 @@ pandas>=2.2
 numpy>=1.26,<2.3
 streamlit-audiorecorder>=0.0.2
 openai>=1.0.0
-
+st-styled==0.3.0
 # Transcription (max available on Cloud at the moment)
 faster-whisper==1.2.1
 

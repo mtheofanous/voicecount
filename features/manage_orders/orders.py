@@ -1110,7 +1110,7 @@ def _render_header(order: Order) -> None:
 
 
 def _render_workflow_actions(*, venue_id: int, order: Order, role: Optional[str], actor: str) -> None:
-    st.markdown("<div class='voi-divider'></div>", unsafe_allow_html=True)
+    # st.markdown("<div class='voi-divider'></div>", unsafe_allow_html=True)
     status = (_s(order.status)).lower()
     can_manage = (_s(role)).lower() in {"owner", "manager"}
     with st.container(horizontal=True):
@@ -1753,14 +1753,11 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
             help="Mejor en móvil: tarjetas.",
         )
     # with cD:
-        sum_mode = st.radio(
-            "Resumen",
-            options=["por_proveedor", "total"],
-            format_func=lambda x: "Por proveedor" if x == "por_proveedor" else "Total",
-            horizontal=True,
-            label_visibility="collapsed",
+        sum_mode = "total" if st.toggle(
+            "Total",
+            value=False,
             key=f"sum_mode_{int(order.id)}",
-        )
+        ) else "por_proveedor"
 
         apply_smart_prices = st.toggle(
             "🧠 Aplicar precios inteligentes",
@@ -2300,7 +2297,7 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
             "para que el email y el link del proveedor funcionen sin tocar nada en 'Cesta inteligente'."
         )
 
-    st.markdown("<div class='voi-divider'></div>", unsafe_allow_html=True)
+    # st.markdown("<div class='voi-divider'></div>", unsafe_allow_html=True)
 
     provider_dir = _providers_cached(get_session, venue_id)
     send_map = _get_send_status_map(order_id=int(order.id))
@@ -2410,7 +2407,7 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
             _reset_send_status(order_id=int(order.id))
             st.rerun()
 
-    st.markdown("<div class='voi-divider'></div>", unsafe_allow_html=True)
+    # st.markdown("<div class='voi-divider'></div>", unsafe_allow_html=True)
 
     # -----------------------------
     # Per-provider cards (mobile-first)
@@ -2583,7 +2580,7 @@ def borrador_tab(
 
     _render_header(order)
     _render_workflow_actions(venue_id=venue_id, order=order, role=venue_role, actor=actor)
-    st.markdown("<div class='voi-divider'></div>", unsafe_allow_html=True)
+    # st.markdown("<div class='voi-divider'></div>", unsafe_allow_html=True)
 
     _render_lines_editor(venue_id=venue_id, order=order, actor=actor, products=products, lines=lines)
 
@@ -2606,7 +2603,7 @@ def orders_tab(
         or current_actor()
     )
 
-    st.markdown("## 🧾 Pedidos")
+    st.markdown("#### 🧾 Pedidos")
 
     active_key = f"orders_active_order_id_{venue_id}"
 
@@ -2663,6 +2660,6 @@ def orders_tab(
 
     _render_header(order)
     _render_workflow_actions(venue_id=venue_id, order=order, role=venue_role, actor=actor)
-    st.markdown("<div class='voi-divider'></div>", unsafe_allow_html=True)
+    # st.markdown("<div class='voi-divider'></div>", unsafe_allow_html=True)
 
     _render_send_section(venue_id=venue_id, order=order, products=products, lines=lines, actor=actor)
