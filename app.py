@@ -187,35 +187,54 @@ def _go(page_key: str, **extra_qp: str) -> None:
     st.rerun()
     
 def _bottom_tabbar(current_page: str) -> None:
+    from streamlit_float import float_init
+    float_init()
+
     tabs = [
         ("new", "➕", "New"),
         ("orders", "📦", "Orders"),
         ("tracking", "✅", "Receive"),
-  
     ]
 
-    # Get session token to include in links
-    token = st.session_state.get("_session_token", "")
-    token_param = f"&st={token}" if token else ""
+    tabbar = st.container()
+    with tabbar:
+        cols = st.columns(len(tabs), gap="small")
+        for col, (key, icon, label) in zip(cols, tabs):
+            is_active = key == current_page
+            with col:
+                btn_type = "primary" if is_active else "secondary"
+                if st.button(
+                    f"{icon}\n{label}",
+                    key=f"_tabbar_{key}",
+                    use_container_width=True,
+                    type=btn_type,
+                ):
+                    if not is_active:
+                        _go(key)
 
-    items = []
-    for key, icon, label in tabs:
-        active = "active" if key == current_page else ""
-        href = f"?page={key}{token_param}"
-        items.append(
-f"""<a class="voi-tab {active}" href="{href}" target="_self">
-  <div class="ic">{icon}</div>
-  <div class="tx">{label}</div>
-</a>"""
-        )
+    tabbar_css = """
+        position: fixed;
+        bottom: 0; left: 0; right: 0;
+        z-index: 9999;
+        padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
+        background: rgba(255,255,255,.96);
+        border-top: 1px solid rgba(148,163,184,.35);
+        backdrop-filter: saturate(180%) blur(12px);
+    """
+    tabbar.float(tabbar_css)
 
-    html = f"""<div class="voi-tabbar">
-  <div class="voi-tabs">
-    {''.join(items)}
-  </div>
-</div>"""
-
-    st.markdown(html, unsafe_allow_html=True)
+    # Style the buttons to match the original tab design
+    st.markdown("""
+    <style>
+    /* Tabbar button styling */
+    [data-testid="stVerticalBlockBorderWrapper"]:has(button[key^="_tabbar_"]) button,
+    button[kind="secondary"][data-testid="stBaseButton-secondary"],
+    button[kind="primary"][data-testid="stBaseButton-primary"] {
+        white-space: pre-line !important;
+        line-height: 1.15 !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
 from streamlit.components.v1 import html as components_html
 
