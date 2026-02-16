@@ -1316,10 +1316,52 @@ def manage_organization_ui(venue_role: str = None):
         st.error("User not found. Please log in again.")
         st.stop()
 
+    # Get venues + roles for the current user
     venues = current_venues_for_user()
+
+    # ✅ FIRST-RUN ONBOARDING: allow creating the first venue
     if not venues:
+        u0 = current_user() or {}
+        role0 = (u0.get("account_role") or "member").lower()
+
         st.info("You don't have access to any venue yet.")
+
+        if role0 not in {"owner", "manager", "admin"}:
+            st.info("Ask an admin/owner to create a venue and grant you access.")
+            st.stop()
+
+        st.markdown("### ➕ Create your first venue")
+
+        with st.form("create_first_venue_form", clear_on_submit=True):
+            c1, c2 = st.columns(2)
+            with c1:
+                v_name = st.text_input("Name")
+                v_tax = st.text_input("Tax number")
+                v_phone = st.text_input("Phone")
+            with c2:
+                v_email = st.text_input("Email").strip().lower()
+                v_addr = st.text_input("Address")
+
+            submitted = st.form_submit_button("Create venue", type="primary")
+
+        if submitted:
+            try:
+                v = create_venue(acc["id"], v_name, v_tax, v_addr, v_phone, v_email)
+
+                # ✅ grant creator access immediately
+                add_user_to_venue(int(v.id), int(uid), "owner")
+
+                invalidate_auth_caches()
+                st.session_state["active_venue_id"] = int(v.id)
+
+                st.success(f"Venue created ✅ ({v.name})")
+                st.rerun()
+
+            except Exception as e:
+                st.error(str(e))
+
         st.stop()
+
 
     # Only allow managing venues where user is owner/manager
     manageable = [(v, role) for (v, role) in venues if (role or "").lower() in {"owner", "manager"}]
