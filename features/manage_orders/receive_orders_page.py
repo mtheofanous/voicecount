@@ -5322,6 +5322,19 @@ def _render_receive_provider_panel(ctx: OrderContext, provider: str) -> None:
     # ✅ Supplier comment (from supplier confirmation)
     _render_commentline(label="💬 Supplier message", text=_supplier_comment_for_provider(ctx, prov_key))
 
+    # --- Full-page button ---
+    if st.button(
+        "🔍 Open full page",
+        key=f"btn_fullpage_{int(ctx.order.id)}_{prov_key}",
+        use_container_width=True,
+    ):
+        st.session_state["fullpage_receive"] = {
+            "order_id": int(ctx.order.id),
+            "provider": current_provider,
+            "venue_id": int(ctx.order.venue_id),
+        }
+        st.rerun()
+
     with st.expander("Details"):
         # ---------- Work area ----------
         _render_expected_lines(
@@ -5331,7 +5344,7 @@ def _render_receive_provider_panel(ctx: OrderContext, provider: str) -> None:
             include_iva=True,
         )
         _render_receive_form(ctx, current_provider)
-                    
+
 
 
         # ---------- Action row (invoice + expected popover + save) ----------
@@ -5511,6 +5524,72 @@ def tracking_dashboard(
     deep_provider: Optional[str] = None,
 ) -> None:
     _inject_css()
+
+    # Ensure the KPI tab key exists (fragments may reference it on rerun)
+    _fp_tab_key = f"tracking_global_tab_{int(venue_id)}"
+    st.session_state.setdefault(_fp_tab_key, "pending_products")
+
+    # ── Full-page receive form mode ──
+    fp = st.session_state.get("fullpage_receive")
+    if fp:
+        fp_order_id = int(fp["order_id"])
+        fp_provider = fp["provider"]
+        fp_venue_id = int(fp.get("venue_id") or venue_id)
+
+        if st.button("← Back to Dashboard", key="btn_fp_back"):
+            del st.session_state["fullpage_receive"]
+            st.rerun()
+
+        st.markdown(f"## Receive — {fp_provider}")
+
+        fp_ctx = _load_order_context(
+            fp_venue_id, fp_order_id,
+            refresh_token=_orders_refresh_token(fp_venue_id),
+        )
+
+        _render_expected_lines(fp_ctx, fp_provider, show_prices=True, include_iva=True)
+        _render_receive_form(fp_ctx, fp_provider)
+
+        # ── Invoice + Save row ──
+        fp_prov_key = norm_provider(fp_provider)
+        fp_receipt = fp_ctx.receipts_by_provider.get(fp_prov_key)
+        fp_wf = fp_ctx.workflows_by_provider.get(fp_prov_key)
+        fp_state = _s(getattr(fp_wf, "state", None)) if fp_wf else "ORDER_SENT"
+        fp_invoice_locked = (fp_state or "").upper() == "CLOSED"
+
+        fp_inv_key = f"recv_inv_{fp_order_id}_{fp_prov_key}"
+        fp_db_inv = _s(getattr(fp_receipt, "invoice_number", None))
+        if fp_inv_key not in st.session_state:
+            st.session_state[fp_inv_key] = fp_db_inv
+
+        fc1, fc2 = st.columns(2, vertical_alignment="center")
+        with fc1:
+            fp_inv_val = st.text_input(
+                "Invoice #",
+                key=fp_inv_key,
+                placeholder="Invoice # (required)",
+                disabled=fp_invoice_locked,
+                label_visibility="collapsed",
+            )
+            fp_inv_missing = (not fp_invoice_locked) and (not (fp_inv_val or "").strip())
+        with fc2:
+            fp_save = st.button(
+                "💾 Save",
+                type="primary",
+                use_container_width=True,
+                disabled=fp_invoice_locked or fp_inv_missing,
+                key=f"btn_fp_save_{fp_order_id}_{fp_prov_key}",
+            )
+
+        if fp_save:
+            ok, msg = save_all_received_for_provider(ctx=fp_ctx, provider=fp_provider)
+            if ok:
+                st.success("Saved ✓")
+                st.rerun()
+            else:
+                st.error(msg)
+
+        return  # stop here – don't render normal dashboard
 
     st.markdown("# Dashboard")
 
