@@ -91,27 +91,27 @@ def _inject_css() -> None:
   background:rgba(255,255,255,.96);
   backdrop-filter:saturate(180%) blur(12px);
   border-bottom:1px solid rgba(148,163,184,.35);
-  padding:8px 4px;
-  margin:0 -0.75rem 10px;
+  padding:5px 4px;
+  margin:0 -0.75rem 8px;
 }
-.voi-kpi{display:flex;gap:8px;justify-content:space-between;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;}
+.voi-kpi{display:flex;gap:5px;justify-content:space-between;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;}
 .voi-kpi::-webkit-scrollbar{display:none;}
 .voi-kpi .k{
   flex:1 0 auto;min-width:0;
-  border:1px solid var(--border);border-radius:14px;padding:8px 12px;
+  border:1px solid var(--border);border-radius:10px;padding:5px 8px;
   background:#fff;text-align:center;
   cursor:pointer;user-select:none;-webkit-tap-highlight-color:transparent;
   transition:all .15s ease;
 }
 .voi-kpi .k:hover{border-color:#94a3b8;background:#f8fafc;box-shadow:0 2px 8px rgba(2,6,23,.08);}
 .voi-kpi .k.active{border-color:rgba(37,99,235,.45);background:#eff6ff;box-shadow:0 4px 14px rgba(37,99,235,.10);}
-.voi-kpi .k .t{font-weight:900;font-size:.78rem;white-space:nowrap;opacity:.85;}
-.voi-kpi .k .v{font-weight:950;font-size:1.15rem;margin-top:2px;}
+.voi-kpi .k .t{font-weight:900;font-size:.65rem;white-space:nowrap;opacity:.85;}
+.voi-kpi .k .v{font-weight:950;font-size:.95rem;margin-top:1px;}
 @media(max-width:640px){
-  .voi-kpi{gap:6px;}
-  .voi-kpi .k{padding:6px 10px;border-radius:12px;}
-  .voi-kpi .k .t{font-size:.7rem;}
-  .voi-kpi .k .v{font-size:.95rem;}
+  .voi-kpi{gap:4px;}
+  .voi-kpi .k{padding:4px 6px;border-radius:8px;}
+  .voi-kpi .k .t{font-size:.6rem;}
+  .voi-kpi .k .v{font-size:.8rem;}
 }
 /* Hide offscreen KPI trigger buttons */
 [class*="st-key-_kpi_"]{position:fixed!important;left:-9999px!important;height:0!important;overflow:hidden!important;pointer-events:none!important;}
@@ -5549,7 +5549,7 @@ def tracking_dashboard(
         credit_notes_pending = 0
         urgent_requests_pending = 0
 
-    # --- KPI floating nav (same pattern as app.py bottom tab bar) ---
+    # --- KPI floating nav ---
     _KPI_VIEWS = ["pending_products", "open_incidences", "re_deliveries", "credit_notes", "urgent_requests"]
     tab_key = f"tracking_global_tab_{int(venue_id)}"
     st.session_state.setdefault(tab_key, _KPI_VIEWS[0])
@@ -5565,13 +5565,7 @@ def tracking_dashboard(
         ("urgent_requests",   "Urgent requests",    urgent_requests_pending),
     ]
 
-    # 1) Hidden offscreen Streamlit buttons (trigger rerun on click)
-    for view_key, _lbl, _val in _kpi_data:
-        if st.button("_", key=f"_kpi_{view_key}_{int(venue_id)}"):
-            st.session_state[tab_key] = view_key
-            st.rerun()
-
-    # 2) Visual HTML floating bar
+    # Visual HTML floating bar
     cards = []
     for view_key, label, value in _kpi_data:
         cls = "k active" if view_key == active_view else "k"
@@ -5586,12 +5580,141 @@ def tracking_dashboard(
         unsafe_allow_html=True,
     )
 
-    # 3) JS bridge: KPI card click → hidden Streamlit button
+    # --- Content area (fragment = only this reruns on KPI click) ---
+    @st.fragment
+    def _kpi_content():
+        # Hidden offscreen buttons (inside fragment so only fragment reruns)
+        for view_key, _lbl, _val in _kpi_data:
+            if st.button("_", key=f"_kpi_{view_key}_{int(venue_id)}"):
+                st.session_state[tab_key] = view_key
+                set_query_params(page="tracking", view=view_key, order_id="", provider="")
+                st.rerun()
+
+        av = st.session_state[tab_key]
+
+        # 📦 Pending products (Receive)
+        if av == "pending_products":
+            tasks = _list_pending_receive_items(int(venue_id))
+            if not tasks:
+                st.success("✅ Nothing pending to receive right now.")
+                return
+
+            f1, f2 = st.columns([2.2, 1.0], vertical_alignment="center")
+            with f1:
+                q = st.text_input("Search provider / invoice / order", placeholder="e.g. makro, 2026-, #12").strip().lower()
+            with f2:
+                expand_all = st.toggle("Expand all", value=False)
+
+            def _matches(t: Dict[str, Any]) -> bool:
+                if not q:
+                    return True
+                prov = (t.get("provider_norm") or t.get("provider_display") or "").lower()
+                inv = (t.get("invoice_number") or "").lower()
+                oid = str(t.get("order_id") or "")
+                return (q in prov) or (q in inv) or (q in oid) or (q in f"#{oid}")
+
+            tasks2 = [t for t in tasks if _matches(t)]
+            if not tasks2:
+                st.info("No matches.")
+                return
+
+            for t in tasks2:
+                oid = int(t["order_id"])
+                prov_norm = t["provider_norm"] or ""
+
+                ctx_r = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
+                _render_receive_provider_panel(ctx_r, prov_norm)
+
+                st.empty()
+
+            return
+
+        # 🚨 Open incidences (all)
+        if av == "open_incidences":
+            items = _list_open_incidences_items(int(venue_id))
+            if not items:
+                st.success("✅ No open incidences.")
+                return
+
+            f1, f2 = st.columns([2.2, 1.0], vertical_alignment="center")
+            with f1:
+                q = st.text_input("Search provider / invoice / order", key="inc_global_search", placeholder="e.g. invoice, #34").strip().lower()
+            with f2:
+                expand_all = st.toggle("Expand all", value=False, key="inc_global_expand_all")
+
+            def _matches_inc(t: Dict[str, Any]) -> bool:
+                if not q:
+                    return True
+                prov = (t.get("provider") or "").lower()
+                inv = (t.get("invoice_number") or "").lower()
+                oid = str(t.get("order_id") or "")
+                return (q in prov) or (q in inv) or (q in oid) or (q in f"#{oid}")
+
+            items2 = [t for t in items if _matches_inc(t)]
+            if not items2:
+                st.info("No matches.")
+                return
+
+            for t in items2:
+                oid = int(t["order_id"])
+                prov = _s(t.get("provider") or "—")
+
+                ctx_i = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
+                _render_incidences_cards(ctx_i, [prov], show_prices=True, include_iva=True)
+
+            return
+
+        # 🚚 Re-deliveries (filtered incidences)
+        if av == "re_deliveries":
+            items = _list_open_incidences_items(int(venue_id))
+            REDEL_SET = {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}
+            items = _filter_incidences_by_resolution(items, int(venue_id), REDEL_SET) if items else []
+            if not items:
+                st.success("✅ No pending re-deliveries.")
+                return
+
+            for t in items:
+                oid = int(t["order_id"])
+                prov = _s(t.get("provider") or "—")
+
+                ctx_r = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
+                _render_incidences_cards(ctx_r, [prov], show_prices=True, include_iva=True)
+
+            return
+
+        # 🧾 Credit notes (filtered incidences)
+        if av == "credit_notes":
+            items = _list_open_incidences_items(int(venue_id))
+            items = _filter_incidences_by_resolution(items, int(venue_id), {"credit_note"}) if items else []
+            if not items:
+                st.success("✅ No pending credit notes.")
+                return
+
+            for t in items:
+                oid = int(t["order_id"])
+                prov = _s(t.get("provider") or "—")
+
+                ctx_c = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
+                _render_incidences_cards(ctx_c, [prov], show_prices=True, include_iva=True)
+
+            return
+
+        # ⚡ Urgent requests
+        if av == "urgent_requests":
+            _render_urgent_tab(ctx)
+
+    _kpi_content()
+
+    # JS bridge: instant visual swap + trigger hidden button (runs once, outside fragment)
     components_html("""
     <script>
     var doc = window.parent.document;
     doc.querySelectorAll('.voi-kpi .k[data-kpi]').forEach(function(card) {
         card.onclick = function() {
+            // 1) Instant visual feedback
+            doc.querySelectorAll('.voi-kpi .k').forEach(function(c){ c.classList.remove('active'); });
+            this.classList.add('active');
+            // 2) Trigger hidden Streamlit button
             var view = this.getAttribute('data-kpi');
             var wrapper = doc.querySelector('[class*="st-key-_kpi_' + view + '"]');
             if (wrapper) {
@@ -5602,139 +5725,4 @@ def tracking_dashboard(
     });
     </script>
     """, height=0)
-
-    active_view = st.session_state[tab_key]
-
-    # -----------------------------
-    # 📦 Pending products (Receive)
-    # -----------------------------
-    if active_view == "pending_products":
-        tasks = _list_pending_receive_items(int(venue_id))
-        if not tasks:
-            st.success("✅ Nothing pending to receive right now.")
-            return
-
-        f1, f2 = st.columns([2.2, 1.0], vertical_alignment="center")
-        with f1:
-            q = st.text_input("Search provider / invoice / order", placeholder="e.g. makro, 2026-, #12").strip().lower()
-        with f2:
-            expand_all = st.toggle("Expand all", value=False)
-
-        def _matches(t: Dict[str, Any]) -> bool:
-            if not q:
-                return True
-            prov = (t.get("provider_norm") or t.get("provider_display") or "").lower()
-            inv = (t.get("invoice_number") or "").lower()
-            oid = str(t.get("order_id") or "")
-            return (q in prov) or (q in inv) or (q in oid) or (q in f"#{oid}")
-
-        tasks2 = [t for t in tasks if _matches(t)]
-        if not tasks2:
-            st.info("No matches.")
-            return
-
-        for t in tasks2:
-            oid = int(t["order_id"])
-            prov_norm = t["provider_norm"] or ""
-
-            if qp_int("order_id") != oid:
-                set_query_params(page="tracking", order_id=str(oid), provider=prov_norm)
-
-            ctx = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
-            _render_receive_provider_panel(ctx, prov_norm)
-
-            st.empty()
-
-        return
-
-    # -----------------------------
-    # 🚨 Open incidences (all)
-    # -----------------------------
-    if active_view == "open_incidences":
-        items = _list_open_incidences_items(int(venue_id))
-        if not items:
-            st.success("✅ No open incidences.")
-            return
-
-        f1, f2 = st.columns([2.2, 1.0], vertical_alignment="center")
-        with f1:
-            q = st.text_input("Search provider / invoice / order", key="inc_global_search", placeholder="e.g. invoice, #34").strip().lower()
-        with f2:
-            expand_all = st.toggle("Expand all", value=False, key="inc_global_expand_all")
-
-        def _matches_inc(t: Dict[str, Any]) -> bool:
-            if not q:
-                return True
-            prov = (t.get("provider") or "").lower()
-            inv = (t.get("invoice_number") or "").lower()
-            oid = str(t.get("order_id") or "")
-            return (q in prov) or (q in inv) or (q in oid) or (q in f"#{oid}")
-
-        items2 = [t for t in items if _matches_inc(t)]
-        if not items2:
-            st.info("No matches.")
-            return
-
-        for t in items2:
-            oid = int(t["order_id"])
-            prov = _s(t.get("provider") or "—")
-
-            if qp_int("order_id") != oid:
-                set_query_params(page="tracking", order_id=str(oid), provider=norm_provider(prov))
-
-            ctx = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
-            _render_incidences_cards(ctx, [prov], show_prices=True, include_iva=True)
-
-        return
-
-    # -----------------------------
-    # 🚚 Re-deliveries (filtered incidences)
-    # -----------------------------
-    if active_view == "re_deliveries":
-        items = _list_open_incidences_items(int(venue_id))
-        REDEL_SET = {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}
-        items = _filter_incidences_by_resolution(items, int(venue_id), REDEL_SET) if items else []
-        if not items:
-            st.success("✅ No pending re-deliveries.")
-            return
-
-        for t in items:
-            oid = int(t["order_id"])
-            prov = _s(t.get("provider") or "—")
-
-            if qp_int("order_id") != oid:
-                set_query_params(page="tracking", order_id=str(oid), provider=norm_provider(prov))
-
-            ctx = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
-            _render_incidences_cards(ctx, [prov], show_prices=True, include_iva=True)
-
-        return
-
-    # -----------------------------
-    # 🧾 Credit notes (filtered incidences)
-    # -----------------------------
-    if active_view == "credit_notes":
-        items = _list_open_incidences_items(int(venue_id))
-        items = _filter_incidences_by_resolution(items, int(venue_id), {"credit_note"}) if items else []
-        if not items:
-            st.success("✅ No pending credit notes.")
-            return
-
-        for t in items:
-            oid = int(t["order_id"])
-            prov = _s(t.get("provider") or "—")
-
-            if qp_int("order_id") != oid:
-                set_query_params(page="tracking", order_id=str(oid), provider=norm_provider(prov))
-
-            ctx = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
-            _render_incidences_cards(ctx, [prov], show_prices=True, include_iva=True)
-
-        return
-
-    # -----------------------------
-    # ⚡ Urgent requests
-    # -----------------------------
-    if active_view == "urgent_requests":
-        _render_urgent_tab(ctx)
 
