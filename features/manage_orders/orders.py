@@ -1735,46 +1735,40 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
 
     st.markdown("### Summary")
 
-    cA, cB, cC, cD = st.columns([1.15, 1.1, 1.2, 1.6], vertical_alignment="center")
-    with cA:
-        show_prices = st.toggle(
-            "Mostrar importes",
-            value=False,
-            key=f"sum_show_prices_{int(order.id)}",
-            help="Estimación basada en precios del catálogo y reglas de descuento. No es una factura.",
-        )
-    with cB:
-        include_iva = st.toggle(
-            "IVA",
-            value=False,
-            key=f"sum_include_iva_{int(order.id)}",
-            help="Muestra % IVA, IVA € y Total (estimación).",
-            disabled=not show_prices,
-        )
-    with cC:
-        compact = st.toggle(
-            "Compacto",
-            value=True,
-            key=f"sum_compact_{int(order.id)}",
-            help="Mejor en móvil: tarjetas.",
-        )
-    with cD:
-        sum_mode = st.radio(
-            "Resumen",
-            options=["por_proveedor", "total"],
-            format_func=lambda x: "Por proveedor" if x == "por_proveedor" else "Total",
-            horizontal=True,
-            label_visibility="collapsed",
-            key=f"sum_mode_{int(order.id)}",
-        )
+    with st.container(horizontal=True, gap="small"):
+        cA, cC, cD = st.columns([1.15, 1.2, 1.6], vertical_alignment="center")
+        with cA:
+            show_prices = st.toggle(
+                "Mostrar importes",
+                value=False,
+                key=f"sum_show_prices_{int(order.id)}",
+                help="Estimación basada en precios del catálogo y reglas de descuento. No es una factura.",
+            )
+        include_iva = show_prices
+        with cC:
+            compact = st.toggle(
+                "Compacto",
+                value=True,
+                key=f"sum_compact_{int(order.id)}",
+                help="Mejor en móvil: tarjetas.",
+            )
+        with cD:
+            sum_mode = st.radio(
+                "Resumen",
+                options=["por_proveedor", "total"],
+                format_func=lambda x: "Por proveedor" if x == "por_proveedor" else "Total",
+                horizontal=True,
+                label_visibility="collapsed",
+                key=f"sum_mode_{int(order.id)}",
+            )
 
-    apply_smart_prices = st.toggle(
-        "🧠 Aplicar precios inteligentes",
-        value=False,
-        key=f"sum_apply_smart_{int(order.id)}",
-        disabled=not show_prices,
-        help="Reasigna automáticamente cada línea al proveedor más barato (incluyendo descuentos) para enviar y para que el link del proveedor funcione sin pasos extra.",
-    )
+        apply_smart_prices = st.toggle(
+            "🧠 Aplicar precios inteligentes",
+            value=False,
+            key=f"sum_apply_smart_{int(order.id)}",
+            disabled=not show_prices,
+            help="Reasigna automáticamente cada línea al proveedor más barato (incluyendo descuentos) para enviar y para que el link del proveedor funcione sin pasos extra.",
+        )
 
     # ---- pricing helpers (optional) ----
     providers_by_name = _providers_cached(get_session, venue_id)
