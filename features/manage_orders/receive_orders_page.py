@@ -5027,6 +5027,28 @@ def _list_pending_receive_items(venue_id: int) -> List[Dict[str, Any]]:
             ):
                 sent_pairs.add((int(r.order_id), norm_provider(getattr(r, "provider_name", "") or "")))
 
+        # Also discover providers from order lines (via product.provider_name)
+        lines = list(s.exec(select(OrderLine).where(OrderLine.order_id.in_(order_ids))).all())
+        product_ids = sorted({int(l.product_id) for l in lines if getattr(l, "product_id", None)})
+        products: Dict[int, Any] = {}
+        if product_ids:
+            ps = list(s.exec(select(Product).where(Product.id.in_(product_ids))).all())
+            products = {int(p.id): p for p in ps if getattr(p, "id", None) is not None}
+
+        all_pairs: set[tuple[int, str]] = set(sent_pairs)
+        for l in lines:
+            oid_l = int(getattr(l, "order_id", 0) or 0)
+            if not oid_l:
+                continue
+            p = products.get(int(l.product_id)) if getattr(l, "product_id", None) else None
+            prov_name = ""
+            if p and getattr(p, "provider_name", None):
+                prov_name = norm_provider(p.provider_name)
+            else:
+                prov_name = norm_provider(_s(getattr(l, "provider", None)))
+            if prov_name:
+                all_pairs.add((oid_l, prov_name))
+
         wf_rows = list(s.exec(select(OrderWorkflow).where(OrderWorkflow.order_id.in_(order_ids))).all())
         wf_by_pair = {(int(w.order_id), norm_provider(w.provider_name)): w for w in wf_rows}
 
@@ -5039,23 +5061,26 @@ def _list_pending_receive_items(venue_id: int) -> List[Dict[str, Any]]:
         if not oid:
             continue
 
-        provs = sorted([p for (oo, p) in sent_pairs if oo == oid and p], key=lambda x: x.lower())
+        provs = sorted([p for (oo, p) in all_pairs if oo == oid and p], key=lambda x: x.lower())
         for provn in provs:
             wf = wf_by_pair.get((oid, provn))
             state = (_s(getattr(wf, "state", None)) or "ORDER_SENT").upper()
             if state in DONE_STATES:
                 continue
 
+            is_sent = (oid, provn) in sent_pairs
             rec = rc_by_pair.get((oid, provn))
             inv = _s(getattr(rec, "invoice_number", None))
+            display = provn if is_sent else f"{provn} ⚠️ Not sent"
             out.append(
                 {
                     "order": o,
                     "order_id": oid,
                     "provider_norm": provn,
-                    "provider_display": provn,
+                    "provider_display": display,
                     "invoice_number": inv,
                     "state": state,
+                    "is_sent": is_sent,
                 }
             )
 
@@ -5345,9 +5370,9 @@ def tracking_dashboard(
     
     #======================PANEL
     
-     # ✅ Only keep providers that are actually sent (email or whatsapp)
+     # Track which providers have been sent (email or whatsapp)
     sent_providers = sent_providers_by_order.get(int(ctx.order.id), set())
-    providers = [p for p in providers if norm_provider(p) in sent_providers]
+    unsent_providers = {norm_provider(p) for p in providers if norm_provider(p) not in sent_providers}
 
     # -----------------------------
     # Deep-link: provider (best-effort)
@@ -5358,7 +5383,7 @@ def tracking_dashboard(
         st.session_state[f"recv_desired_provider_{int(ctx.order.id)}"] = desired_norm
         
     if not providers:
-        st.info("No suppliers have been sent yet (📧 Email / WhatsApp).")
+        st.info("No suppliers found for this order.")
         return
 
 
@@ -5510,7 +5535,7 @@ def tracking_dashboard(
         def _matches(t: Dict[str, Any]) -> bool:
             if not q:
                 return True
-            prov = (t.get("provider_display") or "").lower()
+            prov = (t.get("provider_norm") or t.get("provider_display") or "").lower()
             inv = (t.get("invoice_number") or "").lower()
             oid = str(t.get("order_id") or "")
             return (q in prov) or (q in inv) or (q in oid) or (q in f"#{oid}")
@@ -5533,6 +5558,7 @@ def tracking_dashboard(
         for t in tasks2:
             oid = int(t["order_id"])
             prov = t["provider_display"] or "—"
+            prov_norm = t["provider_norm"] or ""
             inv = t["invoice_number"] or "—"
             order = t.get("order")  # this exists because _list_pending_receive_items adds it
 
@@ -5541,10 +5567,10 @@ def tracking_dashboard(
 
             # URL sync (optional)
             if qp_int("order_id") != oid:
-                set_query_params(page="tracking", order_id=str(oid), provider=norm_provider(prov))
+                set_query_params(page="tracking", order_id=str(oid), provider=prov_norm)
 
             ctx = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
-            _render_receive_provider_panel(ctx, prov)
+            _render_receive_provider_panel(ctx, prov_norm)
             
             st.empty()
 
