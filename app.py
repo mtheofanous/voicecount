@@ -147,6 +147,9 @@ section.main .block-container > div:first-child {
   flex-direction:column;
   justify-content:center;
   gap:4px;
+  cursor:pointer;
+  user-select:none;
+  -webkit-tap-highlight-color:transparent;
 }
 
 .voi-tab .ic{font-size:1.05rem;}
@@ -187,60 +190,59 @@ def _go(page_key: str, **extra_qp: str) -> None:
     st.rerun()
     
 def _bottom_tabbar(current_page: str) -> None:
-    from streamlit_float import float_init
-    float_init()
-
     tabs = [
         ("new", "➕", "New"),
         ("orders", "📦", "Orders"),
         ("tracking", "✅", "Receive"),
     ]
 
-    tabbar = st.container()
-    with tabbar:
-        st.markdown('<div class="voi-tabbar-anchor"></div>', unsafe_allow_html=True)
-        cols = st.columns(len(tabs), gap="small")
-        for col, (key, icon, label) in zip(cols, tabs):
-            is_active = key == current_page
-            with col:
-                btn_type = "primary" if is_active else "secondary"
-                if st.button(
-                    f"{icon}\n{label}",
-                    key=f"_tabbar_{key}",
-                    use_container_width=True,
-                    type=btn_type,
-                ):
-                    if not is_active:
-                        _go(key)
+    # ── Hidden Streamlit buttons (offscreen) ─ preserve session state on click
+    for key, _icon, _label in tabs:
+        if key != current_page:
+            if st.button("_", key=f"_tabbar_{key}"):
+                _go(key)
 
-    tabbar_css = """
-        position: fixed;
-        bottom: 0; left: 0; right: 0;
-        z-index: 9999;
-        padding: 10px 10px calc(10px + env(safe-area-inset-bottom));
-        background: rgba(255,255,255,.96);
-        border-top: 1px solid rgba(148,163,184,.35);
-        backdrop-filter: saturate(180%) blur(12px);
-    """
-    tabbar.float(tabbar_css)
+    # ── Visual HTML tabbar (always horizontal) ──
+    items = []
+    for key, icon, label in tabs:
+        active = "active" if key == current_page else ""
+        items.append(
+            f'<div class="voi-tab {active}" data-page="{key}">'
+            f'<div class="ic">{icon}</div>'
+            f'<div class="tx">{label}</div>'
+            f'</div>'
+        )
 
-    # Force columns horizontal on all screen sizes (Streamlit stacks them on mobile)
+    html = f"""<div class="voi-tabbar"><div class="voi-tabs">{''.join(items)}</div></div>"""
+    st.markdown(html, unsafe_allow_html=True)
+
+    # JS bridge: runs in an iframe via components_html, reaches into parent DOM
+    # to wire tab clicks → hidden Streamlit buttons
+    components_html("""
+    <script>
+    var doc = window.parent.document;
+    doc.querySelectorAll('.voi-tab[data-page]').forEach(function(tab) {
+        tab.onclick = function() {
+            var page = this.getAttribute('data-page');
+            var wrapper = doc.querySelector('[class*="st-key-_tabbar_' + page + '"]');
+            if (wrapper) {
+                var btn = wrapper.querySelector('button');
+                if (btn) btn.click();
+            }
+        };
+    });
+    </script>
+    """, height=0)
+
+    # Hide the offscreen Streamlit trigger buttons
     st.markdown("""
     <style>
-    /* Hide the anchor div itself */
-    .voi-tabbar-anchor { display: none; }
-
-    /* Target the horizontal block inside the container that has our anchor */
-    [data-testid="stVerticalBlockBorderWrapper"]:has(.voi-tabbar-anchor)
-    [data-testid="stHorizontalBlock"] {
-        flex-wrap: nowrap !important;
-        gap: 8px !important;
-    }
-    [data-testid="stVerticalBlockBorderWrapper"]:has(.voi-tabbar-anchor)
-    [data-testid="stHorizontalBlock"] > [data-testid="stColumn"] {
-        min-width: 0 !important;
-        flex: 1 1 0 !important;
-        width: auto !important;
+    [class*="st-key-_tabbar_"] {
+        position: fixed !important;
+        left: -9999px !important;
+        height: 0 !important;
+        overflow: hidden !important;
+        pointer-events: none !important;
     }
     </style>
     """, unsafe_allow_html=True)
