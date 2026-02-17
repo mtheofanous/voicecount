@@ -15,7 +15,6 @@ from typing import Optional
 
 from sqlmodel import Field, SQLModel
 #   
-print(">>> domain.models imported")
 class Product(SQLModel, table=True):
     __table_args__ = {"extend_existing": True}
 

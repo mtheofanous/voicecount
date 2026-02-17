@@ -253,20 +253,18 @@ def _inject_css() -> None:
 }
 .el-row{
   display:flex;
-  align-items:center;
-  gap:8px;
-  flex-wrap:wrap;
+  flex-direction:column;
+  gap:3px;
   min-height:26px;
 }
 .el-name{
-  flex:1 1 auto;
-  min-width:0;
   font-weight:900;
   color:var(--text);
-  white-space:nowrap;
-  overflow:hidden;
-  text-overflow:ellipsis;
   font-size:.84rem;
+  display:flex;
+  align-items:baseline;
+  gap:6px;
+  flex-wrap:nowrap;
 }
 .el-pills{
   display:flex;
@@ -332,7 +330,7 @@ def _inject_css() -> None:
   font-size:.84rem;
 }
 .el-footer-right{text-align:right;}
-.el-desc{color:var(--muted);font-size:.72rem;font-weight:700;margin-top:1px;}
+.el-desc{color:var(--muted);font-size:.72rem;font-weight:700;white-space:nowrap;}
 .el-not-inv{
   display:inline-flex;
   padding:1px 6px;
@@ -2484,7 +2482,7 @@ def _render_expected_lines(
         if in_invoice is False:
             badges += "<span class='el-not-inv'>NOT IN INVOICE</span>"
 
-        desc_html = f"<div class='el-desc'>{desc}</div>" if desc else ""
+        desc_html = f"<span class='el-desc'>{desc}</span>" if desc else ""
 
         cards_html += (
             "<div class='el-card'>"
@@ -3855,21 +3853,10 @@ def _render_incidences_cards(
     def _credit_note_preview(prov: str, provn: str, open_t: List[SeguimientoTicket], sol: Dict[str, Any]) -> None:
         """Render an *expected* credit note (preview) based on tickets AND supplier note items.
 
-        Key rule:
-        - If supplier note has explicit items, we only show the items that are meant for credit note
-        (i.e., not flagged as re-delivery items).
+        Always shows the full card with all eligible items (same logic as re-delivery preview).
         """
         wf = ctx.workflows_by_provider.get(provn)
         sol = _normalize_solution_meta(sol)
-        resolution = _s(sol.get("resolution", "")).lower()
-
-        # Show CN preview only when:
-        # - supplier explicitly chose credit_note, OR
-        # - supplier note items contain credit-note items (mixed-mode support)
-        items = sol.get("items") or []
-        has_cn_items = any((isinstance(it, dict) and not _is_redelivery_item(it)) for it in (items or []))
-        if resolution != "credit_note" and not has_cn_items:
-            return
 
         receipt = ctx.receipts_by_provider.get(provn)
         inv_no = _s(getattr(receipt, "invoice_number", None)) or "—"
@@ -3877,6 +3864,7 @@ def _render_incidences_cards(
         cn_no = _s(sol.get("credit_note_invoice")) or "—"
 
         # Build best-effort mapping name->item metadata from supplier note
+        items = sol.get("items") or []
         sol_items: List[Dict[str, Any]] = [it for it in (items or []) if isinstance(it, dict)]
         sol_by_name = {_s(it.get("name")).strip().lower(): it for it in sol_items if _s(it.get("name")).strip()}
         credit_candidates: List[SeguimientoTicket] = []
@@ -3888,20 +3876,23 @@ def _render_incidences_cards(
                 it = sol_by_name.get(nm)
                 if it and not _is_redelivery_item(it):
                     credit_candidates.append(t)
-        else:
-            # Fallback: legacy behavior (credit kinds)
+
+        # Fallback 1: tickets whose resolution_note says credit_note
+        if not credit_candidates:
+            for t in open_t:
+                meta = _parse_ticket_resolution_note(_s(getattr(t, "resolution_note", None)))
+                r = _s(meta.get("resolution")).strip().lower()
+                if r == "credit_note":
+                    credit_candidates.append(t)
+
+        # Fallback 2: legacy behavior (credit kinds)
+        if not credit_candidates:
             credit_kinds = {"invoice_discrepancy", "damaged", "wrong_item"}
             credit_candidates = [t for t in open_t if (_s(getattr(t, "kind", None)).lower() in credit_kinds)]
 
+        # Fallback 3: use all open tickets (always show the card)
         if not credit_candidates:
-            st.markdown(
-                "<div class='voi-card' style='border-color:#fde68a;background:#fffbeb'>"
-                "<div class='voi-title'>🧾 Expected credit note (preview)</div>"
-                "<div class='voi-muted'>No eligible items found yet.</div>"
-                "</div>",
-                unsafe_allow_html=True,
-            )
-            return
+            credit_candidates = list(open_t)
 
         rows: List[Dict[str, Any]] = []
         total_net = 0.0
@@ -4566,10 +4557,18 @@ def _render_incidences_cards(
             show_tabs = bool(open_t)
 
             if show_tabs:
+                # view_mode controls which inner tabs are visible:
+                # "all" = full card (Open Incidences), "credit_note" = Invoice + CN only,
+                # "re_delivery" = Invoice + RD only
+                # In filtered KPI views, always show the relevant tab even if
+                # has_*_pending is technically False (the card passed the filter).
+                show_cn = has_credit_pending and view_mode in ("all", "credit_note") or view_mode == "credit_note"
+                show_rd = has_redel_pending and view_mode in ("all", "re_delivery") or view_mode == "re_delivery"
+
                 labels = ["Invoice / expected lines"]
-                if has_credit_pending:
+                if show_cn:
                     labels.append("🧾 Expected credit note")
-                if has_redel_pending:
+                if show_rd:
                     labels.append("🚚 Expected re-delivery")
 
                 tabs = st.tabs(labels)
@@ -4586,8 +4585,8 @@ def _render_incidences_cards(
 
                 tab_idx = 1
 
-                # --- Credit note tab (now shown also when workflow says CN/items exist) ---
-                if has_credit_pending:
+                # --- Credit note tab ---
+                if show_cn:
                     with tabs[tab_idx]:
                         cn_no = ""
 
@@ -4602,14 +4601,22 @@ def _render_incidences_cards(
                         if not cn_no:
                             cn_no = _s(sol_wf.get("credit_note_invoice") or sol_wf.get("credit_note_number") or "")
 
+                        # Persistent key survives widget lifecycle (Streamlit removes
+                        # widget keys when the widget is not rendered on rerun).
+                        cn_persist_key = f"_persist_cn_no_{order.id}_{provn}"
+                        if cn_persist_key not in st.session_state:
+                            st.session_state[cn_persist_key] = cn_no
+
                         cn_input_key = f"inc_cn_no_{order.id}_{provn}"
                         if cn_input_key not in st.session_state:
-                            st.session_state[cn_input_key] = cn_no
+                            st.session_state[cn_input_key] = st.session_state[cn_persist_key]
                         cn_val = st.text_input(
                             "Credit note number",
                             placeholder="e.g. CN-123 / ΠΙΣ-45",
                             key=cn_input_key,
                         )
+                        # Keep persistent key in sync with widget value
+                        st.session_state[cn_persist_key] = cn_val
 
                         sol_cn = dict(sol_wf)
                         sol_cn["resolution"] = "credit_note"
@@ -4653,8 +4660,8 @@ def _render_incidences_cards(
 
                     tab_idx += 1
 
-                # --- Re-delivery tab (now shown also when workflow says RD/items exist) ---
-                if has_redel_pending:
+                # --- Re-delivery tab ---
+                if show_rd:
                     with tabs[tab_idx]:
                         sol_rd = dict(sol_wf)
                         sol_rd["resolution"] = "re_delivery"
@@ -5455,19 +5462,22 @@ def _filter_incidences_by_resolution(
     items: List[Dict[str, Any]],
     venue_id: int,
     resolution_types: set,
+    contexts: Optional[Dict[int, "OrderContext"]] = None,
 ) -> List[Dict[str, Any]]:
-    """Filter incidence items to only those whose open tickets match given resolution types."""
+    """Filter incidence items to only those whose open tickets or workflow meta match given resolution types."""
     REDEL_RESOLUTIONS = {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}
     filtered = []
     for it in items:
         oid = int(it["order_id"])
         prov = it["provider"]
         provn = norm_provider(prov)
-        ctx = _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
+        ctx = (contexts or {}).get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
         open_t = _provider_open_tickets(ctx, provn)
         if not open_t:
             continue
         match = False
+
+        # 1) Check ticket-level resolution_note
         for t in open_t:
             meta = _parse_ticket_resolution_note(_s(getattr(t, "resolution_note", None)))
             r = _s(meta.get("resolution")).strip().lower()
@@ -5477,6 +5487,30 @@ def _filter_incidences_by_resolution(
             if resolution_types == REDEL_RESOLUTIONS and r in REDEL_RESOLUTIONS:
                 match = True
                 break
+
+        # 2) Also check workflow-level meta (covers cases where ticket resolution_note
+        #    is missing but workflow note indicates the resolution type)
+        if not match:
+            wf = ctx.workflows_by_provider.get(provn)
+            if wf:
+                sol_wf = _normalize_solution_meta(
+                    _parse_supplier_solution_meta(_s(getattr(wf, "note", None)))
+                )
+                wf_res = _s(sol_wf.get("resolution")).strip().lower()
+                wf_items = sol_wf.get("items") or []
+                if resolution_types == {"credit_note"}:
+                    has_cn = (wf_res == "credit_note") or any(
+                        isinstance(i, dict) and not _is_redelivery_item(i) for i in wf_items
+                    )
+                    if has_cn:
+                        match = True
+                elif resolution_types == REDEL_RESOLUTIONS:
+                    has_rd = (wf_res in REDEL_RESOLUTIONS) or any(
+                        isinstance(i, dict) and _is_redelivery_item(i) for i in wf_items
+                    )
+                    if has_rd:
+                        match = True
+
         if match:
             filtered.append(it)
     return filtered
@@ -5715,7 +5749,7 @@ def tracking_dashboard(
                         continue
                     pending_products += 1
 
-            # re-deliveries / credit notes pending (ticket meta)
+            # re-deliveries / credit notes pending (ticket meta + workflow fallback)
             for prov in sent_set:
                 provn = norm_provider(prov)
                 if _provider_closed(ctx_o, provn):
@@ -5724,13 +5758,31 @@ def tracking_dashboard(
                 if not open_t:
                     continue
 
+                _found_cn = False
+                _found_rd = False
                 for t in open_t:
                     meta = _parse_ticket_resolution_note(_s(getattr(t, "resolution_note", None)))
                     r = _s(meta.get("resolution")).strip().lower()
                     if r == "credit_note":
                         credit_notes_pending += 1
+                        _found_cn = True
                     elif r in {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}:
                         redeliveries_pending += 1
+                        _found_rd = True
+
+                # Workflow-level fallback: if no tickets had resolution but workflow indicates it
+                if not _found_cn and not _found_rd:
+                    _wf_k = ctx_o.workflows_by_provider.get(provn)
+                    if _wf_k:
+                        _sol_k = _normalize_solution_meta(
+                            _parse_supplier_solution_meta(_s(getattr(_wf_k, "note", None)))
+                        )
+                        _wf_res = _s(_sol_k.get("resolution")).strip().lower()
+                        _wf_items = _sol_k.get("items") or []
+                        if _wf_res == "credit_note" or any(isinstance(i, dict) and not _is_redelivery_item(i) for i in _wf_items):
+                            credit_notes_pending += 1
+                        if _wf_res in {"supplementary_delivery", "re_delivery"} or any(isinstance(i, dict) and _is_redelivery_item(i) for i in _wf_items):
+                            redeliveries_pending += 1
 
         # Urgent: pending urgent requests
         try:
@@ -5871,7 +5923,7 @@ def tracking_dashboard(
         if av == "re_deliveries":
             items = _list_open_incidences_items(int(venue_id))
             REDEL_SET = {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}
-            items = _filter_incidences_by_resolution(items, int(venue_id), REDEL_SET) if items else []
+            items = _filter_incidences_by_resolution(items, int(venue_id), REDEL_SET, contexts=contexts) if items else []
             if not items:
                 st.success("✅ No pending re-deliveries.")
                 return
@@ -5881,14 +5933,14 @@ def tracking_dashboard(
                 prov = _s(t.get("provider") or "—")
 
                 ctx_r = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
-                _render_incidences_cards(ctx_r, [prov], show_prices=True, include_iva=True)
+                _render_incidences_cards(ctx_r, [prov], show_prices=True, include_iva=True, view_mode="re_delivery")
 
             return
 
         # 🧾 Credit notes (filtered incidences)
         if av == "credit_notes":
             items = _list_open_incidences_items(int(venue_id))
-            items = _filter_incidences_by_resolution(items, int(venue_id), {"credit_note"}) if items else []
+            items = _filter_incidences_by_resolution(items, int(venue_id), {"credit_note"}, contexts=contexts) if items else []
             if not items:
                 st.success("✅ No pending credit notes.")
                 return
@@ -5898,7 +5950,7 @@ def tracking_dashboard(
                 prov = _s(t.get("provider") or "—")
 
                 ctx_c = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
-                _render_incidences_cards(ctx_c, [prov], show_prices=True, include_iva=True)
+                _render_incidences_cards(ctx_c, [prov], show_prices=True, include_iva=True, view_mode="credit_note")
 
             return
 

@@ -886,11 +886,32 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
     receipt: Optional[ProviderReceipt] = ctx.get("receipt")
     inv = (getattr(receipt, "invoice_number", None) or "").strip() or "—"
 
+    # Invoice date: prefer invoice_number_set_at, fallback to order.created_at
+    _inv_dt_raw = getattr(receipt, "invoice_number_set_at", None) if receipt else None
+    if not isinstance(_inv_dt_raw, datetime):
+        _inv_dt_raw = getattr(ctx.get("order"), "created_at", None)
+    _inv_dt_str = _inv_dt_raw.strftime("%d %b %Y") if isinstance(_inv_dt_raw, datetime) else "—"
+
+    # Saved credit note number from workflow note
+    _wf_note = (getattr(ctx.get("workflow"), "note", None) or "")
+    _saved_cn_no = ""
+    for _p in _wf_note.replace("·", "|").split("|"):
+        _p = _p.strip()
+        if _p.startswith("credit_note_invoice="):
+            _saved_cn_no = _p.split("=", 1)[1].strip()
+            break
+
+    _cn_line = ""
+    if _saved_cn_no:
+        _cn_line = f"<div class='muted' style='margin-top:4px;'>Credit note number: <b>{html.escape(_saved_cn_no)}</b></div>"
+
     # --- Step 4 header card ---
     st.markdown(
         "<div class='card'>"
-        f"<div class='h1'>Step 4 · Resolve issues (Invoice: {inv})</div>"
-        "<div class='muted'>Choose one option. The venue will verify and then close the incident.</div>"
+        f"<div class='h1'>Step 4 · Resolve issues (Invoice: {html.escape(inv)})</div>"
+        f"<div class='muted'>Invoice date: <b>{html.escape(_inv_dt_str)}</b></div>"
+        f"{_cn_line}"
+        "<div class='muted' style='margin-top:4px;'>Choose one option. The venue will verify and then close the incident.</div>"
         "</div>",
         unsafe_allow_html=True,
     )
@@ -1113,8 +1134,22 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
 
     if credit_note_ids:
         cn_key = f"credit_note_no_{ctx['order'].id}_{ctx['provider_name']}"
+        # Pre-fill from DB (ticket resolution_note) if not already in session
         if cn_key not in st.session_state:
-            st.session_state[cn_key] = ""
+            _saved_cn = ""
+            for tid in credit_note_ids:
+                _t = next((x for x in open_t if int(getattr(x, 'id', 0) or 0) == int(tid)), None)
+                if _t:
+                    _rn = (getattr(_t, "resolution_note", "") or "")
+                    _m = _META_KV_RE and None  # parse inline
+                    for _part in _rn.replace("·", "|").split("|"):
+                        _part = _part.strip()
+                        if _part.startswith("credit_note_invoice="):
+                            _saved_cn = _part.split("=", 1)[1].strip()
+                            break
+                if _saved_cn:
+                    break
+            st.session_state[cn_key] = _saved_cn
         cc1, cc2 = st.columns([4, 1], vertical_alignment="bottom")
         with cc1:
             credit_note_input = st.text_input(
@@ -1124,9 +1159,56 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
             )
         with cc2:
             if st.button("Save", type="primary", use_container_width=True, key=f"save_cn_{cn_key}"):
-                credit_note_no = (credit_note_input or "").strip() or None
-                st.success("Credit note number saved")
-                st.rerun()
+                _cn_to_save = (credit_note_input or "").strip() or None
+                if _cn_to_save:
+                    # Persist CN number to DB immediately (workflow note + ticket resolution_note)
+                    _wf: OrderWorkflow = ctx["workflow"]
+                    _order: Order = ctx["order"]
+                    with get_session() as _s_db:
+                        _wf2 = _s_db.exec(select(OrderWorkflow).where(OrderWorkflow.id == _wf.id)).first()
+                        # Update workflow note: replace/add credit_note_invoice
+                        _note_parts = [p.strip() for p in (_wf2.note or "").replace("·", "|").split("|") if p.strip()]
+                        _note_parts = [p for p in _note_parts if not p.startswith("credit_note_invoice=") and p != "credit_note_pending"]
+                        if "credit_note" not in _note_parts:
+                            _note_parts = ["credit_note"] + [p for p in _note_parts if p != "credit_note"]
+                        _note_parts.append(f"credit_note_invoice={_cn_to_save}")
+                        _wf2.note = " | ".join(_note_parts)
+                        # Update state from PENDING to ISSUED if applicable
+                        if _wf2.state == "SUPPLIER_CREDIT_NOTE_PENDING":
+                            _wf2.state = "SUPPLIER_CREDIT_NOTE_ISSUED"
+                        _wf2.updated_at = _now()
+                        _s_db.add(_wf2)
+                        # Update each credit_note ticket's resolution_note
+                        _tickets = list(_s_db.exec(
+                            select(SeguimientoTicket).where(
+                                SeguimientoTicket.order_id == _order.id,
+                                SeguimientoTicket.provider_name == _wf2.provider_name,
+                            )
+                        ).all())
+                        for _tk in _tickets:
+                            _rn = _tk.resolution_note or ""
+                            if "credit_note" in _rn.lower() and "credit_note_invoice=" not in _rn:
+                                # Add CN number to existing resolution_note
+                                _first_line = _rn.split("\n")[0]
+                                _rest = _rn[len(_first_line):]
+                                _tk.resolution_note = f"{_first_line} | credit_note_invoice={_cn_to_save}{_rest}"
+                                _tk.updated_at = _now()
+                                _s_db.add(_tk)
+                            elif "credit_note_invoice=" in _rn:
+                                # Replace existing CN number
+                                import re as _re
+                                _tk.resolution_note = _re.sub(
+                                    r"credit_note_invoice=[^|\n]*",
+                                    f"credit_note_invoice={_cn_to_save}",
+                                    _rn,
+                                )
+                                _tk.updated_at = _now()
+                                _s_db.add(_tk)
+                        _s_db.commit()
+                    st.success("Credit note number saved ✅")
+                    st.rerun()
+                else:
+                    st.warning("Please enter a credit note number first.")
         credit_note_no = (credit_note_input or "").strip() or None
         st.caption("All products marked as *Credit note* will share the same credit note number.")
 
@@ -1240,15 +1322,91 @@ def _render_readonly(ctx: Dict[str, Any]) -> None:
     wf: OrderWorkflow = ctx["workflow"]
     state = wf.state
 
+    # Extract credit note number from workflow note if present
+    _cn_display = ""
+    for _p in (wf.note or "").replace("·", "|").split("|"):
+        _p = _p.strip()
+        if _p.startswith("credit_note_invoice="):
+            _cn_display = _p.split("=", 1)[1].strip()
+            break
+
+    _cn_html = ""
+    if _cn_display:
+        _cn_html = f"<div style='margin-top:8px'><b>Credit note number:</b> {html.escape(_cn_display)}</div>"
+
     st.markdown(
         f"<div class='card'>"
         f"<div class='h1'>Current status</div>"
         f"<div style='margin-top:8px'>{_badge(state, 'info')}</div>"
+        f"{_cn_html}"
         f"<div class='hr'></div>"
         f"<div class='muted'>No action required right now.</div>"
         f"</div>",
         unsafe_allow_html=True,
     )
+
+
+def _render_pending_cn_update(ctx: Dict[str, Any]) -> None:
+    """Allow supplier to add/update credit note number when state is SUPPLIER_CREDIT_NOTE_PENDING."""
+    wf: OrderWorkflow = ctx["workflow"]
+    order: Order = ctx["order"]
+
+    cn_key = f"pending_cn_{order.id}_{ctx['provider_name']}"
+    if cn_key not in st.session_state:
+        st.session_state[cn_key] = ""
+
+    cc1, cc2 = st.columns([4, 1], vertical_alignment="bottom")
+    with cc1:
+        cn_input = st.text_input(
+            "Credit note invoice number",
+            key=cn_key,
+            placeholder="e.g. CN-2026-001",
+        )
+    with cc2:
+        if st.button("Save", type="primary", use_container_width=True, key=f"save_{cn_key}"):
+            _cn_val = (cn_input or "").strip()
+            if not _cn_val:
+                st.warning("Please enter a credit note number.")
+            else:
+                with get_session() as _s_db:
+                    _wf2 = _s_db.exec(select(OrderWorkflow).where(OrderWorkflow.id == wf.id)).first()
+                    # Update workflow note
+                    _note_parts = [p.strip() for p in (_wf2.note or "").replace("·", "|").split("|") if p.strip()]
+                    _note_parts = [p for p in _note_parts if not p.startswith("credit_note_invoice=") and p != "credit_note_pending"]
+                    if "credit_note" not in _note_parts:
+                        _note_parts = ["credit_note"] + [p for p in _note_parts if p != "credit_note"]
+                    _note_parts.append(f"credit_note_invoice={_cn_val}")
+                    _wf2.note = " | ".join(_note_parts)
+                    _wf2.state = "SUPPLIER_CREDIT_NOTE_ISSUED"
+                    _wf2.updated_at = _now()
+                    _s_db.add(_wf2)
+                    # Update ticket resolution_notes
+                    _tickets = list(_s_db.exec(
+                        select(SeguimientoTicket).where(
+                            SeguimientoTicket.order_id == order.id,
+                            SeguimientoTicket.provider_name == _wf2.provider_name,
+                        )
+                    ).all())
+                    import re as _re
+                    for _tk in _tickets:
+                        _rn = _tk.resolution_note or ""
+                        if "credit_note" not in _rn.lower():
+                            continue
+                        if "credit_note_invoice=" in _rn:
+                            _tk.resolution_note = _re.sub(
+                                r"credit_note_invoice=[^|\n]*",
+                                f"credit_note_invoice={_cn_val}",
+                                _rn,
+                            )
+                        else:
+                            _first_line = _rn.split("\n")[0]
+                            _rest = _rn[len(_first_line):]
+                            _tk.resolution_note = f"{_first_line} | credit_note_invoice={_cn_val}{_rest}"
+                        _tk.updated_at = _now()
+                        _s_db.add(_tk)
+                    _s_db.commit()
+                st.success("Credit note number saved ✅")
+                st.rerun()
 
 
 def seguimiento_app(order_id: int, provider_name: str, role: str, token: str) -> None:
@@ -1280,6 +1438,11 @@ def seguimiento_app(order_id: int, provider_name: str, role: str, token: str) ->
             _render_supplier_confirmation(ctx)
         elif wf.state in ("WAITING_SUPPLIER_ACTION", "INVOICE_DISCREPANCY"):
             _render_supplier_resolution(ctx)
+        elif wf.state == "SUPPLIER_CREDIT_NOTE_PENDING":
+            # Supplier submitted without CN number — let them add it now
+            st.info("⏳ Credit note number pending. Please provide it below.")
+            _render_readonly(ctx)
+            _render_pending_cn_update(ctx)
         elif wf.state in ("SUPPLIER_CREDIT_NOTE_ISSUED", "SUPPLEMENTARY_DELIVERY_SENT"):
             st.info("✅ Thanks. Waiting for venue verification.")
             _render_readonly(ctx)
