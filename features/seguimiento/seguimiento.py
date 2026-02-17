@@ -1141,7 +1141,6 @@ def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
                 _t = next((x for x in open_t if int(getattr(x, 'id', 0) or 0) == int(tid)), None)
                 if _t:
                     _rn = (getattr(_t, "resolution_note", "") or "")
-                    _m = _META_KV_RE and None  # parse inline
                     for _part in _rn.replace("·", "|").split("|"):
                         _part = _part.strip()
                         if _part.startswith("credit_note_invoice="):

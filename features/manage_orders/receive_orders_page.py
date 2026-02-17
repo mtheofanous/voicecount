@@ -395,6 +395,11 @@ def _inject_css() -> None:
 .cn-reason{font-weight:800;color:#92400e;font-size:.78rem;}
 .cn-footer{display:flex;justify-content:space-between;padding:10px 12px;border-top:2px solid var(--border);font-weight:900;font-size:.95rem;background:#f8fafc;}
 
+/* Fuse header card + expander (provider panel) */
+.voi-card.voi-card--header{margin-bottom:0.35rem;border-bottom-left-radius:0!important;border-bottom-right-radius:0!important;}
+div[data-testid="stExpander"]{border:1px solid rgba(49,51,63,0.12);border-top:none;border-bottom-left-radius:12px;border-bottom-right-radius:12px;padding:0.25rem 0.25rem 0.5rem 0.25rem;margin-top:-10px;background:#fff;}
+div[data-testid="stExpander"] summary{padding:0.25rem 0.5rem;font-weight:600;}
+
 </style>
 """,
         unsafe_allow_html=True,
@@ -685,18 +690,30 @@ def find_alternative_providers(*, ctx: Any, ticket: Any, line: Optional[OrderLin
         if pid is not None and int(pid) in products_by_id:
             target_name = _s(getattr(products_by_id[int(pid)], "name", "")) or target_name
 
-    # candidate products: same venue catalog
+    # Pre-compute target words once (avoids re-computing in _relevance per product)
+    target_words = _norm_words(target_name)
+    if not target_words:
+        target_words = set()
+
+    # Cache delivery times per provider (avoid recomputing for same provider)
+    _delivery_cache: dict[str, Any] = {}
+
+    # candidate products: same venue catalog — skip early if no word overlap
     cands: list[dict[str, Any]] = []
     for pid, p in (products_by_id or {}).items():
-        prov = norm_provider(_s(getattr(p, "provider_name", "")))
         pname = _s(getattr(p, "name", ""))
         if not pname:
+            continue
+        # Quick pre-filter: compute candidate words and check for any overlap
+        cand_words = _norm_words(pname)
+        if target_words and cand_words and not (target_words & cand_words):
             continue
         rel = _relevance(target_name, pname)
         if rel <= 0:
             continue
-        prov_obj = providers_by_name.get(prov)
-        nd = _next_delivery_dt(prov_obj)
+        prov = norm_provider(_s(getattr(p, "provider_name", "")))
+        if prov not in _delivery_cache:
+            _delivery_cache[prov] = _next_delivery_dt(providers_by_name.get(prov))
         cands.append(
             {
                 "provider": prov,
@@ -704,7 +721,7 @@ def find_alternative_providers(*, ctx: Any, ticket: Any, line: Optional[OrderLin
                 "name": pname,
                 "desc": _s(getattr(p, "description", "")),
                 "unit": _s(getattr(p, "unit", "")) or "unit",
-                "next_delivery_dt": nd,
+                "next_delivery_dt": _delivery_cache[prov],
                 "relevance": float(rel),
             }
         )
@@ -717,9 +734,10 @@ def find_alternative_providers(*, ctx: Any, ticket: Any, line: Optional[OrderLin
         actual_pid = None
         if line is not None and getattr(line, "product_id", None) is not None:
             actual_pid = int(getattr(line, "product_id"))
+        if actual_provider not in _delivery_cache:
+            _delivery_cache[actual_provider] = _next_delivery_dt(providers_by_name.get(actual_provider))
         if actual_pid is not None and actual_pid in products_by_id:
             p = products_by_id[actual_pid]
-            prov_obj = providers_by_name.get(actual_provider)
             cands.append(
                 {
                     "provider": actual_provider,
@@ -727,12 +745,11 @@ def find_alternative_providers(*, ctx: Any, ticket: Any, line: Optional[OrderLin
                     "name": _s(getattr(p, "name", "")) or target_name,
                     "desc": _s(getattr(p, "description", "")),
                     "unit": _s(getattr(p, "unit", "")) or "unit",
-                    "next_delivery_dt": _next_delivery_dt(prov_obj),
+                    "next_delivery_dt": _delivery_cache[actual_provider],
                     "relevance": 1.0,
                 }
             )
         else:
-            prov_obj = providers_by_name.get(actual_provider)
             cands.append(
                 {
                     "provider": actual_provider,
@@ -740,7 +757,7 @@ def find_alternative_providers(*, ctx: Any, ticket: Any, line: Optional[OrderLin
                     "name": target_name or "(product)",
                     "desc": "",
                     "unit": _s(getattr(ticket, "unit", "")) or "unit",
-                    "next_delivery_dt": _next_delivery_dt(prov_obj),
+                    "next_delivery_dt": _delivery_cache[actual_provider],
                     "relevance": 0.5,
                 }
             )
@@ -1562,6 +1579,59 @@ def _prev_month_qty_cached(
             return 0.0
 
 
+@st.cache_data(ttl=60, show_spinner=False)
+def _prev_month_qty_batch(
+    venue_id: int,
+    provider_norm: str,
+    product_ids: tuple,
+) -> Dict[Optional[int], float]:
+    """Batch-fetch previous month quantities for multiple products in one query.
+
+    Returns dict mapping product_id -> total qty (None key = provider-level total).
+    """
+    start_dt, end_dt = _prev_month_window(datetime.utcnow())
+    result: Dict[Optional[int], float] = {}
+    with get_session() as s:
+        # Provider-level aggregate
+        q_prov = (
+            select(func.coalesce(func.sum(OrderLine.quantity), 0.0))
+            .join(Order, Order.id == OrderLine.order_id)
+            .where(
+                Order.venue_id == venue_id,
+                Order.status == "final",
+                Order.created_at >= start_dt,
+                Order.created_at < end_dt,
+                OrderLine.provider == provider_norm,
+            )
+        )
+        val = s.exec(q_prov).one()
+        try:
+            result[None] = float(val or 0.0)
+        except Exception:
+            result[None] = 0.0
+
+        # Per-product aggregates (single query with GROUP BY)
+        if product_ids:
+            q_prod = (
+                select(OrderLine.product_id, func.coalesce(func.sum(OrderLine.quantity), 0.0))
+                .join(Order, Order.id == OrderLine.order_id)
+                .where(
+                    Order.venue_id == venue_id,
+                    Order.status == "final",
+                    Order.created_at >= start_dt,
+                    Order.created_at < end_dt,
+                    OrderLine.product_id.in_(list(product_ids)),
+                )
+                .group_by(OrderLine.product_id)
+            )
+            for pid, qty_sum in s.exec(q_prod).all():
+                try:
+                    result[int(pid)] = float(qty_sum or 0.0)
+                except Exception:
+                    pass
+    return result
+
+
 def _rules_for_provider(venue_id: int, providers_by_name: dict[str, Provider], provider_name: str) -> list[ProviderDiscountRule]:
     pnorm = norm_provider(provider_name)
     prow = providers_by_name.get(pnorm)
@@ -1595,6 +1665,7 @@ def _pricing_for_line(
     pid: Optional[int],
     qty: float,
     gross_unit: float,
+    prev_month_qtys: Optional[Dict[Optional[int], float]] = None,
 ) -> dict[str, Any]:
     if qty <= 0 or gross_unit <= 0:
         return {"net_unit": gross_unit, "discount_pct": 0.0, "rule_kind": "", "rule_id": None, "applied": False}
@@ -1615,12 +1686,16 @@ def _pricing_for_line(
             if th <= 0:
                 continue
 
-            qty_last_month = _prev_month_qty_cached(
-                get_session,
-                venue_id=venue_id,
-                provider_norm=prov_norm,
-                product_id=(int(pid) if (pid is not None and getattr(r, "product_id", None) is not None) else None),
-            )
+            lookup_pid = int(pid) if (pid is not None and getattr(r, "product_id", None) is not None) else None
+            if prev_month_qtys is not None:
+                qty_last_month = prev_month_qtys.get(lookup_pid, 0.0)
+            else:
+                qty_last_month = _prev_month_qty_cached(
+                    get_session,
+                    venue_id=venue_id,
+                    provider_norm=prov_norm,
+                    product_id=lookup_pid,
+                )
             if qty_last_month >= th:
                 candidates.append(r)
         else:
@@ -1737,6 +1812,7 @@ class OrderContext:
 # Data loading
 # =============================
 
+@st.cache_data(show_spinner=False, ttl=15)
 @st.cache_data(show_spinner=False, ttl=15)
 def _get_active_orders(venue_id: int, *, refresh_token: int = 0) -> List[Order]:
     """Fast: cached list of recent orders for the venue.
@@ -2276,27 +2352,41 @@ def _render_expected_lines(
         st.info("No products.")
         return
 
-    # ---------- Precompute summary + per-line data ----------
+    # ---------- Batch prefetch prev-month quantities (single query) ----------
+    _pm_qtys: Optional[Dict[Optional[int], float]] = None
+    if show_prices:
+        _all_pids = tuple(
+            int(ln.product_id) for ln in lines
+            if getattr(ln, "product_id", None) not in (None, "", 0, "0")
+        )
+        _pm_qtys = _prev_month_qty_batch(int(ctx.order.venue_id), prov, _all_pids)
+
+    # ---------- Single-pass: sort once, compute + render ----------
+    sorted_lines = sorted(lines, key=lambda x: _line_name(x, ctx.products_by_id).lower())
+
     total_lines = 0
     missing_lines = 0
     partial_lines = 0
-    mismatch_lines = 0  # expected < ordered
+    mismatch_lines = 0
 
+    cards_html_parts: list[str] = []
     table_subtotal = 0.0
     table_iva = 0.0
     table_total = 0.0
 
-    computed: dict[int, dict] = {}
+    venue_id_int = int(ctx.order.venue_id)
 
-    for ln in lines:
+    for ln in sorted_lines:
         lid = int(ln.id)
-        ordered = _safe_float(getattr(ln, "quantity", 0.0), 0.0)
+        name = _line_name(ln, ctx.products_by_id)
+        unit = _line_unit(ln, ctx.products_by_id)
+        desc = _line_desc(ln, ctx.products_by_id)
+        ordered_qty = _safe_float(getattr(ln, "quantity", 0.0), 0.0)
 
         fu = ctx.followups_by_key.get((prov, lid))
         stt = (_s(getattr(fu, "supplier_status", None))).lower() if fu else "unknown"
         sqty = getattr(fu, "supplier_qty", None) if fu else None
 
-        # Supplier "expected" qty logic
         if stt == "missing":
             expected_qty = 0.0
             missing_lines += 1
@@ -2304,76 +2394,36 @@ def _render_expected_lines(
             expected_qty = _safe_float(sqty, 0.0)
             partial_lines += 1
         elif stt == "ok":
-            expected_qty = _safe_float(sqty, ordered) if sqty is not None else ordered
+            expected_qty = _safe_float(sqty, ordered_qty) if sqty is not None else ordered_qty
         else:
-            expected_qty = ordered
+            expected_qty = ordered_qty
 
         total_lines += 1
-        if expected_qty < ordered:
+        if expected_qty < ordered_qty:
             mismatch_lines += 1
 
-        # Pricing lookup (units, discount) — amounts will be computed later per row
+        # Pricing
+        c: dict = {}
         if show_prices:
             pid_raw = getattr(ln, "product_id", None)
             pid = int(pid_raw) if pid_raw not in (None, "", 0, "0") else None
             gross_unit = _price_for_pid(ctx.products_by_id, pid)
-
             if gross_unit > 0:
                 pricing = _pricing_for_line(
-                    venue_id=int(ctx.order.venue_id),
+                    venue_id=venue_id_int,
                     providers_by_name=ctx.providers_by_name,
                     provider_name=provider,
                     pid=pid,
                     qty=float(expected_qty),
                     gross_unit=float(gross_unit),
+                    prev_month_qtys=_pm_qtys,
                 )
-                net_unit = float(pricing.get("net_unit", gross_unit) or gross_unit)
-                disc_pct = float(pricing.get("discount_pct", 0.0) or 0.0)
-                iva_pct = _iva_pct_for_pid(ctx.products_by_id, pid, 21.0) if include_iva else 0.0
-
-                computed[lid] = {
-                    "ordered": float(ordered),
-                    "expected_qty": float(expected_qty),
-                    "stt": stt,
+                c = {
+                    "net_unit": float(pricing.get("net_unit", gross_unit) or gross_unit),
                     "gross_unit": float(gross_unit),
-                    "net_unit": float(net_unit),
-                    "disc_pct": float(disc_pct),
-                    "iva_pct": float(iva_pct),
+                    "disc_pct": float(pricing.get("discount_pct", 0.0) or 0.0),
+                    "iva_pct": _iva_pct_for_pid(ctx.products_by_id, pid, 21.0) if include_iva else 0.0,
                 }
-            else:
-                computed[lid] = {
-                    "ordered": float(ordered),
-                    "expected_qty": float(expected_qty),
-                    "stt": stt,
-                }
-        else:
-            computed[lid] = {
-                "ordered": float(ordered),
-                "expected_qty": float(expected_qty),
-                "stt": stt,
-            }
-
-    # ---------- Summary header ----------
-    summary_left = f"📦 {total_lines} items"
-    if missing_lines or partial_lines or mismatch_lines:
-        summary_left += f" · ❌ {missing_lines} missing · 🟡 {partial_lines} partial · ⚠️ {mismatch_lines} mismatch"
-
-
-    # ---------- Render mobile-friendly card list ----------
-    cards_html = ""
-    table_subtotal = 0.0
-    table_iva = 0.0
-    table_total = 0.0
-
-    for ln in sorted(lines, key=lambda x: _line_name(x, ctx.products_by_id).lower()):
-        lid = int(ln.id)
-        name = _line_name(ln, ctx.products_by_id)
-        unit = _line_unit(ln, ctx.products_by_id)
-        desc = _line_desc(ln, ctx.products_by_id)
-
-        c = computed.get(lid, {})
-        ordered_qty = float(c.get("ordered", 0.0) or 0.0)
-        expected_qty = float(c.get("expected_qty", 0.0) or 0.0)
 
         # returns: (issue_status, received_qty, issue_qty, in_invoice, reason)
         issue_status, venue_received_qty, issue_qty, in_invoice, reason = _get_received_info(ctx, prov, lid)
@@ -2464,7 +2514,6 @@ def _render_expected_lines(
         else:
             recv_cls = ""
 
-        stt = c.get("stt", "")
         exp_cls = "miss" if stt == "missing" else ("warn" if stt == "partial" else "")
 
         pills = (
@@ -2484,7 +2533,7 @@ def _render_expected_lines(
 
         desc_html = f"<span class='el-desc'>{desc}</span>" if desc else ""
 
-        cards_html += (
+        cards_html_parts.append(
             "<div class='el-card'>"
             "<div class='el-row'>"
             f"<div class='el-name'>{name}{desc_html}</div>"
@@ -2545,7 +2594,7 @@ def _render_expected_lines(
     full_html = (
         "<div class='inv-wrap'>"
         f"{header_html}"
-        f"<div class='el-list'>{cards_html}</div>"
+        f"<div class='el-list'>{''.join(cards_html_parts)}</div>"
         f"{footer_html}"
         "</div>"
     )
@@ -2553,6 +2602,7 @@ def _render_expected_lines(
     st.markdown(full_html, unsafe_allow_html=True)
 
 
+@st.fragment
 def _render_receive_form(ctx: OrderContext, provider: str) -> None:
     prov = norm_provider(provider)
     order = ctx.order
@@ -2873,12 +2923,14 @@ def save_all_received_for_provider(*, ctx: OrderContext, provider: str) -> Tuple
     """
     prov = norm_provider(provider)
     order = ctx.order
+    order_id = int(order.id)
+    venue_id = int(order.venue_id)
     lines = ctx.lines_by_provider.get(prov, []) or []
     if not lines:
         return False, "No lines for provider"
 
     # Invoice number REQUIRED (from UI state)
-    inv_key = f"recv_inv_{int(order.id)}_{prov}"
+    inv_key = f"recv_inv_{order_id}_{prov}"
     invoice_number_ui = (st.session_state.get(inv_key) or "").strip()
     if not invoice_number_ui:
         return False, "Invoice number is required before saving."
@@ -2907,15 +2959,15 @@ def save_all_received_for_provider(*, ctx: OrderContext, provider: str) -> Tuple
         # ------------------------------------------------------------
         receipt = s.exec(
             select(ProviderReceipt).where(
-                ProviderReceipt.order_id == int(order.id),
+                ProviderReceipt.order_id == order_id,
                 ProviderReceipt.provider_name == prov,
             )
         ).first()
 
         if not receipt:
             receipt = ProviderReceipt(
-                venue_id=int(order.venue_id),
-                order_id=int(order.id),
+                venue_id=venue_id,
+                order_id=order_id,
                 provider_name=prov,
                 created_at=now,
             )
@@ -2931,7 +2983,7 @@ def save_all_received_for_provider(*, ctx: OrderContext, provider: str) -> Tuple
         fu_rows = list(
             s.exec(
                 select(ProviderLineFollowUp).where(
-                    ProviderLineFollowUp.order_id == int(order.id),
+                    ProviderLineFollowUp.order_id == order_id,
                     ProviderLineFollowUp.provider_name == prov,
                     ProviderLineFollowUp.order_line_id.in_(line_ids),
                 )
@@ -2945,7 +2997,7 @@ def save_all_received_for_provider(*, ctx: OrderContext, provider: str) -> Tuple
         t_rows = list(
             s.exec(
                 select(SeguimientoTicket).where(
-                    SeguimientoTicket.order_id == int(order.id),
+                    SeguimientoTicket.order_id == order_id,
                     SeguimientoTicket.provider_name == prov,
                     SeguimientoTicket.order_line_id.in_(line_ids),
                     SeguimientoTicket.kind.in_(ticket_kinds),
@@ -2978,7 +3030,7 @@ def save_all_received_for_provider(*, ctx: OrderContext, provider: str) -> Tuple
             qty_expected = _derive_expected_qty(ln, fu_existing_ctx)
             qty_ordered = _safe_float(getattr(ln, "quantity", 0.0), 0.0)
 
-            base = f"recv_{int(order.id)}_{prov}_{lid}_"
+            base = f"recv_{order_id}_{prov}_{lid}_"
             status_ui = (st.session_state.get(base + "status") or "OK").strip()
             issue_qty = _safe_float(st.session_state.get(base + "issue_qty"), 0.0)
             inv_ui = st.session_state.get(base + "invoice")
@@ -3009,8 +3061,8 @@ def save_all_received_for_provider(*, ctx: OrderContext, provider: str) -> Tuple
             fu = fu_by_line.get(lid)
             if not fu:
                 fu = ProviderLineFollowUp(
-                    venue_id=int(order.venue_id),
-                    order_id=int(order.id),
+                    venue_id=venue_id,
+                    order_id=order_id,
                     provider_name=prov,
                     order_line_id=lid,
                     qty_ordered=_safe_float(getattr(ln, "quantity", 0.0), 0.0),
@@ -3052,8 +3104,8 @@ def save_all_received_for_provider(*, ctx: OrderContext, provider: str) -> Tuple
                 if not t:
                     initial_state = "open_internal" if kind == "operational_missing" else "open"
                     t = SeguimientoTicket(
-                        venue_id=int(order.venue_id),
-                        order_id=int(order.id),
+                        venue_id=venue_id,
+                        order_id=order_id,
                         provider_name=prov,
                         order_line_id=lid,
                         kind=kind,
@@ -3085,15 +3137,15 @@ def save_all_received_for_provider(*, ctx: OrderContext, provider: str) -> Tuple
 
         wf = s.exec(
             select(OrderWorkflow).where(
-                OrderWorkflow.order_id == int(order.id),
+                OrderWorkflow.order_id == order_id,
                 OrderWorkflow.provider_name == prov,
             )
         ).first()
 
         if not wf:
             wf = OrderWorkflow(
-                venue_id=int(order.venue_id),
-                order_id=int(order.id),
+                venue_id=venue_id,
+                order_id=order_id,
                 provider_name=prov,
                 state="ORDER_SENT",
                 created_at=now,
@@ -3107,14 +3159,14 @@ def save_all_received_for_provider(*, ctx: OrderContext, provider: str) -> Tuple
         wf.note = note
 
         s.add(wf)
-        _add_event(s, int(order.venue_id), int(order.id), prov, prev, wf.state, "venue", "venue", note)
+        _add_event(s, venue_id, order_id, prov, prev, wf.state, "venue", "venue", note)
 
         # Single commit for everything
         s.commit()
     # Clear UI state + reset selectors
-    _clear_receive_form_state(int(order.id), prov)
-    idx_key = f"recv_current_provider_idx_{int(order.id)}"
-    sel_key = f"recv_provider_sel_{int(order.id)}"
+    _clear_receive_form_state(order_id, prov)
+    idx_key = f"recv_current_provider_idx_{order_id}"
+    sel_key = f"recv_provider_sel_{order_id}"
     st.session_state[idx_key] = 0
     if sel_key in st.session_state:
         del st.session_state[sel_key]
@@ -5129,8 +5181,10 @@ def _provider_resolution_summary(ctx: OrderContext, provider: str) -> Dict[str, 
 # Global dashboards (no implicit order)
 # =============================
 
-def _list_pending_receive_items(venue_id: int) -> List[Dict[str, Any]]:
+@st.cache_data(show_spinner=False, ttl=15)
+def _list_pending_receive_items(venue_id: int, *, refresh_token: int = 0) -> List[Dict[str, Any]]:
     """Flat list of (order, provider) that still needs Receive action."""
+    _ = int(refresh_token or 0)
     DONE_STATES = {
         "RECEIVED",
         "INVOICE_DISCREPANCY",
@@ -5225,39 +5279,6 @@ def _list_pending_receive_items(venue_id: int) -> List[Dict[str, Any]]:
     return out
 
 def _render_receive_provider_panel(ctx: OrderContext, provider: str) -> None:
-    
-    st.markdown(
-        """
-        <style>
-        /* Fuse header card + expander */
-        .voi-card.voi-card--header{
-            margin-bottom: 0.35rem;
-            border-bottom-left-radius: 0 !important;
-            border-bottom-right-radius: 0 !important;
-        }
-
-        /* Style the expander container to look like the same card */
-        div[data-testid="stExpander"]{
-            border: 1px solid rgba(49, 51, 63, 0.12);
-            border-top: none;
-            border-bottom-left-radius: 12px;
-            border-bottom-right-radius: 12px;
-            padding: 0.25rem 0.25rem 0.5rem 0.25rem;
-            margin-top: -10px; /* pulls it up under the card */
-            background: #fff;
-        }
-
-        /* Make expander header more compact */
-        div[data-testid="stExpander"] summary{
-            padding: 0.25rem 0.5rem;
-            font-weight: 600;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-    
-    
     current_provider = provider
     prov_key = norm_provider(current_provider)
 
@@ -5545,6 +5566,104 @@ def _filter_incidences_by_resolution(
 #     return grouped
 
 
+def _compute_kpi_data(
+    venue_id: int,
+    contexts: Dict[int, "OrderContext"],
+    sent_providers_by_order: Dict[int, set],
+    order_ids_all: tuple,
+) -> Dict[str, int]:
+    """Compute KPI counters from already-loaded contexts (no DB calls)."""
+    DONE_STATES = {
+        "RECEIVED", "INVOICE_DISCREPANCY", "OPERATIONAL_MISSING_PRODUCT",
+        "WAITING_SUPPLIER_ACTION", "SUPPLIER_CREDIT_NOTE_ISSUED",
+        "SUPPLIER_CREDIT_NOTE_PENDING", "SUPPLEMENTARY_DELIVERY_SENT",
+        "SUPPLIER_REJECTED", "CLOSED",
+    }
+
+    sent_by_order_all: Dict[int, set] = sent_providers_by_order or {}
+    providers_global = sum(len(v or set()) for v in sent_by_order_all.values())
+
+    inc_items = _list_open_incidences_items(
+        int(venue_id), order_ids_all,
+        refresh_token=_orders_refresh_token(int(venue_id)),
+    )
+    open_total = sum(int(it.get("open_count") or 0) for it in inc_items)
+
+    pending_products = 0
+    redeliveries_pending = 0
+    credit_notes_pending = 0
+
+    for oid in order_ids_all:
+        ctx_o = contexts.get(int(oid))
+        if not ctx_o:
+            continue
+        sent_set = set(sent_by_order_all.get(int(oid), set()) or set())
+        if not sent_set:
+            continue
+
+        for prov in sent_set:
+            wf = ctx_o.workflows_by_provider.get(norm_provider(prov))
+            stt = _s(getattr(wf, "state", None)).upper() if wf else "ORDER_SENT"
+            if stt in DONE_STATES:
+                continue
+            provn = norm_provider(prov)
+            for ln in (ctx_o.lines_by_provider.get(provn, []) or []):
+                lid = int(getattr(ln, "id", 0) or 0)
+                if not lid:
+                    continue
+                fu = ctx_o.followups_by_key.get((provn, lid))
+                if fu is not None and getattr(fu, "venue_qty", None) is not None:
+                    continue
+                if bool(getattr(ln, "received_ok", False)):
+                    continue
+                pending_products += 1
+
+        for prov in sent_set:
+            provn = norm_provider(prov)
+            if _provider_closed(ctx_o, provn):
+                continue
+            open_t = _provider_open_tickets(ctx_o, provn)
+            if not open_t:
+                continue
+            _found_cn = False
+            _found_rd = False
+            for t in open_t:
+                meta = _parse_ticket_resolution_note(_s(getattr(t, "resolution_note", None)))
+                r = _s(meta.get("resolution")).strip().lower()
+                if r == "credit_note":
+                    credit_notes_pending += 1
+                    _found_cn = True
+                elif r in {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}:
+                    redeliveries_pending += 1
+                    _found_rd = True
+            if not _found_cn and not _found_rd:
+                _wf_k = ctx_o.workflows_by_provider.get(provn)
+                if _wf_k:
+                    _sol_k = _normalize_solution_meta(
+                        _parse_supplier_solution_meta(_s(getattr(_wf_k, "note", None)))
+                    )
+                    _wf_res = _s(_sol_k.get("resolution")).strip().lower()
+                    _wf_items = _sol_k.get("items") or []
+                    if _wf_res == "credit_note" or any(isinstance(i, dict) and not _is_redelivery_item(i) for i in _wf_items):
+                        credit_notes_pending += 1
+                    if _wf_res in {"supplementary_delivery", "re_delivery"} or any(isinstance(i, dict) and _is_redelivery_item(i) for i in _wf_items):
+                        redeliveries_pending += 1
+
+    try:
+        urgent_requests_pending = len(_list_open_urgent_requests())
+    except Exception:
+        urgent_requests_pending = 0
+
+    return {
+        "providers_global": providers_global,
+        "open_total": open_total,
+        "pending_products": pending_products,
+        "redeliveries_pending": redeliveries_pending,
+        "credit_notes_pending": credit_notes_pending,
+        "urgent_requests_pending": urgent_requests_pending,
+    }
+
+
 # =============================
 # Main dashboard (global)
 # =============================
@@ -5687,109 +5806,14 @@ def tracking_dashboard(
     # KPIs (GLOBAL across all active orders)
     # -----------------------------
     try:
-        # Reuse already-loaded bundle + contexts (avoid extra DB roundtrips)
-        orders_all = orders
-        order_ids_all = tuple(int(o.id) for o in orders_all if getattr(o, "id", None) is not None)
-
-        # Sent providers per order (already computed in _load_dashboard_bundle)
-        sent_by_order_all: Dict[int, set[str]] = sent_providers_by_order or {}
-        providers_global = sum(len(v or set()) for v in sent_by_order_all.values())
-
-        # Open incidences (cached + uses bundle)
-        inc_items = _list_open_incidences_items(
-            int(venue_id),
-            order_ids_all,
-            refresh_token=_orders_refresh_token(int(venue_id)),
-        )
-        open_total = sum(int(it.get("open_count") or 0) for it in inc_items)
-
-        # Pending (global): lines pending "Receive" across all active orders/providers
-        DONE_STATES = {
-            "RECEIVED",
-            "INVOICE_DISCREPANCY",
-            "OPERATIONAL_MISSING_PRODUCT",
-            "WAITING_SUPPLIER_ACTION",
-            "SUPPLIER_CREDIT_NOTE_ISSUED",
-            "SUPPLIER_CREDIT_NOTE_PENDING",
-            "SUPPLEMENTARY_DELIVERY_SENT",
-            "SUPPLIER_REJECTED",
-            "CLOSED",
-        }
-
-        pending_products = 0
-        redeliveries_pending = 0
-        credit_notes_pending = 0
-
-        for oid in order_ids_all:
-            ctx_o = contexts.get(int(oid))
-            if not ctx_o:
-                continue
-
-            sent_set = set(sent_by_order_all.get(int(oid), set()) or set())
-            if not sent_set:
-                continue
-
-            # pending products
-            for prov in sent_set:
-                wf = ctx_o.workflows_by_provider.get(norm_provider(prov))
-                stt = _s(getattr(wf, "state", None)).upper() if wf else "ORDER_SENT"
-                if stt in DONE_STATES:
-                    continue
-
-                provn = norm_provider(prov)
-                for ln in (ctx_o.lines_by_provider.get(provn, []) or []):
-                    lid = int(getattr(ln, "id", 0) or 0)
-                    if not lid:
-                        continue
-                    fu = ctx_o.followups_by_key.get((provn, lid))
-                    # If venue already entered qty, it's not pending
-                    if fu is not None and getattr(fu, "venue_qty", None) is not None:
-                        continue
-                    if bool(getattr(ln, "received_ok", False)):
-                        continue
-                    pending_products += 1
-
-            # re-deliveries / credit notes pending (ticket meta + workflow fallback)
-            for prov in sent_set:
-                provn = norm_provider(prov)
-                if _provider_closed(ctx_o, provn):
-                    continue
-                open_t = _provider_open_tickets(ctx_o, provn)
-                if not open_t:
-                    continue
-
-                _found_cn = False
-                _found_rd = False
-                for t in open_t:
-                    meta = _parse_ticket_resolution_note(_s(getattr(t, "resolution_note", None)))
-                    r = _s(meta.get("resolution")).strip().lower()
-                    if r == "credit_note":
-                        credit_notes_pending += 1
-                        _found_cn = True
-                    elif r in {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}:
-                        redeliveries_pending += 1
-                        _found_rd = True
-
-                # Workflow-level fallback: if no tickets had resolution but workflow indicates it
-                if not _found_cn and not _found_rd:
-                    _wf_k = ctx_o.workflows_by_provider.get(provn)
-                    if _wf_k:
-                        _sol_k = _normalize_solution_meta(
-                            _parse_supplier_solution_meta(_s(getattr(_wf_k, "note", None)))
-                        )
-                        _wf_res = _s(_sol_k.get("resolution")).strip().lower()
-                        _wf_items = _sol_k.get("items") or []
-                        if _wf_res == "credit_note" or any(isinstance(i, dict) and not _is_redelivery_item(i) for i in _wf_items):
-                            credit_notes_pending += 1
-                        if _wf_res in {"supplementary_delivery", "re_delivery"} or any(isinstance(i, dict) and _is_redelivery_item(i) for i in _wf_items):
-                            redeliveries_pending += 1
-
-        # Urgent: pending urgent requests
-        try:
-            urgent_requests_pending = len(_list_open_urgent_requests())
-        except Exception:
-            urgent_requests_pending = 0
-
+        order_ids_all = tuple(int(o.id) for o in orders if getattr(o, "id", None) is not None)
+        _kpis = _compute_kpi_data(int(venue_id), contexts, sent_providers_by_order, order_ids_all)
+        providers_global = _kpis["providers_global"]
+        open_total = _kpis["open_total"]
+        pending_products = _kpis["pending_products"]
+        redeliveries_pending = _kpis["redeliveries_pending"]
+        credit_notes_pending = _kpis["credit_notes_pending"]
+        urgent_requests_pending = _kpis["urgent_requests_pending"]
     except Exception:
         providers_global = 0
         open_total = 0
@@ -5848,7 +5872,7 @@ def tracking_dashboard(
 
         # 📦 Pending (Receive)
         if av == "pending_products":
-            tasks = _list_pending_receive_items(int(venue_id))
+            tasks = _list_pending_receive_items(int(venue_id), refresh_token=_orders_refresh_token(int(venue_id)))
             if not tasks:
                 st.success("✅ Nothing pending to receive right now.")
                 return
