@@ -509,23 +509,17 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         st.session_state[ACTIVE_DRAFT_KEY] = int(order_id)
 
     def _go_orders(order_id: int) -> None:
-        """Navigate to Orders (draft) using a real URL redirect (faster than st.rerun).
-
-        This mirrors the 'Option B' optimization used in the bottom tabbar:
-        we update the URL (?page=...) and let the browser navigate, avoiding an extra
-        full-script pass that happens when triggering navigation late + st.rerun().
-        """
+        # matches app.py router: ?page=orders&order_id=...&status=draft
+        st.session_state["page"] = "orders"
+        
+        # ✅ CRITICAL: Include session token in navigation
         token = st.session_state.get("_session_token", "")
-        token_param = f"&st={token}" if token else ""
-        url = f"?page=orders&order_id={int(order_id)}&status=draft{token_param}"
-
-        # Use a small client-side redirect, then stop this run.
-        # (Safe quoting to avoid breaking the script tag.)
-        st.markdown(
-            f"""<script>window.location.href={json.dumps(url)};</script>""",
-            unsafe_allow_html=True,
-        )
-        st.stop()
+        if token:
+            set_query_params(page="orders", order_id=int(order_id), status="draft", st=token)
+        else:
+            set_query_params(page="orders", order_id=int(order_id), status="draft")
+        
+        st.rerun()
 
     # =========================================================
     # 1) ASR CONFIG (READ-ONLY, per venue)
