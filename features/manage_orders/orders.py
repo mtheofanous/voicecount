@@ -31,6 +31,7 @@ import pandas as pd
 import streamlit as st
 from sqlmodel import select
 from sqlalchemy import func
+from sqlalchemy.orm import load_only
 
 from core.db import get_session
 from core.public_links import build_seguimiento_url, ROLE_SUPPLIER, ROLE_VENUE, norm_provider
@@ -241,7 +242,16 @@ def _list_orders_cached(_get_session_fn, venue_id: int, refresh_token: int) -> l
 def _products_cached(_get_session_fn, venue_id: int) -> list[Product]:
     with _get_session_fn() as s:
         return list(
-            s.exec(select(Product).where(Product.venue_id == venue_id).order_by(Product.name.asc(), Product.provider_name.asc())).all()
+            s.exec(
+                select(Product)
+                .options(load_only(
+                    Product.id, Product.venue_id, Product.name, Product.description,
+                    Product.category, Product.unit, Product.quantity, Product.price, Product.iva,
+                    Product.provider_name, Product.provider_email, Product.provider_phone, Product.provider_address
+                ))
+                .where(Product.venue_id == venue_id)
+                .order_by(Product.name.asc(), Product.provider_name.asc())
+            ).all()
         )
 
 
@@ -285,7 +295,19 @@ def _product_ui_index_cached(_get_session_fn, venue_id: int):
 def _order_lines_cached(_get_session_fn, order_id: int, refresh_token: int) -> list[OrderLine]:
     _ = refresh_token
     with _get_session_fn() as s:
-        return list(s.exec(select(OrderLine).where(OrderLine.order_id == order_id).order_by(OrderLine.id.asc())).all())
+        return list(
+            s.exec(
+                select(OrderLine)
+                .options(load_only(
+                    OrderLine.id, OrderLine.venue_id, OrderLine.order_id, OrderLine.product_id,
+                    OrderLine.quantity, OrderLine.provider,
+                    OrderLine.received_ok, OrderLine.missing_qty, OrderLine.received_at, OrderLine.received_by,
+                    OrderLine.missing_invoice_status, OrderLine.missing_note
+                ))
+                .where(OrderLine.order_id == order_id)
+                .order_by(OrderLine.id.asc())
+            ).all()
+        )
 
 
 @st.cache_data(ttl=60, show_spinner=False, hash_funcs={type(lambda: None): lambda _: "session_fn"})

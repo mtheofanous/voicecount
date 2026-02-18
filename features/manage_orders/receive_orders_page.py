@@ -47,6 +47,7 @@ from features.manage_orders.orders import _load_venue_templates
 from features.manage_orders.emails import build_resolution_email_full, build_urgent_email_full
 
 from sqlalchemy import func
+from sqlalchemy.orm import load_only
 from domain.models import (
     Order,
     OrderLine,
@@ -1814,17 +1815,18 @@ class OrderContext:
 # =============================
 
 @st.cache_data(show_spinner=False, ttl=15)
-@st.cache_data(show_spinner=False, ttl=15)
 def _get_active_orders(venue_id: int, *, refresh_token: int = 0) -> List[Order]:
     """Fast: cached list of recent orders for the venue.
 
     refresh_token is only used to invalidate cache when orders change.
+    Optimized: only loads id and created_at for sorting/filtering.
     """
     _ = int(refresh_token or 0)
     with get_session() as s:
         return list(
             s.exec(
                 select(Order)
+                .options(load_only(Order.id, Order.venue_id, Order.created_at))
                 .where(Order.venue_id == int(venue_id))
                 .order_by(Order.created_at.desc())
                 .limit(200)
@@ -5207,8 +5209,16 @@ def _list_pending_receive_items(venue_id: int, *, refresh_token: int = 0) -> Lis
         return []
 
     with get_session() as s:
+        # Optimized: load only the fields we need
         send_rows = list(
-            s.exec(select(ProviderSendStatus).where(ProviderSendStatus.order_id.in_(order_ids))).all()
+            s.exec(
+                select(ProviderSendStatus)
+                .options(load_only(
+                    ProviderSendStatus.order_id, ProviderSendStatus.provider_name,
+                    ProviderSendStatus.sent, ProviderSendStatus.sent_email, ProviderSendStatus.sent_whatsapp
+                ))
+                .where(ProviderSendStatus.order_id.in_(order_ids))
+            ).all()
         )
         sent_pairs: set[tuple[int, str]] = set()
         for r in send_rows:
@@ -5220,11 +5230,23 @@ def _list_pending_receive_items(venue_id: int, *, refresh_token: int = 0) -> Lis
                 sent_pairs.add((int(r.order_id), norm_provider(getattr(r, "provider_name", "") or "")))
 
         # Also discover providers from order lines (via product.provider_name)
-        lines = list(s.exec(select(OrderLine).where(OrderLine.order_id.in_(order_ids))).all())
+        lines = list(
+            s.exec(
+                select(OrderLine)
+                .options(load_only(OrderLine.order_id, OrderLine.product_id, OrderLine.provider))
+                .where(OrderLine.order_id.in_(order_ids))
+            ).all()
+        )
         product_ids = sorted({int(l.product_id) for l in lines if getattr(l, "product_id", None)})
         products: Dict[int, Any] = {}
         if product_ids:
-            ps = list(s.exec(select(Product).where(Product.id.in_(product_ids))).all())
+            ps = list(
+                s.exec(
+                    select(Product)
+                    .options(load_only(Product.id, Product.provider_name))
+                    .where(Product.id.in_(product_ids))
+                ).all()
+            )
             products = {int(p.id): p for p in ps if getattr(p, "id", None) is not None}
 
         all_pairs: set[tuple[int, str]] = set(sent_pairs)
@@ -5241,10 +5263,22 @@ def _list_pending_receive_items(venue_id: int, *, refresh_token: int = 0) -> Lis
             if prov_name:
                 all_pairs.add((oid_l, prov_name))
 
-        wf_rows = list(s.exec(select(OrderWorkflow).where(OrderWorkflow.order_id.in_(order_ids))).all())
+        wf_rows = list(
+            s.exec(
+                select(OrderWorkflow)
+                .options(load_only(OrderWorkflow.order_id, OrderWorkflow.provider_name, OrderWorkflow.state))
+                .where(OrderWorkflow.order_id.in_(order_ids))
+            ).all()
+        )
         wf_by_pair = {(int(w.order_id), norm_provider(w.provider_name)): w for w in wf_rows}
 
-        rc_rows = list(s.exec(select(ProviderReceipt).where(ProviderReceipt.order_id.in_(order_ids))).all())
+        rc_rows = list(
+            s.exec(
+                select(ProviderReceipt)
+                .options(load_only(ProviderReceipt.order_id, ProviderReceipt.provider_name, ProviderReceipt.invoice_number))
+                .where(ProviderReceipt.order_id.in_(order_ids))
+            ).all()
+        )
         rc_by_pair = {(int(r.order_id), norm_provider(r.provider_name)): r for r in rc_rows}
 
     out: List[Dict[str, Any]] = []

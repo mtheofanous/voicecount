@@ -12,6 +12,7 @@ import streamlit as st
 from sqlmodel import Session, select
 from datetime import datetime
 from sqlalchemy import desc, func, and_
+from sqlalchemy.orm import load_only
 
 from domain.models import Product, Order, OrderLine, VenueTranscriptionSettings, ProviderSendStatus
 from core.db import get_session
@@ -77,6 +78,10 @@ def load_catalog_and_indexes(venue_id: int, _cache_version: str = "v2"):
     with get_session() as s:
         products = s.exec(
             select(Product)
+            .options(load_only(
+                Product.id, Product.venue_id, Product.name,
+                Product.provider_name, Product.aliases
+            ))
             .where(Product.venue_id == venue_id)
             .order_by(Product.name.asc(), Product.provider_name.asc())
         ).all()
@@ -122,6 +127,7 @@ def load_venue_drafts(venue_id: int, _refresh_token: int = 0):
     with get_session() as s:
         drafts = s.exec(
             select(Order)
+            .options(load_only(Order.id, Order.title, Order.created_at, Order.status, Order.venue_id))
             .where(Order.venue_id == venue_id, Order.status == "draft")
             .order_by(Order.created_at.desc())
         ).all()

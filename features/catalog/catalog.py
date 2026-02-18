@@ -25,6 +25,7 @@ from typing import Any, Optional
 import pandas as pd
 import streamlit as st
 from sqlmodel import select
+from sqlalchemy.orm import load_only
 
 from core.db import get_session
 from domain.models import Product
@@ -55,6 +56,11 @@ def _list_products_cached(_get_session_fn, venue_id: int, refresh_token: int) ->
         return list(
             s.exec(
                 select(Product)
+                .options(load_only(
+                    Product.id, Product.venue_id, Product.name, Product.description,
+                    Product.category, Product.unit, Product.quantity, Product.price, Product.iva,
+                    Product.provider_name, Product.provider_email, Product.provider_phone, Product.provider_address
+                ))
                 .where(Product.venue_id == int(venue_id))
                 .order_by(Product.name.asc(), Product.provider_name.asc())
             ).all()

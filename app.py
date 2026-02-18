@@ -659,7 +659,10 @@ def main():
     else:
         _call_page(page_fn, venue_id, venue_role=venue_role)
 
-    _bottom_tabbar(page_key)
+    # Render bottom bar in a fixed container so it appears immediately
+    # and doesn't wait for page content to finish
+    with st_fixed_container(mode="fixed", position="bottom", border=False, margin="0px"):
+        _bottom_tabbar(page_key)
 
 
 if __name__ == "__main__":
