@@ -1223,6 +1223,15 @@ def collapse_comma_repeats(text: str, max_consecutive: int = 3) -> str:
     return ", ".join(out)
 
 
+@st.cache_resource(show_spinner=False)
+def _get_openai_client():
+    from openai import OpenAI  # type: ignore
+    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
+    if not api_key:
+        raise RuntimeError("OPENAI_API_KEY not set")
+    return OpenAI(api_key=api_key)
+
+
 def asr_openai_whisper(audio_bytes: bytes, vocab: List[str], language: str = "es") -> str:
     """
     OpenAI Whisper API transcription (cloud).
@@ -1230,16 +1239,7 @@ def asr_openai_whisper(audio_bytes: bytes, vocab: List[str], language: str = "es
       - OPENAI_API_KEY in env
       - `openai` python package
     """
-    try:
-        from openai import OpenAI  # type: ignore
-    except Exception as e:
-        raise RuntimeError("Missing dependency: pip install openai") from e
-
-    api_key = os.environ.get("OPENAI_API_KEY", "").strip()
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY not set")
-
-    client = OpenAI(api_key=api_key)
+    client = _get_openai_client()
 
     vocab_clean: List[str] = []
     seen: Set[str] = set()

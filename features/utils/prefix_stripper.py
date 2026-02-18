@@ -288,16 +288,11 @@ def llm_extract_items(fragments: List[str], language_hint: str = "auto") -> List
     Returns list of {name, qty, unit} extracted from fragments.
     Uses OpenAI Structured Outputs (JSON Schema).
     """
-    api_key = os.getenv("OPENAI_API_KEY")
-    if not api_key:
-        raise RuntimeError("OPENAI_API_KEY not set")
-
     try:
-        from openai import OpenAI
+        from features.utils.voice_and_orders_utils import _get_openai_client
+        client = _get_openai_client()
     except Exception as e:
-        raise RuntimeError("Missing dependency: pip install openai") from e
-
-    client = OpenAI()
+        raise RuntimeError("OpenAI client unavailable") from e
 
     schema = {
         "name": "order_items",

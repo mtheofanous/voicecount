@@ -9,6 +9,7 @@ Next refactor step:
 """
 
 from __future__ import annotations
+import sqlalchemy as sa
 from sqlalchemy import UniqueConstraint
 from datetime import datetime, date
 from typing import Optional
@@ -16,7 +17,10 @@ from typing import Optional
 from sqlmodel import Field, SQLModel
 #   
 class Product(SQLModel, table=True):
-    __table_args__ = {"extend_existing": True}
+    __table_args__ = (
+        sa.Index("ix_product_venue_provider", "venue_id", "provider_name"),
+        {"extend_existing": True},
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     venue_id: int = Field(index=True)
@@ -70,7 +74,11 @@ class VenueTranscriptionSettings(SQLModel, table=True):
     updated_by: Optional[str] = Field(default=None, index=True)
 
 class Order(SQLModel, table=True):
-    __table_args__ = {"extend_existing": True}
+    __table_args__ = (
+        sa.Index("ix_order_venue_status", "venue_id", "status"),
+        sa.Index("ix_order_venue_created", "venue_id", "created_at"),
+        {"extend_existing": True},
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     venue_id: int = Field(index=True)
@@ -95,7 +103,11 @@ class Order(SQLModel, table=True):
 
 
 class OrderLine(SQLModel, table=True):
-    __table_args__ = {"extend_existing": True}
+    __table_args__ = (
+        sa.Index("ix_orderline_order_provider", "order_id", "provider"),
+        sa.Index("ix_orderline_venue_order", "venue_id", "order_id"),
+        {"extend_existing": True},
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     venue_id: int = Field(index=True)
@@ -344,7 +356,11 @@ class ProviderSendStatus(SQLModel, table=True):
     
 class SeguimientoTicket(SQLModel, table=True):
     __tablename__ = "seguimientoticket"
-    __table_args__ = ({"extend_existing": True},)
+    __table_args__ = (
+        sa.Index("ix_ticket_venue_order_provider", "venue_id", "order_id", "provider_name"),
+        sa.Index("ix_ticket_state_kind", "state", "kind"),
+        {"extend_existing": True},
+    )
 
     id: Optional[int] = Field(default=None, primary_key=True)
     venue_id: int = Field(index=True)

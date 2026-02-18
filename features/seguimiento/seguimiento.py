@@ -740,6 +740,7 @@ def _header(ctx: Dict[str, Any]) -> None:
                 )
 
 
+@st.fragment
 def _render_supplier_confirmation(ctx: Dict[str, Any]) -> None:
     st.markdown(
         "<div class='card'>"
@@ -875,6 +876,7 @@ def _render_supplier_confirmation(ctx: Dict[str, Any]) -> None:
         st.rerun()
 
 
+@st.fragment
 def _render_supplier_resolution(ctx: Dict[str, Any]) -> None:
     tickets: List[SeguimientoTicket] = list(ctx.get("tickets") or [])
     open_t = [
@@ -1345,6 +1347,7 @@ def _render_readonly(ctx: Dict[str, Any]) -> None:
     )
 
 
+@st.fragment
 def _render_pending_cn_update(ctx: Dict[str, Any]) -> None:
     """Allow supplier to add/update credit note number when state is SUPPLIER_CREDIT_NOTE_PENDING."""
     wf: OrderWorkflow = ctx["workflow"]

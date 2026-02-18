@@ -1109,6 +1109,7 @@ def _render_header(order: Order) -> None:
  
 
 
+@st.fragment
 def _render_workflow_actions(*, venue_id: int, order: Order, role: Optional[str], actor: str) -> None:
     # st.markdown("<div class='voi-divider'></div>", unsafe_allow_html=True)
     status = (_s(order.status)).lower()
@@ -1139,6 +1140,7 @@ def _render_workflow_actions(*, venue_id: int, order: Order, role: Optional[str]
                 _set_order_status(int(order.id), "final", actor); _bump_refresh(venue_id); st.rerun()
 
 
+@st.fragment
 def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: list[Product], lines: list[OrderLine]) -> None:
 
     # Use cached product index (major speedup on reruns)
@@ -1720,6 +1722,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
             st.rerun()
 
 
+@st.fragment
 def _render_send_section(*, venue_id: int, order: Order, products: list[Product], lines: list[OrderLine], actor: str) -> None:
     v = _load_venue_templates(venue_id, _refresh_token(venue_id))
     missing_required = _venue_missing_required(v)

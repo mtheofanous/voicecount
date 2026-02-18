@@ -1305,6 +1305,7 @@ def _upsert_provider_send_status(
 
 
 
+@st.fragment
 def _render_urgent_tab(ctx: 'OrderContext') -> None:
     st.markdown("### ⚡ Urgent reorders")
     reqs = _list_open_urgent_requests()
@@ -5278,6 +5279,7 @@ def _list_pending_receive_items(venue_id: int, *, refresh_token: int = 0) -> Lis
     out.sort(key=lambda r: (-int(r["order_id"]), (r["provider_display"] or "").lower()))
     return out
 
+@st.fragment
 def _render_receive_provider_panel(ctx: OrderContext, provider: str) -> None:
     current_provider = provider
     prov_key = norm_provider(current_provider)
