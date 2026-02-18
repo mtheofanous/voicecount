@@ -2335,7 +2335,7 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
     )
     st.progress(sent_count / max(1, len(grouped_send)))
     st.caption(f"Enviados: {sent_count}/{len(grouped_send)}")
-    with st.container(horizontal=true):
+    with st.container(horizontal=True):
         g1, g2 = st.columns([1.6, 1.0], vertical_alignment="center")
         with g1:
             send_all_disabled = (not use_email)
@@ -2435,7 +2435,7 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
 
         active_lines = len([x for x in prov_lines if _safe_float(x.get("qty"), 0) > 0])
 
-        with st.container(border=True):
+        with st.container(horizontal=True, border=True):
             st.markdown(
                 f"<div style='display:flex;justify-content:space-between;gap:10px;align-items:flex-start;'>"
                 f"<div><div style='font-weight:900;font-size:1.05rem'>{prov_norm}</div>"
