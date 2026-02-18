@@ -838,7 +838,9 @@ def _save_lines_from_editor(*, venue_id: int, order_id: int, actor: str, df: pd.
         s.commit()
 
 
-def _get_send_status_map(*, order_id: int) -> dict[str, ProviderSendStatus]:
+@st.cache_data(ttl=15, show_spinner=False)
+def _get_send_status_map(*, order_id: int, refresh_token: int = 0) -> dict[str, ProviderSendStatus]:
+    _ = refresh_token
     with get_session() as s:
         rows = s.exec(select(ProviderSendStatus).where(ProviderSendStatus.order_id == int(order_id))).all()
     return {norm_provider(_s(r.provider_name)): r for r in rows}

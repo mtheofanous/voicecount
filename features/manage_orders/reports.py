@@ -91,7 +91,8 @@ def _expected_qty(ctx, prov: str, ln) -> float:
     return ordered
 
 
-def _provider_sent_pairs(order_ids: list[int]) -> set[tuple[int, str]]:
+@st.cache_data(ttl=30, show_spinner=False)
+def _provider_sent_pairs(order_ids: tuple[int, ...]) -> set[tuple[int, str]]:
     if not order_ids:
         return set()
     with get_session() as s:
@@ -226,7 +227,7 @@ def _build_reports_df(venue_id: int) -> pd.DataFrame:
         return pd.DataFrame()
 
     order_ids = [int(o.id) for o in orders if getattr(o, "id", None) is not None]
-    sent_pairs = _provider_sent_pairs(order_ids)
+    sent_pairs = _provider_sent_pairs(tuple(order_ids))
 
     rows: list[dict[str, Any]] = []
 

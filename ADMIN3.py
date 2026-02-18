@@ -881,18 +881,22 @@ def require_admin() -> Tuple[dict, dict]:
         st.stop()
     return u, acc
 
+@st.cache_data(ttl=60, show_spinner=False)
 def list_venues_for_account(account_id: int) -> List[Venue]:
     with get_auth_session() as s:
         return s.exec(select(Venue).where(Venue.account_id == account_id).order_by(Venue.name.asc())).all()
 
+@st.cache_data(ttl=60, show_spinner=False)
 def list_users_for_account(account_id: int) -> List[User]:
     with get_auth_session() as s:
         return s.exec(select(User).where(User.account_id == account_id).order_by(User.email.asc())).all()
 
+@st.cache_data(ttl=60, show_spinner=False)
 def list_all_venues() -> List[Venue]:
     with get_auth_session() as s:
         return s.exec(select(Venue).order_by(Venue.name.asc())).all()
 
+@st.cache_data(ttl=60, show_spinner=False)
 def list_all_users() -> List[User]:
     with get_auth_session() as s:
         return s.exec(select(User).order_by(User.email.asc())).all()
@@ -943,7 +947,9 @@ def update_venue_basic(venue_id: int, *, name: str, tax_number: str, address: st
         acc_id = v.account_id
     log_audit(action="VENUE_UPDATE", entity_type="venue", entity_id=venue_id, account_id=acc_id, venue_id=venue_id, before=before, after=after)
 
-def list_products_for_venue(venue_id: int) -> pd.DataFrame:
+@st.cache_data(ttl=60, show_spinner=False)
+def list_products_for_venue(venue_id: int, *, _refresh: int = 0) -> pd.DataFrame:
+    _ = _refresh
     if Product is None:
         raise RuntimeError("Product model not importable.")
     with get_session() as s:

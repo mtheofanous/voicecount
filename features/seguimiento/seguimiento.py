@@ -194,14 +194,9 @@ def _render_stepper(state: str) -> None:
 # Data
 # -----------------------------
 
-def load_context(order_id: int, provider_name: str, raw_role: str, token: str) -> Dict[str, Any]:
-    role = norm_role(raw_role)
-    provider_name = norm_provider(provider_name)
-
-    if not verify_link(order_id=order_id, provider_name=provider_name, role=role, sig=token):
-        raise ValueError("Invalid or expired link")
-
-
+@st.cache_data(ttl=15, show_spinner=False)
+def _load_context_data(order_id: int, provider_name: str) -> Dict[str, Any]:
+    """Cached DB queries for supplier tracking context."""
     with get_session() as s:
         order = s.exec(select(Order).where(Order.id == order_id)).first()
         if not order:
@@ -233,7 +228,6 @@ def load_context(order_id: int, provider_name: str, raw_role: str, token: str) -
             ps = list(s.exec(select(Product).where(Product.id.in_(product_ids))).all())
             products = {p.id: p for p in ps}
 
-        # Load all incidences for this supplier (invoice discrepancy, damaged/wrong, operational missing, etc.)
         tickets = list(
             s.exec(
                 select(SeguimientoTicket).where(
@@ -250,7 +244,6 @@ def load_context(order_id: int, provider_name: str, raw_role: str, token: str) -
             )
         ).first()
 
-        # Provider directory entry (optional). Used for delivery schedule suggestions.
         provider_obj = s.exec(
             select(Provider).where(
                 Provider.venue_id == order.venue_id,
@@ -268,8 +261,6 @@ def load_context(order_id: int, provider_name: str, raw_role: str, token: str) -
         )
 
     return {
-        "role": role,
-        "provider_name": provider_name,
         "provider_obj": provider_obj,
         "order": order,
         "workflow": wf,
@@ -279,6 +270,17 @@ def load_context(order_id: int, provider_name: str, raw_role: str, token: str) -
         "receipt": receipt,
         "followups": {fu.order_line_id: fu for fu in followups},
     }
+
+
+def load_context(order_id: int, provider_name: str, raw_role: str, token: str) -> Dict[str, Any]:
+    role = norm_role(raw_role)
+    provider_name = norm_provider(provider_name)
+
+    if not verify_link(order_id=order_id, provider_name=provider_name, role=role, sig=token):
+        raise ValueError("Invalid or expired link")
+
+    ctx = _load_context_data(order_id, provider_name)
+    return {"role": role, "provider_name": provider_name, **ctx}
 
 
 # -----------------------------
