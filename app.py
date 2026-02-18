@@ -189,7 +189,72 @@ def _go(page_key: str, **extra_qp: str) -> None:
     set_query_params(**params)
     st.rerun()
     
+# def _bottom_tabbar(current_page: str) -> None:
+#     tabs = [
+#         ("new", "➕", "New"),
+#         ("borrador", "📝", "Borrador"),
+#         ("orders", "📦", "Orders"),
+#         ("tracking", "✅", "Receive"),
+#     ]
+
+#     # ── Hidden Streamlit buttons (offscreen) ─ preserve session state on click
+#     for key, _icon, _label in tabs:
+#         if key != current_page:
+#             if st.button("_", key=f"_tabbar_{key}"):
+#                 _go(key)
+
+#     # ── Visual HTML tabbar (always horizontal) ──
+#     items = []
+#     for key, icon, label in tabs:
+#         active = "active" if key == current_page else ""
+#         items.append(
+#             f'<div class="voi-tab {active}" data-page="{key}">'
+#             f'<div class="ic">{icon}</div>'
+#             f'<div class="tx">{label}</div>'
+#             f'</div>'
+#         )
+
+#     html = f"""<div class="voi-tabbar"><div class="voi-tabs">{''.join(items)}</div></div>"""
+#     st.markdown(html, unsafe_allow_html=True)
+
+#     # JS bridge: runs in an iframe via components_html, reaches into parent DOM
+#     # to wire tab clicks → hidden Streamlit buttons
+#     components_html("""
+#     <script>
+#     var doc = window.parent.document;
+#     doc.querySelectorAll('.voi-tab[data-page]').forEach(function(tab) {
+#         tab.onclick = function() {
+#             var page = this.getAttribute('data-page');
+#             var wrapper = doc.querySelector('[class*="st-key-_tabbar_' + page + '"]');
+#             if (wrapper) {
+#                 var btn = wrapper.querySelector('button');
+#                 if (btn) btn.click();
+#             }
+#         };
+#     });
+#     </script>
+#     """, height=0)
+
+#     # Hide the offscreen Streamlit trigger buttons
+#     st.markdown("""
+#     <style>
+#     [class*="st-key-_tabbar_"] {
+#         position: fixed !important;
+#         left: -9999px !important;
+#         height: 0 !important;
+#         overflow: hidden !important;
+#         pointer-events: none !important;
+#     }
+#     </style>
+#     """, unsafe_allow_html=True)
+
 def _bottom_tabbar(current_page: str) -> None:
+    """
+    True fixed bottom tabbar:
+    - Injected into window.parent.document as #voi-bottombar-root (persistent)
+    - Uses real <a href="?page=...&st=..."> links (no hidden Streamlit buttons / no JS bridge)
+    - Adds padding-bottom to Streamlit app container so content is not covered
+    """
     tabs = [
         ("new", "➕", "New"),
         ("borrador", "📝", "Borrador"),
@@ -197,56 +262,132 @@ def _bottom_tabbar(current_page: str) -> None:
         ("tracking", "✅", "Receive"),
     ]
 
-    # ── Hidden Streamlit buttons (offscreen) ─ preserve session state on click
-    for key, _icon, _label in tabs:
-        if key != current_page:
-            if st.button("_", key=f"_tabbar_{key}"):
-                _go(key)
+    token = st.session_state.get("_session_token", "") or ""
 
-    # ── Visual HTML tabbar (always horizontal) ──
-    items = []
+    # Build tab <a> items (active state based on current_page)
+    items_html = []
     for key, icon, label in tabs:
         active = "active" if key == current_page else ""
-        items.append(
-            f'<div class="voi-tab {active}" data-page="{key}">'
-            f'<div class="ic">{icon}</div>'
-            f'<div class="tx">{label}</div>'
-            f'</div>'
+        href = f"?page={key}"
+        if token:
+            href += f"&st={token}"
+        items_html.append(
+            f"""
+            <a class="voi-btab {active}" href="{href}" target="_self" rel="noopener">
+              <div class="ic">{icon}</div>
+              <div class="tx">{label}</div>
+            </a>
+            """
         )
 
-    html = f"""<div class="voi-tabbar"><div class="voi-tabs">{''.join(items)}</div></div>"""
-    st.markdown(html, unsafe_allow_html=True)
+    # Inject into parent DOM (same strategy as _inject_topbar)
+    components_html(
+        f"""
+<script>
+(function() {{
+  const doc = window.parent.document;
 
-    # JS bridge: runs in an iframe via components_html, reaches into parent DOM
-    # to wire tab clicks → hidden Streamlit buttons
-    components_html("""
-    <script>
-    var doc = window.parent.document;
-    doc.querySelectorAll('.voi-tab[data-page]').forEach(function(tab) {
-        tab.onclick = function() {
-            var page = this.getAttribute('data-page');
-            var wrapper = doc.querySelector('[class*="st-key-_tabbar_' + page + '"]');
-            if (wrapper) {
-                var btn = wrapper.querySelector('button');
-                if (btn) btn.click();
-            }
-        };
-    });
-    </script>
-    """, height=0)
+  const PAD_BOTTOM = 86; // space reserved for bar; tweak if you want tighter
+  const styleId = "voi-bottombar-style";
+  const rootId  = "voi-bottombar-root";
 
-    # Hide the offscreen Streamlit trigger buttons
-    st.markdown("""
-    <style>
-    [class*="st-key-_tabbar_"] {
-        position: fixed !important;
-        left: -9999px !important;
-        height: 0 !important;
-        overflow: hidden !important;
-        pointer-events: none !important;
-    }
-    </style>
-    """, unsafe_allow_html=True)
+  if (!doc.getElementById(styleId)) {{
+    const style = doc.createElement("style");
+    style.id = styleId;
+    style.textContent = `
+      #voi-bottombar-root {{
+        position: fixed;
+        left: 0;
+        right: 0;
+        bottom: 0;
+        z-index: 999999;
+        pointer-events: none; /* enable clicks only on inner */
+      }}
+
+      #voi-bottombar-inner {{
+        pointer-events: auto;
+        padding: 10px 12px calc(env(safe-area-inset-bottom, 0px) + 10px);
+        background: rgba(255,255,255,0.96);
+        border-top: 1px solid rgba(148,163,184,0.35);
+        backdrop-filter: saturate(180%) blur(12px);
+      }}
+
+      #voi-bottombar-tabs {{
+        display: flex;
+        gap: 8px;
+        justify-content: space-between;
+        max-width: 1100px;
+        margin: 0 auto;
+      }}
+
+      .voi-btab {{
+        flex: 1 1 0;
+        text-decoration: none !important;
+        color: #0f172a !important;
+        border: 1px solid rgba(148,163,184,0.35);
+        border-radius: 16px;
+        padding: 10px 8px;
+        background: #fff;
+        text-align: center;
+        font-weight: 900;
+        line-height: 1.05;
+        min-height: 48px;
+        display: flex;
+        flex-direction: column;
+        justify-content: center;
+        gap: 4px;
+        user-select: none;
+        -webkit-tap-highlight-color: transparent;
+      }}
+
+      .voi-btab .ic {{ font-size: 1.05rem; }}
+      .voi-btab .tx {{
+        font-size: .78rem;
+        opacity: .9;
+        white-space: nowrap;
+        overflow: hidden;
+        text-overflow: ellipsis;
+      }}
+
+      .voi-btab.active {{
+        border-color: rgba(37,99,235,0.45);
+        box-shadow: 0 6px 18px rgba(2,6,23,0.06);
+      }}
+
+      @media (min-width: 900px) {{
+        .voi-btab .tx {{ font-size: .82rem; }}
+      }}
+    `;
+    doc.head.appendChild(style);
+  }}
+
+  let root = doc.getElementById(rootId);
+  if (!root) {{
+    root = doc.createElement("div");
+    root.id = rootId;
+    doc.body.appendChild(root);
+  }}
+
+  root.innerHTML = `
+    <div id="voi-bottombar-inner">
+      <div id="voi-bottombar-tabs">
+        {''.join(items_html)}
+      </div>
+    </div>
+  `;
+
+  // Add padding to Streamlit app container so content doesn't sit under the bar
+  const app = doc.querySelector('[data-testid="stAppViewContainer"]');
+  if (app) {{
+    app.style.paddingBottom = PAD_BOTTOM + "px";
+  }}
+}})();
+</script>
+        """,
+        height=0,
+        scrolling=False,
+    )
+
 
 from streamlit.components.v1 import html as components_html
 
