@@ -187,43 +187,7 @@ def _go(page_key: str, **extra_qp: str) -> None:
     set_query_params(**params)
     st.rerun()
     
-
-def _nav_triggers_early() -> None:
-    """Handle bottom-tab navigation *early* to avoid rendering the previous page.
-
-    The bottom bar uses JS to click hidden Streamlit buttons (keys: _tabbar_<page>).
-    Those buttons must exist in the DOM; we render them near the top of the script,
-    and if any is clicked we update URL+state and stop immediately.
-    """
-    tabs = ["new", "borrador", "orders", "tracking"]
-
-    for key in tabs:
-        if st.button("_", key=f"_tabbar_{key}"):
-            _go(key, stop=True)
-
-    # Keep these triggers offscreen and non-interactive (JS will still click them)
-    st.markdown(
-        """
-        <style>
-        [class*="st-key-_tabbar_"] {
-            position: fixed !important;
-            left: -9999px !important;
-            height: 0 !important;
-            overflow: hidden !important;
-            pointer-events: none !important;
-        }
-        </style>
-        """,
-        unsafe_allow_html=True,
-    )
-
 def _bottom_tabbar(current_page: str) -> None:
-    """Mobile bottom navigation.
-
-    Option B (redirect): Use real links (target=_self) so a tap navigates directly
-    to the new URL (?page=...), instead of clicking hidden Streamlit buttons that
-    require an extra rerun. This removes the 'double-run' feeling on page switch.
-    """
     tabs = [
         ("new", "➕", "New"),
         ("borrador", "📝", "Borrador"),
@@ -231,23 +195,56 @@ def _bottom_tabbar(current_page: str) -> None:
         ("tracking", "✅", "Receive"),
     ]
 
-    token = st.session_state.get("_session_token", "")
-    token_param = f"&st={token}" if token else ""
+    # ── Hidden Streamlit buttons (offscreen) ─ preserve session state on click
+    for key, _icon, _label in tabs:
+        if key != current_page:
+            if st.button("_", key=f"_tabbar_{key}"):
+                _go(key)
 
+    # ── Visual HTML tabbar (always horizontal) ──
     items = []
     for key, icon, label in tabs:
         active = "active" if key == current_page else ""
-        href = f"?page={key}{token_param}"
         items.append(
-            f'<a class="voi-tab {active}" data-page="{key}" href="{href}" target="_self">'
+            f'<div class="voi-tab {active}" data-page="{key}">'
             f'<div class="ic">{icon}</div>'
             f'<div class="tx">{label}</div>'
-            f"</a>"
+            f'</div>'
         )
 
     html = f"""<div class="voi-tabbar"><div class="voi-tabs">{''.join(items)}</div></div>"""
     st.markdown(html, unsafe_allow_html=True)
 
+    # JS bridge: runs in an iframe via components_html, reaches into parent DOM
+    # to wire tab clicks → hidden Streamlit buttons
+    components_html("""
+    <script>
+    var doc = window.parent.document;
+    doc.querySelectorAll('.voi-tab[data-page]').forEach(function(tab) {
+        tab.onclick = function() {
+            var page = this.getAttribute('data-page');
+            var wrapper = doc.querySelector('[class*="st-key-_tabbar_' + page + '"]');
+            if (wrapper) {
+                var btn = wrapper.querySelector('button');
+                if (btn) btn.click();
+            }
+        };
+    });
+    </script>
+    """, height=0)
+
+    # Hide the offscreen Streamlit trigger buttons
+    st.markdown("""
+    <style>
+    [class*="st-key-_tabbar_"] {
+        position: fixed !important;
+        left: -9999px !important;
+        height: 0 !important;
+        overflow: hidden !important;
+        pointer-events: none !important;
+    }
+    </style>
+    """, unsafe_allow_html=True)
 
 from streamlit.components.v1 import html as components_html
 
@@ -484,9 +481,6 @@ def main():
     bootstrap_once()
 
     _css()
-
-    # ✅ Perf: consume bottom-tab clicks early so we don't render the previous page
-    _nav_triggers_early()
 
     # ✅ CRITICAL FIX: ALWAYS restore auth from token if token exists
     # Don't skip restoration just because auth_ctx exists - it might be stale!
