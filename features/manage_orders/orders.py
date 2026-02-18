@@ -1744,7 +1744,7 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
         # cA, cC, cD = st.columns([1.15, 1.2, 1.6], vertical_alignment="center")
         # with cA:
         show_prices = st.toggle(
-            "Mostrar importes",
+            "Importes",
             value=False,
             key=f"sum_show_prices_{int(order.id)}",
             help="Estimación basada en precios del catálogo y reglas de descuento. No es una factura.",
@@ -1765,7 +1765,7 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
         ) else "por_proveedor"
 
         apply_smart_prices = st.toggle(
-            "🧠 Aplicar precios inteligentes",
+            "🧠 Precios inteligentes",
             value=False,
             key=f"sum_apply_smart_{int(order.id)}",
             disabled=not show_prices,
@@ -2296,11 +2296,11 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
                 .all()
             )
 
-    if apply_smart_for_send:
-        st.info(
-            "🧠 **Smart activo:** al enviar, el pedido se reasigna automáticamente (por línea) al proveedor más barato "
-            "para que el email y el link del proveedor funcionen sin tocar nada en 'Cesta inteligente'."
-        )
+    # if apply_smart_for_send:
+    #     st.info(
+    #         "🧠 **Smart activo:** al enviar, el pedido se reasigna automáticamente (por línea) al proveedor más barato "
+    #         "para que el email y el link del proveedor funcionen sin tocar nada en 'Cesta inteligente'."
+    #     )
 
     # st.markdown("<div class='voi-divider'></div>", unsafe_allow_html=True)
 
@@ -2335,82 +2335,82 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
     )
     st.progress(sent_count / max(1, len(grouped_send)))
     st.caption(f"Enviados: {sent_count}/{len(grouped_send)}")
+    with st.container(horizontal=true):
+        g1, g2 = st.columns([1.6, 1.0], vertical_alignment="center")
+        with g1:
+            send_all_disabled = (not use_email)
+            if st.button("🚀 Enviar a todos (Email)", type="primary", use_container_width=True, disabled=send_all_disabled):
+                ok, fail = 0, 0
 
-    g1, g2 = st.columns([1.6, 1.0], vertical_alignment="center")
-    with g1:
-        send_all_disabled = (not use_email)
-        if st.button("🚀 Enviar a todos (Email)", type="primary", use_container_width=True, disabled=send_all_disabled):
-            ok, fail = 0, 0
+                # ✅ IMPORTANT: If smart is ON, persist to DB ONCE and rebuild sending groups
+                if apply_smart_for_send:
+                    changed = _materialize_smart_to_db_for_send(provider_name=None)
+                    if changed:
+                        lines = _reload_lines_from_db()
+                        grouped = _group_lines_by_provider(lines, products_by_id)
+                        grouped_send = _group_lines_for_sending(apply_smart=True)
+                        _bump_refresh(venue_id)
 
-            # ✅ IMPORTANT: If smart is ON, persist to DB ONCE and rebuild sending groups
-            if apply_smart_for_send:
-                changed = _materialize_smart_to_db_for_send(provider_name=None)
-                if changed:
-                    lines = _reload_lines_from_db()
-                    grouped = _group_lines_by_provider(lines, products_by_id)
-                    grouped_send = _group_lines_for_sending(apply_smart=True)
-                    _bump_refresh(venue_id)
+                for prov, prov_lines in grouped_send.items():
+                    prov_norm = norm_provider(prov)
+                    p = provider_dir.get(prov_norm)
+                    to_email = _split_first_pipe(_s(getattr(p, "order_email", None) or getattr(p, "email", None) or getattr(p, "emails", None))) if p else ""
+                    if not to_email:
+                        _touch_send_status(
+                            venue_id=venue_id,
+                            order_id=int(order.id),
+                            provider_name=prov_norm,
+                            actor=actor,
+                            channel="email",
+                            ok=False,
+                            error="missing provider email",
+                        )
+                        fail += 1
+                        continue
 
-            for prov, prov_lines in grouped_send.items():
-                prov_norm = norm_provider(prov)
-                p = provider_dir.get(prov_norm)
-                to_email = _split_first_pipe(_s(getattr(p, "order_email", None) or getattr(p, "email", None) or getattr(p, "emails", None))) if p else ""
-                if not to_email:
-                    _touch_send_status(
-                        venue_id=venue_id,
+                    _ensure_workflow_order_sent(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor)
+                    subject = _build_subject(v, int(order.id), prov_norm)
+                    body_text = _build_supplier_message_text(
+                        templates=v,
                         order_id=int(order.id),
                         provider_name=prov_norm,
-                        actor=actor,
-                        channel="email",
-                        ok=False,
-                        error="missing provider email",
+                        prov_lines=prov_lines,
+                        products_by_id=products_by_id,
                     )
-                    fail += 1
-                    continue
 
-                _ensure_workflow_order_sent(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor)
-                subject = _build_subject(v, int(order.id), prov_norm)
-                body_text = _build_supplier_message_text(
-                    templates=v,
-                    order_id=int(order.id),
-                    provider_name=prov_norm,
-                    prov_lines=prov_lines,
-                    products_by_id=products_by_id,
-                )
-
-                try:
-                    send_smtp_email(
-                        to=_split_emails(to_email),
-                        cc=_split_emails(v.email_cc),
-                        bcc=_split_emails(v.email_bcc),
-                        subject=subject,
-                        text_body=body_text,
-                    )
-                    _touch_send_status(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor, channel="email", ok=True)
-                    ok += 1
-                except Exception as e:
-                    _touch_send_status(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor, channel="email", ok=False, error=str(e))
-                    fail += 1
+                    try:
+                        send_smtp_email(
+                            to=_split_emails(to_email),
+                            cc=_split_emails(v.email_cc),
+                            bcc=_split_emails(v.email_bcc),
+                            subject=subject,
+                            text_body=body_text,
+                        )
+                        _touch_send_status(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor, channel="email", ok=True)
+                        ok += 1
+                    except Exception as e:
+                        _touch_send_status(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor, channel="email", ok=False, error=str(e))
+                        fail += 1
 
 
-            # move order to pending_receive only if every supplier has been sent at least once
-            if _all_providers_sent(order_id=int(order.id), provider_names=list(grouped_send.keys())):
-                _set_order_status(int(order.id), "pending_receive", actor)
-                _bump_refresh(venue_id)
-                st.success(f"✅ Enviados {ok} · ❌ Fallos {fail} · Pedido → Pendiente")
+                # move order to pending_receive only if every supplier has been sent at least once
+                if _all_providers_sent(order_id=int(order.id), provider_names=list(grouped_send.keys())):
+                    _set_order_status(int(order.id), "pending_receive", actor)
+                    _bump_refresh(venue_id)
+                    st.success(f"✅ Enviados {ok} · ❌ Fallos {fail} · Pedido → Pendiente")
+                    st.rerun()
+                else:
+                    st.success(f"✅ Enviados {ok} · ❌ Fallos {fail}")
+                    st.rerun()
+
+        with g2:
+            if st.button(
+                "🧹 Reset enviados",
+                use_container_width=True,
+                key=f"reset_send_{int(order.id)}",
+                ):
+                _reset_send_status(order_id=int(order.id))
                 st.rerun()
-            else:
-                st.success(f"✅ Enviados {ok} · ❌ Fallos {fail}")
-                st.rerun()
-
-    with g2:
-        if st.button(
-            "🧹 Reset enviados",
-            use_container_width=True,
-            key=f"reset_send_{int(order.id)}",
-            ):
-            _reset_send_status(order_id=int(order.id))
-            st.rerun()
 
     # st.markdown("<div class='voi-divider'></div>", unsafe_allow_html=True)
 
