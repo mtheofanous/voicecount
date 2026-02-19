@@ -241,7 +241,7 @@ def _list_orders_cached(_get_session_fn, venue_id: int, refresh_token: int) -> l
 @st.cache_data(ttl=60, show_spinner=False, hash_funcs={type(lambda: None): lambda _: "session_fn"})
 def _products_cached(_get_session_fn, venue_id: int) -> list[Product]:
     with _get_session_fn() as s:
-        return list(
+        products = list(
             s.exec(
                 select(Product)
                 .options(load_only(
@@ -253,6 +253,11 @@ def _products_cached(_get_session_fn, venue_id: int) -> list[Product]:
                 .order_by(Product.name.asc(), Product.provider_name.asc())
             ).all()
         )
+        # Force-load all attributes while session is active
+        for p in products:
+            _ = p.id, p.name, p.description, p.category, p.unit, p.quantity, p.price, p.iva
+            _ = p.provider_name, p.provider_email, p.provider_phone, p.provider_address
+        return products
 
 
 @st.cache_data(ttl=120, show_spinner=False, hash_funcs={type(lambda: None): lambda _: "session_fn"})
@@ -2554,7 +2559,8 @@ def borrador_tab(
     active_key = f"borrador_active_order_id_{venue_id}"
 
     # Load orders
-    orders_all = _list_orders_cached(get_session, venue_id, _refresh_token(venue_id))
+    with st.spinner("Loading drafts..."):
+        orders_all = _list_orders_cached(get_session, venue_id, _refresh_token(venue_id))
 
     # Deep-link: consume once
     deep_order_id_once_key = f"borrador_deep_order_consumed_{venue_id}"
@@ -2635,7 +2641,8 @@ def orders_tab(
     active_key = f"orders_active_order_id_{venue_id}"
 
     # Load orders
-    orders_all = _list_orders_cached(get_session, venue_id, _refresh_token(venue_id))
+    with st.spinner("Loading orders..."):
+        orders_all = _list_orders_cached(get_session, venue_id, _refresh_token(venue_id))
 
     # Deep-link: consume once
     deep_order_id_once_key = f"orders_deep_order_consumed_{venue_id}"

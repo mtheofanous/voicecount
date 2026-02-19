@@ -53,7 +53,7 @@ def _is_archived(p: Product) -> bool:
 def _list_products_cached(_get_session_fn, venue_id: int, refresh_token: int) -> list[Product]:
     _ = refresh_token
     with _get_session_fn() as s:
-        return list(
+        products = list(
             s.exec(
                 select(Product)
                 .options(load_only(
@@ -65,6 +65,11 @@ def _list_products_cached(_get_session_fn, venue_id: int, refresh_token: int) ->
                 .order_by(Product.name.asc(), Product.provider_name.asc())
             ).all()
         )
+        # Force-load all attributes while session is active
+        for p in products:
+            _ = p.id, p.name, p.description, p.category, p.unit, p.quantity, p.price, p.iva
+            _ = p.provider_name, p.provider_email, p.provider_phone, p.provider_address
+        return products
 
 
 def _bump_refresh(venue_id: int) -> None:
@@ -289,8 +294,9 @@ def catalog_tab(*, venue_id: int, venue_role: str) -> None:
     st.title("📦 Catálogo")
     st.caption("Admin view: see all products (aliases are hidden here).")
 
-    products = _list_products_cached(get_session, int(venue_id), _refresh_token(int(venue_id)))
-    df_all = _product_rows(products)
+    with st.spinner("Loading catalog..."):
+        products = _list_products_cached(get_session, int(venue_id), _refresh_token(int(venue_id)))
+        df_all = _product_rows(products)
 
     # Build dropdown options from DB (excluding archived category)
     existing_categories = sorted(

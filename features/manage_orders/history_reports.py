@@ -59,7 +59,8 @@ def _render_history_tab(venue_id: int, *, deep_provider: Optional[str] = None) -
       - Match credit notes (CN number) to invoice/provider
       - Filter by incidence kind + solution type
     """
-    orders = _get_history_orders(int(venue_id))
+    with st.spinner("Loading history..."):
+        orders = _get_history_orders(int(venue_id))
     if not orders:
         st.info("No closed supplier history yet.")
         return

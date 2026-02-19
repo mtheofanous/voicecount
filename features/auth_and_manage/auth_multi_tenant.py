@@ -2378,9 +2378,14 @@ def manage_organization_ui(venue_role: str = None):
         @st.cache_data(ttl=60)
         def load_products_cached(venue_id: int) -> List[Product]:
             with get_domain_session() as s:
-                return s.exec(
+                products = list(s.exec(
                     select(Product).where(Product.venue_id == venue_id).order_by(Product.name.asc())
-                ).all()
+                ).all())
+                # Force-load all attributes while session is active to prevent DetachedInstanceError
+                for p in products:
+                    _ = p.id, p.name, p.description, p.category, p.unit, p.quantity, p.price, p.iva
+                    _ = p.provider_name, p.provider_email, p.provider_phone, p.provider_address
+                return products
 
         @st.cache_data(ttl=60)
         def load_rules_cached(venue_id: int, provider_id: int) -> List["ProviderDiscountRule"]:
@@ -2747,14 +2752,19 @@ def manage_organization_ui(venue_role: str = None):
         def load_provider_products_cached(venue_id: int, provider_name: str) -> List[Product]:
             provider_name = (provider_name or "").strip()
             with get_domain_session() as s:
-                return s.exec(
+                products = list(s.exec(
                     select(Product)
                     .where(
                         Product.venue_id == venue_id,
                         Product.provider_name == provider_name,
                     )
                     .order_by(Product.name.asc())
-                ).all()
+                ).all())
+                # Force-load all attributes while session is active to prevent DetachedInstanceError
+                for p in products:
+                    _ = p.id, p.name, p.description, p.category, p.unit, p.quantity, p.price, p.iva
+                    _ = p.provider_name, p.provider_email, p.provider_phone, p.provider_address
+                return products
 
         products_for_rules = load_provider_products_cached(venue_id, selected_provider.name)
 

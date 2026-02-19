@@ -226,6 +226,10 @@ def _load_context_data(order_id: int, provider_name: str) -> Dict[str, Any]:
         products = {}
         if product_ids:
             ps = list(s.exec(select(Product).where(Product.id.in_(product_ids))).all())
+            # Force-load all attributes while session is active to prevent DetachedInstanceError
+            for p in ps:
+                _ = p.id, p.name, p.description, p.category, p.unit, p.quantity, p.price, p.iva
+                _ = p.provider_name, p.provider_email, p.provider_phone, p.provider_address
             products = {p.id: p for p in ps}
 
         tickets = list(

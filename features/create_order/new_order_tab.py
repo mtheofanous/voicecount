@@ -76,15 +76,22 @@ def load_catalog_and_indexes(venue_id: int, _cache_version: str = "v2"):
     _cache_version param allows manual cache busting when data structure changes.
     """
     with get_session() as s:
-        products = s.exec(
+        products = list(s.exec(
             select(Product)
             .options(load_only(
-                Product.id, Product.venue_id, Product.name,
-                Product.provider_name, Product.aliases
+                Product.id, Product.venue_id, Product.name, Product.description,
+                Product.category, Product.unit, Product.quantity, Product.price, Product.iva,
+                Product.provider_name, Product.provider_email, Product.provider_phone,
+                Product.provider_address, Product.aliases
             ))
             .where(Product.venue_id == venue_id)
             .order_by(Product.name.asc(), Product.provider_name.asc())
-        ).all()
+        ).all())
+
+        # Force-load all attributes while session is active to prevent DetachedInstanceError
+        for p in products:
+            _ = p.id, p.name, p.description, p.category, p.unit, p.quantity, p.price, p.iva
+            _ = p.provider_name, p.provider_email, p.provider_phone, p.provider_address, p.aliases
 
     products_by_id: dict[int, Product] = {int(p.id): p for p in products if getattr(p, "id", None) is not None}
 

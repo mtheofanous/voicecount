@@ -1876,6 +1876,10 @@ def _load_order_context(venue_id: int, order_id: int, *, refresh_token: int = 0)
         products: Dict[int, Product] = {}
         if product_ids:
             ps = list(s.exec(select(Product).where(Product.id.in_(product_ids))).all())
+            # Force-load all attributes while session is active to prevent DetachedInstanceError
+            for p in ps:
+                _ = p.id, p.name, p.description, p.category, p.unit, p.quantity, p.price, p.iva
+                _ = p.provider_name, p.provider_email, p.provider_phone, p.provider_address
             products = {int(p.id): p for p in ps if getattr(p, "id", None) is not None}
 
         # group lines by provider
@@ -1990,6 +1994,10 @@ def _load_dashboard_bundle(
         products: Dict[int, Product] = {}
         if product_ids:
             ps = list(s.exec(select(Product).where(Product.id.in_(product_ids))).all())
+            # Force-load all attributes while session is active to prevent DetachedInstanceError
+            for p in ps:
+                _ = p.id, p.name, p.description, p.category, p.unit, p.quantity, p.price, p.iva
+                _ = p.provider_name, p.provider_email, p.provider_phone, p.provider_address
             products = {int(p.id): p for p in ps if getattr(p, "id", None) is not None}
 
         followups = list(
@@ -3230,6 +3238,10 @@ def request_supplier_resolution(venue_id: int, order_id: int, provider: str, ven
             prows = list(
                 s.exec(select(Product).where(Product.venue_id == int(venue_id), Product.id.in_(list(set(prod_ids))))).all()
             )
+            # Force-load all attributes while session is active to prevent DetachedInstanceError
+            for pp in prows:
+                _ = pp.id, pp.name, pp.description, pp.category, pp.unit, pp.quantity, pp.price, pp.iva
+                _ = pp.provider_name, pp.provider_email, pp.provider_phone, pp.provider_address
             products_by_id = {int(pp.id): pp for pp in prows if getattr(pp, "id", None) is not None}
 
     # Supplier link
@@ -5802,13 +5814,14 @@ def tracking_dashboard(
 
     st.markdown("# Dashboard")
 
-    orders = _get_active_orders(int(venue_id), refresh_token=_orders_refresh_token(int(venue_id)))
-    if not orders:
-        st.info("No orders yet.")
-        return
-    
-    order_ids = [int(o.id) for o in orders if o.id is not None]
-    bundle = _load_dashboard_bundle(int(venue_id), tuple(order_ids), refresh_token=_orders_refresh_token(int(venue_id)))
+    with st.spinner("Loading dashboard..."):
+        orders = _get_active_orders(int(venue_id), refresh_token=_orders_refresh_token(int(venue_id)))
+        if not orders:
+            st.info("No orders yet.")
+            return
+
+        order_ids = [int(o.id) for o in orders if o.id is not None]
+        bundle = _load_dashboard_bundle(int(venue_id), tuple(order_ids), refresh_token=_orders_refresh_token(int(venue_id)))
     # NOTE: avoid escaped quotes (was causing SyntaxError on Streamlit Cloud)
     contexts = bundle.get("contexts", {})
     sent_providers_by_order = bundle.get("sent_providers_by_order", {})
@@ -5908,7 +5921,8 @@ def tracking_dashboard(
 
         # 📦 Pending (Receive)
         if av == "pending_products":
-            tasks = _list_pending_receive_items(int(venue_id), refresh_token=_orders_refresh_token(int(venue_id)))
+            with st.spinner("Loading pending items..."):
+                tasks = _list_pending_receive_items(int(venue_id), refresh_token=_orders_refresh_token(int(venue_id)))
             if not tasks:
                 st.success("✅ Nothing pending to receive right now.")
                 return
@@ -5946,7 +5960,8 @@ def tracking_dashboard(
 
         # 🚨 Open incidences (all)
         if av == "open_incidences":
-            items = _list_open_incidences_items(int(venue_id))
+            with st.spinner("Loading open incidences..."):
+                items = _list_open_incidences_items(int(venue_id))
             if not items:
                 st.success("✅ No open incidences.")
                 return
@@ -5981,9 +5996,10 @@ def tracking_dashboard(
 
         # 🚚 Re-deliveries (filtered incidences)
         if av == "re_deliveries":
-            items = _list_open_incidences_items(int(venue_id))
-            REDEL_SET = {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}
-            items = _filter_incidences_by_resolution(items, int(venue_id), REDEL_SET, contexts=contexts) if items else []
+            with st.spinner("Loading re-deliveries..."):
+                items = _list_open_incidences_items(int(venue_id))
+                REDEL_SET = {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}
+                items = _filter_incidences_by_resolution(items, int(venue_id), REDEL_SET, contexts=contexts) if items else []
             if not items:
                 st.success("✅ No pending re-deliveries.")
                 return
@@ -5999,8 +6015,9 @@ def tracking_dashboard(
 
         # 🧾 Credit notes (filtered incidences)
         if av == "credit_notes":
-            items = _list_open_incidences_items(int(venue_id))
-            items = _filter_incidences_by_resolution(items, int(venue_id), {"credit_note"}, contexts=contexts) if items else []
+            with st.spinner("Loading credit notes..."):
+                items = _list_open_incidences_items(int(venue_id))
+                items = _filter_incidences_by_resolution(items, int(venue_id), {"credit_note"}, contexts=contexts) if items else []
             if not items:
                 st.success("✅ No pending credit notes.")
                 return
