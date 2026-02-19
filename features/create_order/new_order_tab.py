@@ -670,10 +670,10 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
         pa_hdr.float(
             float_css_helper(
-                top="6.8rem",
+                top="5.8rem",
                 z_index="999",
                 background="white",
-                padding="0.6rem 1rem",
+                padding="1rem 1rem",
                 border_radius="0 0 12px 12px",
                 box_shadow="0 4px 16px rgba(0,0,0,0.08)",
             )
