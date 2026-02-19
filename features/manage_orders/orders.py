@@ -1683,69 +1683,75 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
 
     form_key = f"{editor_key}__form"
 
-    with st.form(key=form_key, clear_on_submit=False):
-        from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
+    with st.form(key=form_key, clear_on_submit=False, border=False):
+        from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode, StAggridTheme
 
-        # ---- Build a display label column (so you get the nice "Producto" text) ----
+
+
+        # --- Your AgGrid (minimal example) ---
         _df = df_for_editor.copy()
         _df["product_label"] = _df["product_id"].apply(
             lambda pid: label_by_id.get(_pid_to_int(pid) or -1, str(pid))
         )
-        
-        _df = _df[
-            ["product_label", "unit", "quantity", "delete", "line_id", "product_id"]
-        ]
 
-        # ---- AgGrid options ----
+        # order: Producto, Unidad, Qty, Delete
+        _df = _df[["product_label", "unit", "quantity", "delete", "line_id", "product_id"]]
+
         gb = GridOptionsBuilder.from_dataframe(_df)
-
-        # hide index (AgGrid doesn't show pandas index by default; keep this off)
-        # allow deleting rows (we'll add a checkbox "delete" like you already have)
         gb.configure_default_column(resizable=True)
 
-        # hide internal ids like your "line_id": None
         gb.configure_column("line_id", hide=True)
-
-        # show "Producto" as label (read-only like disabled=True)
-        gb.configure_column(
-                "product_label",
-                header_name="Producto",
-                editable=False,
-                minWidth=220,
-                flex=2
-            )
-
-        # keep product_id hidden (since label is shown)
         gb.configure_column("product_id", hide=True)
 
-        # Qty editable with integer-like behavior
+        gb.configure_column(
+            "product_label",
+            header_name="Producto",
+            editable=False,
+            wrapText=False,
+            minWidth=220,
+            flex=2,
+        )
+
+        gb.configure_column("unit", header_name="Unidad", editable=False, flex=1,maxWidth=120)
+
         gb.configure_column(
             "quantity",
             header_name="Qty",
             editable=True,
             type=["numericColumn"],
+            flex=1,
+            maxWidth=90,
             valueParser=JsCode("function(params){ return Number(params.newValue); }"),
         )
 
-        # Unit read-only
-        gb.configure_column("unit", header_name="Unidad", editable=False)
-
-        # Delete checkbox
         gb.configure_column(
             "delete",
             header_name="🗑️",
             editable=True,
             cellRenderer="agCheckboxCellRenderer",
+            flex=1,
+            maxWidth=90,
         )
 
         grid_options = gb.build()
 
-        # ---- Auto-size columns based on content ----
+        # optional: auto-size AFTER load (can fight with flex; keep off if you prefer flex)
         on_grid_ready = JsCode("""
         function(params) {
-        params.api.autoSizeAllColumns(false);
+        // If you prefer flex widths, comment this out:
+        // params.api.autoSizeAllColumns(false);
         }
         """)
+
+        yellow_notebook_theme = (
+            StAggridTheme(base="quartz")
+            .withParams(
+                fontSize=15,
+                rowBorder=True,
+                backgroundColor="#FFF4A8",  # warm yellow paper
+            )
+            .withParts("iconSetAlpine")     # or "iconSetQuartz" / "iconSetMaterial"
+        )
 
         grid_response = AgGrid(
             _df,
@@ -1753,13 +1759,13 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
             update_mode=GridUpdateMode.MODEL_CHANGED,
             allow_unsafe_jscode=True,
             fit_columns_on_grid_load=False,
-            onGridReady=on_grid_ready,
-            height=600,
-            theme="streamlit",
+            theme=yellow_notebook_theme,     # 👈 custom theme goes here
+            height=420,
+            key="theming_grid",
         )
 
-        # ---- Edited result (drop helper column before you use it downstream) ----
         edited = grid_response["data"].drop(columns=["product_label"])
+
 
 
 
