@@ -1712,7 +1712,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
             flex=2,
         )
 
-        gb.configure_column("unit", header_name="Unidad", editable=False, flex=1,maxWidth=120)
+        gb.configure_column("unit", header_name="Unidad", editable=False, flex=1, maxWidth=150)
 
         gb.configure_column(
             "quantity",
@@ -1730,7 +1730,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
             editable=True,
             cellRenderer="agCheckboxCellRenderer",
             flex=1,
-            maxWidth=90,
+            maxWidth=100,
         )
 
         grid_options = gb.build()
@@ -1760,7 +1760,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
             allow_unsafe_jscode=True,
             fit_columns_on_grid_load=False,
             theme=yellow_notebook_theme,     # 👈 custom theme goes here
-            height=420,
+            height=620,
             key="theming_grid",
         )
 
