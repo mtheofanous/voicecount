@@ -1713,7 +1713,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
             tooltipField="product_label"
         )
 
-        gb.configure_column("unit", header_name="Unidad", editable=False, flex=1, maxWidth=100)
+        gb.configure_column("unit", header_name="Unidad", editable=False, flex=1, maxWidth=80)
 
         gb.configure_column(
             "quantity",
@@ -1721,7 +1721,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
             editable=True,
             type=["numericColumn"],
             flex=1,
-            maxWidth=90,
+            maxWidth=80,
             valueParser=JsCode("function(params){ return Number(params.newValue); }"),
         )
 
