@@ -1267,7 +1267,6 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     # =========================================================
 
 
-    float_init()
 
     hdr = st.container()
     with hdr:
@@ -2174,9 +2173,6 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
     st.markdown('<div class="voi-bottom-wrap"><div class="voi-bottom-inner">', unsafe_allow_html=True)
     
-    
-
-    # float_init()
 
     # -------------------------------
     # state
