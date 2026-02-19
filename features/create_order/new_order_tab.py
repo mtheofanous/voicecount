@@ -635,40 +635,40 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             st.session_state.product_adder_fullpage = False
             st.rerun()
 
-        # Search bar
-        search_query = st.text_input(
-            "Buscar producto",
-            placeholder="Busca por nombre, proveedor...",
-            key=K("product_search_fullpage"),label_visibility="collapsed",
-        ).strip().lower()
+        with st.container(horizontal=True):# Search bar
+            search_query = st.text_input(
+                "Buscar producto",
+                placeholder="Busca por nombre, proveedor...",
+                key=K("product_search_fullpage"),label_visibility="collapsed",
+            ).strip().lower()
 
-        # Create product lookup maps
-        with st.spinner("Cargando catálogo de productos..."):
-            products_by_cat = {}
-            products_by_prov = {}
-            all_categories = set()
-            all_providers = set()
+            # Create product lookup maps
+            with st.spinner("Cargando catálogo de productos..."):
+                products_by_cat = {}
+                products_by_prov = {}
+                all_categories = set()
+                all_providers = set()
 
-            for p in products:
-                cat = getattr(p, "category", "") or "Sin categoría"
-                prov = getattr(p, "provider_name", "") or "Sin proveedor"
-                all_categories.add(cat)
-                all_providers.add(prov)
-                products_by_cat.setdefault(cat, []).append(p)
-                products_by_prov.setdefault(prov, []).append(p)
+                for p in products:
+                    cat = getattr(p, "category", "") or "Sin categoría"
+                    prov = getattr(p, "provider_name", "") or "Sin proveedor"
+                    all_categories.add(cat)
+                    all_providers.add(prov)
+                    products_by_cat.setdefault(cat, []).append(p)
+                    products_by_prov.setdefault(prov, []).append(p)
 
-            # Filter products by search
-            filtered_products = products
-            if search_query:
-                filtered_products = [
-                    p for p in products
-                    if search_query in (getattr(p, "name", "") or "").lower()
-                    or search_query in (getattr(p, "provider_name", "") or "").lower()
-                    or search_query in (getattr(p, "description", "") or "").lower()
-                ]
+                # Filter products by search
+                filtered_products = products
+                if search_query:
+                    filtered_products = [
+                        p for p in products
+                        if search_query in (getattr(p, "name", "") or "").lower()
+                        or search_query in (getattr(p, "provider_name", "") or "").lower()
+                        or search_query in (getattr(p, "description", "") or "").lower()
+                    ]
 
-        # Provider selection (using selectbox instead of tabs for better performance)
-        with st.container():
+            # Provider selection (using selectbox instead of tabs for better performance)
+    
             # Get all providers (with "Todos")
             prov_list = ["Todos"] + sorted(all_providers)
 
