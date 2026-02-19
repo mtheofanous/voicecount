@@ -382,7 +382,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
     def S(name: str) -> str:
         return NS + name
-
+    float_init()
     # ---------------------------
     # Session state init
     # ---------------------------
@@ -632,227 +632,224 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     # =========================================================
     if st.session_state.get("product_adder_fullpage", False):
         # Back button
-        if st.button(f"← {t('action.back')}", key=K("back_from_product_adder")):
-            st.session_state.product_adder_fullpage = False
-            st.rerun()
+        with st.container(horizontal=True):
+            if st.button(f"← {t('action.back')}", key=K("back_from_product_adder")):
+                st.session_state.product_adder_fullpage = False
+                st.rerun()
 
-        # Search bar
-        search_query = st.text_input(
-            t("new_order.search_product"),
-            placeholder=t("new_order.search_placeholder"),
-            key=K("product_search_fullpage"),label_visibility="collapsed",
-        ).strip().lower()
+            # Search bar
+            search_query = st.text_input(
+                t("new_order.search_product"),
+                placeholder=t("new_order.search_placeholder"),
+                key=K("product_search_fullpage"),label_visibility="collapsed",
+            ).strip().lower()
 
-        # Create product lookup maps
-        with st.spinner(t("new_order.loading_catalog")):
-            products_by_cat = {}
-            products_by_prov = {}
-            all_categories = set()
-            all_providers = set()
+            # Create product lookup maps
+            with st.spinner(t("new_order.loading_catalog")):
+                products_by_cat = {}
+                products_by_prov = {}
+                all_categories = set()
+                all_providers = set()
 
-            for p in products:
-                cat = getattr(p, "category", "") or t("new_order.no_category")
-                prov = getattr(p, "provider_name", "") or t("new_order.no_provider")
-                all_categories.add(cat)
-                all_providers.add(prov)
-                products_by_cat.setdefault(cat, []).append(p)
-                products_by_prov.setdefault(prov, []).append(p)
+                for p in products:
+                    cat = getattr(p, "category", "") or t("new_order.no_category")
+                    prov = getattr(p, "provider_name", "") or t("new_order.no_provider")
+                    all_categories.add(cat)
+                    all_providers.add(prov)
+                    products_by_cat.setdefault(cat, []).append(p)
+                    products_by_prov.setdefault(prov, []).append(p)
 
-            # Filter products by search
-            filtered_products = products
-            if search_query:
-                filtered_products = [
-                    p for p in products
-                    if search_query in (getattr(p, "name", "") or "").lower()
-                    or search_query in (getattr(p, "provider_name", "") or "").lower()
-                    or search_query in (getattr(p, "description", "") or "").lower()
-                ]
+                # Filter products by search
+                filtered_products = products
+                if search_query:
+                    filtered_products = [
+                        p for p in products
+                        if search_query in (getattr(p, "name", "") or "").lower()
+                        or search_query in (getattr(p, "provider_name", "") or "").lower()
+                        or search_query in (getattr(p, "description", "") or "").lower()
+                    ]
 
-        # Provider selection (using selectbox instead of tabs for better performance)
-        with st.container():
+ 
             # Get all providers (with "Todos")
             prov_list = [t("new_order.all_providers")] + sorted(all_providers)
 
-            # Use selectbox for provider selection (much faster than tabs)
-            col1, col2 = st.columns([1, 3])
-            with col1:
-                selected_prov = st.selectbox(
-                    "Proveedor",
-                    options=prov_list,
-                    key=K("provider_selector"),label_visibility="collapsed"
-                )
+            selected_prov = st.selectbox(
+                "Proveedor",
+                options=prov_list,
+                key=K("provider_selector"),label_visibility="collapsed"
+            )
 
-            # Filter by provider
-            if selected_prov == t("new_order.all_providers"):
-                prov_filtered = filtered_products
-            else:
-                # Use the pre-built dictionary instead of filtering
-                prov_filtered = products_by_prov.get(selected_prov, [])
+        # Filter by provider
+        if selected_prov == t("new_order.all_providers"):
+            prov_filtered = filtered_products
+        else:
+            # Use the pre-built dictionary instead of filtering
+            prov_filtered = products_by_prov.get(selected_prov, [])
 
-            # Category sub-tabs (filtered by provider)
-            categories_in_prov = sorted({getattr(p, "category", "") or t("new_order.no_category") for p in prov_filtered})
-            cat_list = [t("new_order.all_categories")] + categories_in_prov
-            cat_tabs = st.tabs(cat_list)
+        # Category sub-tabs (filtered by provider)
+        categories_in_prov = sorted({getattr(p, "category", "") or t("new_order.no_category") for p in prov_filtered})
+        cat_list = [t("new_order.all_categories")] + categories_in_prov
+        cat_tabs = st.tabs(cat_list)
 
-            for j, cat_tab in enumerate(cat_tabs):
-                with cat_tab:
-                    selected_cat = cat_list[j]
+        for j, cat_tab in enumerate(cat_tabs):
+            with cat_tab:
+                selected_cat = cat_list[j]
 
-                    # Final filter
-                    final_products = prov_filtered
-                    if selected_cat != t("new_order.all_categories"):
-                        final_products = [
-                            p for p in prov_filtered
-                            if (getattr(p, "category", "") or t("new_order.no_category")) == selected_cat
-                        ]
+                # Final filter
+                final_products = prov_filtered
+                if selected_cat != t("new_order.all_categories"):
+                    final_products = [
+                        p for p in prov_filtered
+                        if (getattr(p, "category", "") or t("new_order.no_category")) == selected_cat
+                    ]
 
-                    if not final_products:
-                        st.info(t("new_order.no_products_cat"))
-                        continue
+                if not final_products:
+                    st.info(t("new_order.no_products_cat"))
+                    continue
 
-                    st.caption(f"{len(final_products)} producto(s)")
+                st.caption(f"{len(final_products)} producto(s)")
 
-                    # --------------------------------------------------
-                    # Pagination — kept OUTSIDE the form so st.button
-                    # works reliably on mobile (no CSS hacks needed).
-                    # --------------------------------------------------
-                    PAGE_SIZE = 30
-                    page_state_key = K(f"fullpage_page_{selected_prov}_{selected_cat}_{j}")
-                    total_pages = max(1, int(math.ceil(len(final_products) / PAGE_SIZE)))
-                    page_idx = int(st.session_state.get(page_state_key, 0) or 0)
-                    page_idx = max(0, min(page_idx, total_pages - 1))
-                    st.session_state[page_state_key] = page_idx
+                # --------------------------------------------------
+                # Pagination — kept OUTSIDE the form so st.button
+                # works reliably on mobile (no CSS hacks needed).
+                # --------------------------------------------------
+                PAGE_SIZE = 30
+                page_state_key = K(f"fullpage_page_{selected_prov}_{selected_cat}_{j}")
+                total_pages = max(1, int(math.ceil(len(final_products) / PAGE_SIZE)))
+                page_idx = int(st.session_state.get(page_state_key, 0) or 0)
+                page_idx = max(0, min(page_idx, total_pages - 1))
+                st.session_state[page_state_key] = page_idx
 
-                    if total_pages > 1:
-                        col_prev, col_info, col_next = st.columns(
-                            [1, 4, 1], vertical_alignment="center"
+                if total_pages > 1:
+                    # col_prev, col_info, col_next = st.columns(
+                    #     [1, 4, 1], vertical_alignment="center"
+                    # )
+                    with st.container(horizontal=True):
+                        if st.button(
+                            "◀",
+                            key=K(f"prev_{selected_prov}_{j}"),
+                            disabled=(page_idx == 0),
+                            use_container_width=True,
+                        ):
+                            st.session_state[page_state_key] = max(0, page_idx - 1)
+                            st.rerun()
+                    # with col_info:
+                        st.markdown(
+                            f'<div style="text-align:center;font-size:0.9rem;color:#888;">'
+                            f'{page_idx + 1} / {total_pages}</div>',
+                            unsafe_allow_html=True,
                         )
-                        with col_prev:
-                            if st.button(
-                                "◀",
-                                key=K(f"prev_{selected_prov}_{j}"),
-                                disabled=(page_idx == 0),
-                                use_container_width=True,
-                            ):
-                                st.session_state[page_state_key] = max(0, page_idx - 1)
-                                st.rerun()
-                        with col_info:
-                            st.markdown(
-                                f'<div style="text-align:center;font-size:0.8rem;color:#888;">'
-                                f'{page_idx + 1} / {total_pages}</div>',
-                                unsafe_allow_html=True,
-                            )
-                        with col_next:
-                            if st.button(
-                                "▶",
-                                key=K(f"next_{selected_prov}_{j}"),
-                                disabled=(page_idx >= total_pages - 1),
-                                use_container_width=True,
-                            ):
-                                st.session_state[page_state_key] = min(total_pages - 1, page_idx + 1)
-                                st.rerun()
+                    # with col_next:
+                        if st.button(
+                            "▶",
+                            key=K(f"next_{selected_prov}_{j}"),
+                            disabled=(page_idx >= total_pages - 1),
+                            use_container_width=True,
+                        ):
+                            st.session_state[page_state_key] = min(total_pages - 1, page_idx + 1)
+                            st.rerun()
 
-                    # Slice products for this page
-                    start_i = page_idx * PAGE_SIZE
-                    end_i = start_i + PAGE_SIZE
-                    page_products = final_products[start_i:end_i]
+                # Slice products for this page
+                start_i = page_idx * PAGE_SIZE
+                end_i = start_i + PAGE_SIZE
+                page_products = final_products[start_i:end_i]
 
-                    with st.form(key=K(f"add_form_{selected_prov}_{j}"), border=False):
-                        add_clicked = st.form_submit_button(
-                            t("new_order.add_selected"), type="primary", use_container_width=True
-                        )
+                with st.form(key=K(f"add_form_{selected_prov}_{j}"), border=False):
+                    add_clicked = st.form_submit_button(
+                        t("new_order.add_selected"), type="primary", use_container_width=True
+                    )
 
-                        # -----------------------------
-                        # Render only this page
-                        # (values persist via keys)
-                        # -----------------------------
-                        with st.container(height=600):
-                            for prod in page_products:
-                                pid = int(prod.id)
+                    # -----------------------------
+                    # Render only this page
+                    # (values persist via keys)
+                    # -----------------------------
+                    with st.container(height=600):
+                        for prod in page_products:
+                            pid = int(prod.id)
+                            pname = getattr(prod, "name", "")
+                            pprov = getattr(prod, "provider_name", "")
+                            pdesc = getattr(prod, "description", "")
+                            punit = getattr(prod, "unit", "") or "unit"
+                            pprice = getattr(prod, "price", None)
+
+                            with st.container():
+                                col1, col2 = st.columns([3, 1])
+
+                                with col1:
+                                    st.markdown(f"**{pname}**")
+                                    details = []
+                                    if pdesc:
+                                        details.append(pdesc)
+                                    if pprov:
+                                        details.append(pprov)
+                                    if pprice:
+                                        details.append(f"{float(pprice):.2f}€")
+                                    if details:
+                                        st.caption(" · ".join(details))
+
+                                with col2:
+                                    st.number_input(
+                                        "Cant.",
+                                        min_value=0.0,
+                                        value=float(st.session_state.get(K(f"fullpage_qty_{pid}_{j}"), 0.0) or 0.0),
+                                        step=1.0,
+                                        key=K(f"fullpage_qty_{pid}_{j}"),
+                                        label_visibility="collapsed",
+                                    )
+
+                    # -----------------------------
+                    # On submit: collect across ALL pages
+                    # -----------------------------
+                    if add_clicked:
+                        products_to_add = []
+                        for prod in final_products:
+                            pid = int(prod.id)
+                            qty = float(st.session_state.get(K(f"fullpage_qty_{pid}_{j}"), 0.0) or 0.0)
+                            if qty > 0:
                                 pname = getattr(prod, "name", "")
                                 pprov = getattr(prod, "provider_name", "")
-                                pdesc = getattr(prod, "description", "")
                                 punit = getattr(prod, "unit", "") or "unit"
-                                pprice = getattr(prod, "price", None)
+                                products_to_add.append((pid, pname, qty, punit, pprov))
 
-                                with st.container():
-                                    col1, col2 = st.columns([3, 1])
+                        if products_to_add:
+                            parsed_df = st.session_state.get(S("parsed_df"))
 
-                                    with col1:
-                                        st.markdown(f"**{pname}**")
-                                        details = []
-                                        if pdesc:
-                                            details.append(pdesc)
-                                        if pprov:
-                                            details.append(pprov)
-                                        if pprice:
-                                            details.append(f"{float(pprice):.2f}€")
-                                        if details:
-                                            st.caption(" · ".join(details))
+                            for pid, pname, qty, punit, pprov in products_to_add:
+                                new_row = pd.DataFrame([{
+                                    "spoken_name": pname,
+                                    "matched_product_id": pid,
+                                    "matched_name": pname,
+                                    "confidence": 100.0,
+                                    "quantity": qty,
+                                    "unit": punit,
+                                    "unit_custom": "",
+                                    "suggestions": [],
+                                    "recommended_pid": pid,
+                                    "status": "OK",
+                                    "provider": pprov,
+                                    "source": "manual",
+                                }])
 
-                                    with col2:
-                                        st.number_input(
-                                            "Cant.",
-                                            min_value=0.0,
-                                            value=float(st.session_state.get(K(f"fullpage_qty_{pid}_{j}"), 0.0) or 0.0),
-                                            step=1.0,
-                                            key=K(f"fullpage_qty_{pid}_{j}"),
-                                            label_visibility="collapsed",
-                                        )
-
-                        # -----------------------------
-                        # On submit: collect across ALL pages
-                        # -----------------------------
-                        if add_clicked:
-                            products_to_add = []
-                            for prod in final_products:
-                                pid = int(prod.id)
-                                qty = float(st.session_state.get(K(f"fullpage_qty_{pid}_{j}"), 0.0) or 0.0)
-                                if qty > 0:
-                                    pname = getattr(prod, "name", "")
-                                    pprov = getattr(prod, "provider_name", "")
-                                    punit = getattr(prod, "unit", "") or "unit"
-                                    products_to_add.append((pid, pname, qty, punit, pprov))
-
-                            if products_to_add:
-                                parsed_df = st.session_state.get(S("parsed_df"))
-
-                                for pid, pname, qty, punit, pprov in products_to_add:
-                                    new_row = pd.DataFrame([{
-                                        "spoken_name": pname,
-                                        "matched_product_id": pid,
-                                        "matched_name": pname,
-                                        "confidence": 100.0,
-                                        "quantity": qty,
-                                        "unit": punit,
-                                        "unit_custom": "",
-                                        "suggestions": [],
-                                        "recommended_pid": pid,
-                                        "status": "OK",
-                                        "provider": pprov,
-                                        "source": "manual",
-                                    }])
-
-                                    if isinstance(parsed_df, pd.DataFrame) and not parsed_df.empty:
-                                        existing_mask = parsed_df['matched_product_id'] == pid
-                                        if existing_mask.any():
-                                            idx = parsed_df.index[existing_mask][0]
-                                            parsed_df.at[idx, 'quantity'] = float(parsed_df.at[idx, 'quantity']) + qty
-                                        else:
-                                            parsed_df = pd.concat([parsed_df, new_row], ignore_index=True)
+                                if isinstance(parsed_df, pd.DataFrame) and not parsed_df.empty:
+                                    existing_mask = parsed_df['matched_product_id'] == pid
+                                    if existing_mask.any():
+                                        idx = parsed_df.index[existing_mask][0]
+                                        parsed_df.at[idx, 'quantity'] = float(parsed_df.at[idx, 'quantity']) + qty
                                     else:
-                                        if parsed_df is None:
-                                            parsed_df = new_row
-                                        else:
-                                            parsed_df = pd.concat([parsed_df, new_row], ignore_index=True)
+                                        parsed_df = pd.concat([parsed_df, new_row], ignore_index=True)
+                                else:
+                                    if parsed_df is None:
+                                        parsed_df = new_row
+                                    else:
+                                        parsed_df = pd.concat([parsed_df, new_row], ignore_index=True)
 
-                                st.session_state[S("parsed_df")] = parsed_df
-                                st.success(t("new_order.added_products", n=str(len(products_to_add))))
-                                time.sleep(0.5)
-                                st.session_state.product_adder_fullpage = False
-                                st.rerun()
-                            else:
-                                st.warning(t("msg.no_product_selected"))
+                            st.session_state[S("parsed_df")] = parsed_df
+                            st.success(t("new_order.added_products", n=str(len(products_to_add))))
+                            time.sleep(0.5)
+                            st.session_state.product_adder_fullpage = False
+                            st.rerun()
+                        else:
+                            st.warning(t("msg.no_product_selected"))
 
         # Stop rendering the rest of the page
         return
@@ -1127,58 +1124,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     # =========================================================
     # HEADER (notes mindset) + Active draft display
     # =========================================================
-
-    # =========================================================
-    # HEADER (notes mindset) + Active draft display  (FLOAT)
-    # =========================================================
-
-
-    float_init()
-
-    hdr = st.container()
-    with hdr:
-
-        st.markdown(
-            f"""
-            <div style="
-                display:flex;
-                align-items:center;
-                justify-content:space-between;
-                gap:12px;
-            ">
-            <div style="font-weight:900;font-size:1.05rem;color:#0f172a;">
-                {t("new_order.header")}
-            </div>
-      
-            </div>
-            """,
-            unsafe_allow_html=True,
-        )
-
-    # Float it just under Streamlit topbar
-    TOP_UNDER_TOPBAR = "7.0rem"  # tweak to 3.5rem if your theme topbar is taller
-
-    hdr_css = float_css_helper(
-        top=TOP_UNDER_TOPBAR,
-        left="50%",
-        width="min(1100px, calc(100vw - 1.5rem))",
-        z_index="10005",
-    )
-    hdr_css += """
-    transform: translateX(-50%);
-    background: rgba(255,255,255,0.96);
-    backdrop-filter: saturate(180%) blur(12px);
-    border: 1px solid rgba(148,163,184,.35);
-    border-radius: 18px;
-    padding: 10px 12px;
-    box-shadow: 0 10px 28px rgba(2,6,23,0.10);
-    """
-
-    hdr.float(hdr_css)
-
-    # Spacer so content doesn't hide behind the floating header
-    st.markdown("<div style='height:84px'></div>", unsafe_allow_html=True)
-
+    st.markdown(t("new_order.header"), unsafe_allow_html=True)
 
     # =========================================================
     # Convert df -> order lines
