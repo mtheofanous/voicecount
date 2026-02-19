@@ -721,9 +721,10 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 st.session_state[page_state_key] = page_idx
 
                 if total_pages > 1:
-
+                    # col_prev, col_info, col_next = st.columns(
+                    #     [1, 4, 1], vertical_alignment="center"
+                    # )
                     with st.container(horizontal=True):
-                        
                         if st.button(
                             "◀",
                             key=K(f"prev_{selected_prov}_{j}"),
@@ -771,8 +772,8 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                             punit = getattr(prod, "unit", "") or "unit"
                             pprice = getattr(prod, "price", None)
 
-                            with st.container(horizontal=True):
-                                
+                            with st.container(horizontal=True, border=True):
+            
                                 st.markdown(f"**{pname}**")
                                 details = []
                                 if pdesc:
@@ -781,11 +782,11 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                                     details.append(pprov)
                                 if pprice:
                                     details.append(f"{float(pprice):.2f}€")
-                            
-                                # if details:
-                                #     st.caption(" · ".join(details))
+                
+                                if details:
+                                    st.caption(" · ".join(details))
 
-        
+                
                                 st.number_input(
                                     "Cant.",
                                     min_value=0,
@@ -794,8 +795,6 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                                     key=K(f"fullpage_qty_{pid}_{j}"),
                                     label_visibility="collapsed", width=150
                                 )
-                            if details:
-                                st.caption(" · ".join(details))
 
                     # -----------------------------
                     # On submit: collect across ALL pages
