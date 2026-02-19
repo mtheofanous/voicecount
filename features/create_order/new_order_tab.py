@@ -771,33 +771,31 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                             punit = getattr(prod, "unit", "") or "unit"
                             pprice = getattr(prod, "price", None)
 
-                            with st.container(horizontal=True, border=True):
-                                col1, col3 = st.columns([1, 2])
-
-                                with col1:
-                                    st.markdown(f"**{pname}**")
-                                    details = []
-                                    if pdesc:
-                                        details.append(pdesc)
-                                    if pprov:
-                                        details.append(pprov)
-                                    if pprice:
-                                        details.append(f"{float(pprice):.2f}€")
+                            with st.container(horizontal=True):
                                 
-                                    # if details:
-                                    #     st.caption(" · ".join(details))
+                                st.markdown(f"**{pname}**")
+                                details = []
+                                if pdesc:
+                                    details.append(pdesc)
+                                if pprov:
+                                    details.append(pprov)
+                                if pprice:
+                                    details.append(f"{float(pprice):.2f}€")
+                            
+                                # if details:
+                                #     st.caption(" · ".join(details))
 
-                                with col3:
-                                    st.number_input(
-                                        "Cant.",
-                                        min_value=0,
-                                        value=(st.session_state.get(K(f"fullpage_qty_{pid}_{j}"), 0) or 0),
-                                        step=1,
-                                        key=K(f"fullpage_qty_{pid}_{j}"),
-                                        label_visibility="collapsed", width=150
-                                    )
-                                if details:
-                                    st.caption(" · ".join(details))
+        
+                                st.number_input(
+                                    "Cant.",
+                                    min_value=0,
+                                    value=(st.session_state.get(K(f"fullpage_qty_{pid}_{j}"), 0) or 0),
+                                    step=1,
+                                    key=K(f"fullpage_qty_{pid}_{j}"),
+                                    label_visibility="collapsed", width=150
+                                )
+                            if details:
+                                st.caption(" · ".join(details))
 
                     # -----------------------------
                     # On submit: collect across ALL pages
