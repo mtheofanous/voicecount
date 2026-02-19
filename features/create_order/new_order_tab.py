@@ -22,6 +22,7 @@ from features.utils.voice_and_orders_utils import *
 
 # ✅ single source of truth for normalization + unit synonyms
 from core.normalization import normalize_text, normalize_unit, UNIT_SYNONYMS
+from core.i18n import t
 
 # ✅ Router / deep links (matches app.py router)
 from core.url_nav import set_query_params
@@ -39,7 +40,7 @@ def resolve_venue_id(passed_venue_id: Optional[int]) -> int:
         return int(sid)
     if passed_venue_id:
         return int(passed_venue_id)
-    st.error("No active venue selected")
+    st.error(t("msg.no_active_venue"))
     st.stop()
     raise RuntimeError("Unreachable")
 
@@ -602,12 +603,12 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     ) = load_catalog_and_indexes(venue_id)
 
     if not products:
-        st.warning("Primero crea tu catálogo en la pestaña 'Catálogo'.")
+        st.warning(t("msg.no_catalog"))
         return
 
     # Validate alias_indexes structure (in case of cache corruption)
     if not isinstance(alias_indexes, dict):
-        st.error("Error en la estructura de datos del catálogo. Limpiando caché...")
+        st.error(t("msg.catalog_data_error"))
         st.cache_data.clear()
         st.rerun()
         return
@@ -615,7 +616,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     required_keys = ["alias_to_pids", "token_to_pids", "alias_to_products"]
     missing_keys = [k for k in required_keys if k not in alias_indexes]
     if missing_keys:
-        st.error(f"Estructura de catálogo incompleta (faltan: {missing_keys}). Limpiando caché...")
+        st.error(t("new_order.catalog_incomplete", keys=str(missing_keys)))
         st.cache_data.clear()
         st.rerun()
         return
@@ -631,27 +632,27 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     # =========================================================
     if st.session_state.get("product_adder_fullpage", False):
         # Back button
-        if st.button("← Volver", key=K("back_from_product_adder")):
+        if st.button(f"← {t('action.back')}", key=K("back_from_product_adder")):
             st.session_state.product_adder_fullpage = False
             st.rerun()
 
         # Search bar
         search_query = st.text_input(
-            "Buscar producto",
-            placeholder="Busca por nombre, proveedor...",
+            t("new_order.search_product"),
+            placeholder=t("new_order.search_placeholder"),
             key=K("product_search_fullpage"),label_visibility="collapsed",
         ).strip().lower()
 
         # Create product lookup maps
-        with st.spinner("Cargando catálogo de productos..."):
+        with st.spinner(t("new_order.loading_catalog")):
             products_by_cat = {}
             products_by_prov = {}
             all_categories = set()
             all_providers = set()
 
             for p in products:
-                cat = getattr(p, "category", "") or "Sin categoría"
-                prov = getattr(p, "provider_name", "") or "Sin proveedor"
+                cat = getattr(p, "category", "") or t("new_order.no_category")
+                prov = getattr(p, "provider_name", "") or t("new_order.no_provider")
                 all_categories.add(cat)
                 all_providers.add(prov)
                 products_by_cat.setdefault(cat, []).append(p)
@@ -670,7 +671,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         # Provider selection (using selectbox instead of tabs for better performance)
         with st.container():
             # Get all providers (with "Todos")
-            prov_list = ["Todos"] + sorted(all_providers)
+            prov_list = [t("new_order.all_providers")] + sorted(all_providers)
 
             # Use selectbox for provider selection (much faster than tabs)
             col1, col2 = st.columns([1, 3])
@@ -682,15 +683,15 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 )
 
             # Filter by provider
-            if selected_prov == "Todos":
+            if selected_prov == t("new_order.all_providers"):
                 prov_filtered = filtered_products
             else:
                 # Use the pre-built dictionary instead of filtering
                 prov_filtered = products_by_prov.get(selected_prov, [])
 
             # Category sub-tabs (filtered by provider)
-            categories_in_prov = sorted({getattr(p, "category", "") or "Sin categoría" for p in prov_filtered})
-            cat_list = ["Todas"] + categories_in_prov
+            categories_in_prov = sorted({getattr(p, "category", "") or t("new_order.no_category") for p in prov_filtered})
+            cat_list = [t("new_order.all_categories")] + categories_in_prov
             cat_tabs = st.tabs(cat_list)
 
             for j, cat_tab in enumerate(cat_tabs):
@@ -699,14 +700,14 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
                     # Final filter
                     final_products = prov_filtered
-                    if selected_cat != "Todas":
+                    if selected_cat != t("new_order.all_categories"):
                         final_products = [
                             p for p in prov_filtered
-                            if (getattr(p, "category", "") or "Sin categoría") == selected_cat
+                            if (getattr(p, "category", "") or t("new_order.no_category")) == selected_cat
                         ]
 
                     if not final_products:
-                        st.info("No hay productos en esta categoría/proveedor")
+                        st.info(t("new_order.no_products_cat"))
                         continue
 
                     st.caption(f"{len(final_products)} producto(s)")
@@ -758,7 +759,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
                     with st.form(key=K(f"add_form_{selected_prov}_{j}"), border=False):
                         add_clicked = st.form_submit_button(
-                            "✓ Añadir seleccionados", type="primary", use_container_width=True
+                            t("new_order.add_selected"), type="primary", use_container_width=True
                         )
 
                         # -----------------------------
@@ -846,12 +847,12 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                                             parsed_df = pd.concat([parsed_df, new_row], ignore_index=True)
 
                                 st.session_state[S("parsed_df")] = parsed_df
-                                st.success(f"✓ Añadidos {len(products_to_add)} producto(s)")
+                                st.success(t("new_order.added_products", n=str(len(products_to_add))))
                                 time.sleep(0.5)
                                 st.session_state.product_adder_fullpage = False
                                 st.rerun()
                             else:
-                                st.warning("No seleccionaste ningún producto")
+                                st.warning(t("msg.no_product_selected"))
 
         # Stop rendering the rest of the page
         return
@@ -1146,7 +1147,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 gap:12px;
             ">
             <div style="font-weight:900;font-size:1.05rem;color:#0f172a;">
-                📝 Notas de faltantes
+                {t("new_order.header")}
             </div>
       
             </div>
@@ -1405,8 +1406,8 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
         if not needs_df.empty:
             with st.container(border=True):
-                st.markdown("### 🔎 Elige productos (solo ambiguos)")
-                st.caption("Toca una opción por línea y pulsa **OK**.")
+                st.markdown(t("new_order.choose_ambiguous"))
+                st.caption(t("msg.tap_option_per_line"))
 
                 picks: dict[int, int] = {}
                 pick_keys: dict[int, str] = {}
@@ -1484,7 +1485,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                     if item_key:
                         pick_keys[int(idx)] = item_key
 
-                if st.button("✅ OK", type="primary", key=K("btn_finalize_parse")):
+                if st.button(t("action.ok"), type="primary", key=K("btn_finalize_parse")):
                     df2 = candidates_df.copy()
 
                     for idx, pick_pid in picks.items():
@@ -1919,7 +1920,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                     if st.button(
                         btn_label,
                         key=K(f"strike_{product_key}"),
-                        help=f"{'Restaurar' if is_striked else 'Tachar'} {name[:20]}",
+                        help=f"{t('new_order.restore') if is_striked else t('new_order.cross_out')} {name[:20]}",
                         type="secondary"
                     ):
                         if is_striked:
@@ -2007,7 +2008,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
     if audio_bytes and audio_hash and audio_hash != st.session_state.get(S("last_audio_hash")):
         try:
-            with st.spinner("Transcribiendo…"):
+            with st.spinner(t("new_order.transcribing")):
                 if asr_backend == "OpenAI Whisper API":
                     transcript = asr_openai_whisper(audio_bytes, catalog_prompt_names, language=effective_lang_code)
                 elif asr_backend == "Faster-Whisper (local)":
@@ -2025,7 +2026,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             append_message("asr", transcript)
             st.rerun()
         except Exception as e:
-            st.error(f"Error transcribiendo: {e}")
+            st.error(t("new_order.transcription_err", err=str(e)))
 
 
     # =========================================================
@@ -2110,7 +2111,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         fab_menu_container = st.container()
         with fab_menu_container:
             menu_label = "✕" if st.session_state.fab_menu_open else "⋯"
-            if st.button(menu_label, key="fab_menu_toggle", help="Menú"):
+            if st.button(menu_label, key="fab_menu_toggle", help=t("new_order.menu")):
                 st.session_state.fab_menu_open = not st.session_state.fab_menu_open
                 st.rerun(scope="fragment")  # fast: only reruns this fragment
 
@@ -2160,7 +2161,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             # Product Adder FAB (position 5 — topmost)
             fab_product_container = st.container()
             with fab_product_container:
-                if st.button("➕", key="smart_product_add_fab", help="Añadir productos"):
+                if st.button("➕", key="smart_product_add_fab", help=t("new_order.add_products")):
                     st.session_state.product_adder_fullpage = True
                     st.session_state.show_micro = False
                     st.session_state.show_composer = False
@@ -2200,7 +2201,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             if not st.session_state.show_composer:
                 fab_composer_container = st.container()
                 with fab_composer_container:
-                    if st.button("✏️", key="smart_composer_fab", help="Escribir pedido"):
+                    if st.button("✏️", key="smart_composer_fab", help=t("new_order.write_order")):
                         st.session_state.show_composer = True
                         st.session_state.show_micro = False
                         st.session_state.show_draft_selector = False
@@ -2225,15 +2226,15 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 with st.container():
                     col_title, col_close = st.columns([4, 1])
                     with col_title:
-                        st.markdown("**🎙️ Audio**")
+                        st.markdown(f"**{t('new_order.audio_label')}**")
                     with col_close:
-                        if st.button("✕", key=K("close_mic"), help="Cerrar"):
+                        if st.button("✕", key=K("close_mic"), help=t("action.close")):
                             st.session_state.show_micro = False
                             st.rerun()
 
                 audio_file = st.audio_input("", key=K("audio_msg"), label_visibility="collapsed")
 
-                if st.button("➤ Enviar audio", key=K("btn_send_audio"), use_container_width=True, type="primary"):
+                if st.button(t("action.send_audio"), key=K("btn_send_audio"), use_container_width=True, type="primary"):
                     if audio_file is not None:
                         st.session_state[S("audio_bytes")] = audio_file.read()
                     st.session_state.show_micro = False
@@ -2270,9 +2271,9 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 with st.container():
                     col_title, col_close = st.columns([4, 1])
                     with col_title:
-                        st.markdown("**✏️ Escribir pedido**")
+                        st.markdown(f"**✏️ {t('new_order.write_order')}**")
                     with col_close:
-                        if st.button("✕", key=K("close_composer"), help="Cerrar"):
+                        if st.button("✕", key=K("close_composer"), help=t("action.close")):
                             st.session_state.show_composer = False
                             st.rerun()
 
@@ -2282,7 +2283,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                         with c1:
                             typed = st.text_input(
                                 "",
-                                placeholder="Escribe como en WhatsApp... ej: 3 coca cola, hielo",
+                                placeholder=t("new_order.compose_placeholder"),
                                 key=K("wa_text_input_field"),
                                 label_visibility="collapsed",
                             )
@@ -2355,7 +2356,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         if st.session_state.fab_menu_open:
             fab_delete_container = st.container()
             with fab_delete_container:
-                clear_clicked = st.button("🗑️", key=K("btn_clear_notes"), help="Limpiar todo")
+                clear_clicked = st.button("🗑️", key=K("btn_clear_notes"), help=t("new_order.clear_all"))
 
             fab_delete_css = float_css_helper(
                 right=FAB_RIGHT,
@@ -2404,7 +2405,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             if not st.session_state.show_draft_selector:
                 fab_draft_container = st.container()
                 with fab_draft_container:
-                    if st.button("📋 Borrador", key=K("fab_draft_select"), help="Seleccionar borrador"):
+                    if st.button(t("new_order.draft_label"), key=K("fab_draft_select"), help=t("new_order.select_draft_help")):
                         st.session_state.show_draft_selector = True
                         st.session_state.show_micro = False
                         st.session_state.show_composer = False
@@ -2427,9 +2428,9 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 with draft_panel:
                     col_title, col_close = st.columns([4, 1])
                     with col_title:
-                        st.caption("📋 ¿A qué borrador quieres añadir?")
+                        st.caption(t("msg.select_draft"))
                     with col_close:
-                        if st.button("✕", key=K("close_draft_selector"), help="Cerrar"):
+                        if st.button("✕", key=K("close_draft_selector"), help=t("action.close")):
                             st.session_state.show_draft_selector = False
                             st.rerun()
 
@@ -2437,13 +2438,13 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                         draft_options = []
                         draft_ids = []
                         for draft in drafts_list:
-                            title = draft.title or "Sin título"
+                            title = draft.title or t("new_order.no_title")
                             date = draft.created_at.strftime('%d/%m %H:%M')
                             draft_options.append(f"#{draft.id} {title} · {date}")
                             draft_ids.append(int(draft.id))
 
                         chosen_idx = st.radio(
-                            "Elige:",
+                            t("new_order.choose_colon"),
                             range(len(draft_options)),
                             format_func=lambda i: draft_options[i],
                             key=K("draft_quick_select"),
@@ -2452,19 +2453,19 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
                         col1, col2 = st.columns(2)
                         with col1:
-                            if st.button("✓ Aquí", key=K("confirm_quick"), use_container_width=True, type="primary"):
+                            if st.button(t("action.add_here"), key=K("confirm_quick"), use_container_width=True, type="primary"):
                                 st.session_state[S("selected_draft_id")] = draft_ids[chosen_idx]
                                 st.session_state[S("trigger_add")] = True
                                 st.session_state.show_draft_selector = False
                                 st.rerun()
                         with col2:
-                            if st.button("+ Nuevo", key=K("new_quick"), use_container_width=True):
+                            if st.button(t("new_order.new_label"), key=K("new_quick"), use_container_width=True):
                                 st.session_state[S("selected_draft_id")] = -1
                                 st.session_state[S("trigger_add")] = True
                                 st.session_state.show_draft_selector = False
                                 st.rerun()
                     else:
-                        if st.button("+ Nuevo borrador", key=K("new_quick"), use_container_width=True, type="primary"):
+                        if st.button(t("action.new_draft"), key=K("new_quick"), use_container_width=True, type="primary"):
                             st.session_state[S("selected_draft_id")] = -1
                             st.session_state[S("trigger_add")] = True
                             st.session_state.show_draft_selector = False
@@ -2527,7 +2528,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         parsed_df = st.session_state.get(S("parsed_df"))
 
         if not isinstance(parsed_df, pd.DataFrame) or parsed_df.empty:
-            st.warning("Aún no hay nada parseado para guardar. Añade texto o audio y espera a que se genere el resumen.")
+            st.warning(t("msg.nothing_to_save_yet"))
             st.stop()
 
         # Filter out striked products (optimized vectorized approach)
@@ -2548,7 +2549,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             df_filtered = df_filtered[keep_mask]
 
         if df_filtered.empty:
-            st.warning("Todos los productos están tachados. No hay nada que guardar.")
+            st.warning(t("msg.all_items_crossed"))
             st.stop()
 
         df_to_use = apply_unit_choice(df_filtered)
@@ -2596,7 +2597,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             bump_orders_refresh_token()
             bump_drafts_refresh_token()  # Invalidate draft cache
 
-            st.success(f"✅ Añadido al borrador #{target_id}")
+            st.success(t("new_order.added_to_draft", n=str(target_id)))
             st.session_state[S("striked_products")] = set()
             reset_notes_only(do_rerun=False)
             time.sleep(0.3)
