@@ -232,7 +232,7 @@ def _list_orders_cached(_get_session_fn, venue_id: int, refresh_token: int) -> l
         out.append(
             OrderRow(
                 id=int(oid),
-                title=_s(title) or f"Pedido #{int(oid)}",
+                title=_s(title) or f"Order #{int(oid)}",
                 status=_s(status) or "draft",
                 created_at=created_at,
             )
@@ -1135,7 +1135,7 @@ def _render_header(order: Order) -> None:
     created_at = getattr(order, 'created_at', None)
     created_by = getattr(order, 'created_by', None) or '—'
     date_str = created_at.strftime('%Y-%m-%d %H:%M') if created_at else '—'
-    st.caption(f"Creado: {date_str} · Por: {created_by}")
+    st.caption(f"{t('order.created')}: {date_str} {t('order.created_by')}: {created_by}")
     
  
 
@@ -1684,33 +1684,83 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
     form_key = f"{editor_key}__form"
 
     with st.form(key=form_key, clear_on_submit=False):
-        edited = st.data_editor(
-            df_for_editor,
-            hide_index=True,
-            num_rows="dynamic",
-            use_container_width=True,
-            column_config={
-                "line_id": None,
-                "product_id": st.column_config.SelectboxColumn(
-                    "Producto",
-                    options=sorted(label_by_id.keys()),
-                    format_func=lambda pid: label_by_id.get(_pid_to_int(pid) or -1, str(pid)),
-                    required=True,
-                    disabled=True,
-                    width="large",
-                ),
-                "quantity": st.column_config.NumberColumn("Qty", min_value=0, step=1, width="small"),
-                "unit": st.column_config.TextColumn("Unidad", disabled=True, width="small"),
-                "delete": st.column_config.CheckboxColumn("🗑️", width="small"),
-            },
-            key=editor_key,  # editor state lives here
+        from st_aggrid import AgGrid, GridOptionsBuilder, GridUpdateMode, JsCode
+
+        # ---- Build a display label column (so you get the nice "Producto" text) ----
+        _df = df_for_editor.copy()
+        _df["product_label"] = _df["product_id"].apply(
+            lambda pid: label_by_id.get(_pid_to_int(pid) or -1, str(pid))
         )
+        
+        _df = _df[
+            ["product_label", "unit", "quantity", "delete", "line_id", "product_id"]
+        ]
+
+        # ---- AgGrid options ----
+        gb = GridOptionsBuilder.from_dataframe(_df)
+
+        # hide index (AgGrid doesn't show pandas index by default; keep this off)
+        # allow deleting rows (we'll add a checkbox "delete" like you already have)
+        gb.configure_default_column(resizable=True)
+
+        # hide internal ids like your "line_id": None
+        gb.configure_column("line_id", hide=True)
+
+        # show "Producto" as label (read-only like disabled=True)
+        gb.configure_column("product_label", header_name="Producto", editable=False)
+
+        # keep product_id hidden (since label is shown)
+        gb.configure_column("product_id", hide=True)
+
+        # Qty editable with integer-like behavior
+        gb.configure_column(
+            "quantity",
+            header_name="Qty",
+            editable=True,
+            type=["numericColumn"],
+            valueParser=JsCode("function(params){ return Number(params.newValue); }"),
+        )
+
+        # Unit read-only
+        gb.configure_column("unit", header_name="Unidad", editable=False)
+
+        # Delete checkbox
+        gb.configure_column(
+            "delete",
+            header_name="🗑️",
+            editable=True,
+            cellRenderer="agCheckboxCellRenderer",
+        )
+
+        grid_options = gb.build()
+
+        # ---- Auto-size columns based on content ----
+        on_grid_ready = JsCode("""
+        function(params) {
+        params.api.autoSizeAllColumns(false);
+        }
+        """)
+
+        grid_response = AgGrid(
+            _df,
+            gridOptions=grid_options,
+            update_mode=GridUpdateMode.MODEL_CHANGED,
+            allow_unsafe_jscode=True,
+            fit_columns_on_grid_load=False,
+            onGridReady=on_grid_ready,
+            height=400,
+            theme="streamlit",
+        )
+
+        # ---- Edited result (drop helper column before you use it downstream) ----
+        edited = grid_response["data"].drop(columns=["product_label"])
+
 
 
         with st.container(horizontal=True):
-            guardar = st.form_submit_button("💾 Guardar", type="primary", use_container_width=True)
+            guardar = st.form_submit_button(f"💾 {t('action.save')}", type="primary", use_container_width=True)
 
-            eliminar = st.form_submit_button("🗑️ Eliminar", use_container_width=True)
+            eliminar = st.form_submit_button(f"🗑️ {t('action.delete')}", use_container_width=True)
 
 
     # -----------------------------
@@ -2556,7 +2606,7 @@ def borrador_tab(
         or current_actor()
     )
 
-    st.markdown("#### 📝 Borradores")
+    st.markdown(f"#### 📝 {t('nav.draft')}")
 
     active_key = f"borrador_active_order_id_{venue_id}"
 
@@ -2587,7 +2637,7 @@ def borrador_tab(
         default_oid = ids[0]
 
     picked = st.selectbox(
-        "Pedido",
+        t("order.order_title"),
         options=ids,
         index=ids.index(default_oid),
         format_func=lambda oid: labels.get(int(oid), str(oid)),

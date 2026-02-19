@@ -772,7 +772,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                             punit = getattr(prod, "unit", "") or "unit"
                             pprice = getattr(prod, "price", None)
 
-                            with st.container(horizontal=True):
+                            with st.container(horizontal=True, border=True):
                                 col1, col2,col3 = st.columns([1, 3, 1])
 
                                 with col1:

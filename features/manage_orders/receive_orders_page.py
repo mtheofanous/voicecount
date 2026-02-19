@@ -1310,7 +1310,7 @@ def _upsert_provider_send_status(
 
 @st.fragment
 def _render_urgent_tab(ctx: 'OrderContext') -> None:
-    st.markdown("### ⚡ Urgent reorders")
+    st.markdown(t("receive.urgent_reorders"))
     reqs = _list_open_urgent_requests()
     if not reqs:
         st.info(t("receive.no_urgent_requests"))
@@ -1319,13 +1319,13 @@ def _render_urgent_tab(ctx: 'OrderContext') -> None:
     providers_by_name = ctx.providers_by_name or {}
     products_by_id = ctx.products_by_id or {}
 
-    with st.expander("⚙️ Send settings", expanded=False):
+    with st.expander(t("receive.send_settings"), expanded=False):
         c1, c2 = st.columns([1.0, 1.0], vertical_alignment="center")
         with c1:
-            use_email = st.toggle("Email", value=True, key=f"urg_use_email_{int(ctx.order.id)}")
+            use_email = st.toggle(t("label.email"), value=True, key=f"urg_use_email_{int(ctx.order.id)}")
         with c2:
             use_wa = st.toggle("WhatsApp", value=False, key=f"urg_use_wa_{int(ctx.order.id)}")
-        wa_cc = st.text_input("Prefijo país (WhatsApp)", value="+34", key=f"urg_wa_cc_{int(ctx.order.id)}")
+        wa_cc = st.text_input(t("label.country_prefix"), value="+34", key=f"urg_wa_cc_{int(ctx.order.id)}")
 
     # ✅ NEW: used for the Suggested badge (delivery within 24h + relevance ≥ 0.45)
     now_dt = _now()
@@ -1341,7 +1341,7 @@ def _render_urgent_tab(ctx: 'OrderContext') -> None:
 
         with st.container(border=True):
             st.markdown(f"**{pname}**")
-            st.caption(f"Qty: {qty:g} {unit} · From: {srcp or '—'}")
+            st.caption(t("receive.qty_caption", qty=f"{qty:g}", unit=unit, srcp=srcp or "—"))
 
             suggestions = _suggest_providers_for_request(
                 venue_id=int(ctx.order.venue_id),
@@ -1351,7 +1351,7 @@ def _render_urgent_tab(ctx: 'OrderContext') -> None:
                 limit=8,
             )
             if not suggestions:
-                st.warning("No provider suggestions found.")
+                st.warning(t("msg.no_provider_suggestions"))
                 continue
 
             # ✅ UPDATED label: adds "✅ Suggested" when fast + strong match
@@ -1370,7 +1370,7 @@ def _render_urgent_tab(ctx: 'OrderContext') -> None:
 
             idxs = list(range(len(suggestions)))
             chosen_idx = st.radio(
-                "Suggestions (fastest first)",
+                t("receive.suggestions"),
                 options=idxs,
                 index=0,
                 format_func=lambda i: _lbl(suggestions[int(i)]),
@@ -1379,7 +1379,7 @@ def _render_urgent_tab(ctx: 'OrderContext') -> None:
             chosen = suggestions[int(chosen_idx)]
 
             qty_send = st.number_input(
-                "Qty to order",
+                t("receive.qty_to_order"),
                 min_value=0.0,
                 value=float(qty),
                 step=1.0,
@@ -1398,21 +1398,21 @@ def _render_urgent_tab(ctx: 'OrderContext') -> None:
                     }
                 )
 
-    st.markdown("#### Send grouped messages")
+    st.markdown(t("receive.send_grouped"))
     if not pending_send:
-        st.info("Select a qty > 0 to prepare messages.")
+        st.info(t("msg.select_qty_for_messages"))
         return
 
     prov_list = sorted(pending_send.keys(), key=lambda x: x.lower())
     prov_selected = st.multiselect(
-        "Providers to contact now",
+        t("receive.providers_to_contact"),
         options=prov_list,
         default=prov_list,
         key=f"urg_send_sel_{int(ctx.order.id)}",
     )
 
     if st.button(
-        "🚀 Send urgent requests",
+        t("receive.send_urgent_btn"),
         type="primary",
         use_container_width=True,
         key=f"urg_send_btn_{int(ctx.order.id)}",
@@ -1441,7 +1441,7 @@ def _render_urgent_tab(ctx: 'OrderContext') -> None:
             source_order_id=int(ctx.order.id),  # ✅ relationship
         )
         if not urgent_order_id:
-            st.error("Could not create urgent order (empty cart).")
+            st.error(t("msg.urgent_order_empty"))
             st.stop()
 
         # ✅ Now send per provider using the NEW urgent order id
@@ -1464,7 +1464,7 @@ def _render_urgent_tab(ctx: 'OrderContext') -> None:
                 )
                 if ok:
                     email_ok = True
-                    st.success(f"Email sent to {prov}")
+                    st.success(t("receive.email_sent", prov=prov))
                 else:
                     any_fail = True
                     st.error(f"{prov}: {msg_or_link}")
@@ -1479,10 +1479,10 @@ def _render_urgent_tab(ctx: 'OrderContext') -> None:
                 )
                 if status == "ok" and url:
                     wa_ok = True
-                    st.link_button(f"Open WhatsApp for {prov}", url, use_container_width=True)
+                    st.link_button(t("receive.wa_open", prov=prov), url, use_container_width=True)
                 else:
                     any_fail = True
-                    st.error(f"{prov}: WhatsApp phone missing/invalid")
+                    st.error(t("receive.wa_missing", prov=prov))
 
             # ✅ Mark provider as sent for the NEW urgent order
             if email_ok or wa_ok:
@@ -1514,7 +1514,7 @@ def _render_urgent_tab(ctx: 'OrderContext') -> None:
             s.commit()
 
         if not any_fail:
-            st.success(f"Done ✓ Created urgent order #{int(urgent_order_id)}")
+            st.success(t("receive.urgent_done", n=str(int(urgent_order_id))))
 
         # ✅ Jump user to the NEW urgent order in Track Order
         set_query_params(page="tracking", order_id=str(int(urgent_order_id)))
@@ -2623,7 +2623,7 @@ def _render_receive_form(ctx: OrderContext, provider: str) -> None:
     if not lines:
         return
 
-    st.markdown("<div class='voi-muted'><b>Venue received</b></div>", unsafe_allow_html=True)
+    st.markdown(f"<div class='voi-muted'><b>{t('receive.venue_received')}</b></div>", unsafe_allow_html=True)
 
     STATUS_OPTIONS_ALL = ["OK", "Missing", "Damaged", "Wrong item"]
     INVOICE_OPTIONS_ALL = ["In invoice", "Not in invoice"]
@@ -4052,10 +4052,10 @@ def _render_incidences_cards(
 
         st.markdown(
             "<div class='voi-card' style='border-color:#fde68a;background:#fffbeb'>"
-            "<div class='voi-title'>🧾 Expected credit note (preview)</div>"
-            f"<div class='voi-muted'>Reference invoice: <b>{html.escape(inv_no)}</b> · Date: <b>{html.escape(_fmt_dt(inv_dt))}</b></div>"
-            f"<div class='voi-muted'>Credit note number: <b>{html.escape(cn_no)}</b> · Date: <b>{html.escape(cn_dt)}</b></div>"
-            f"<div class='voi-muted'>Reason for issuance: <b>{reason_txt}</b></div>"
+            f"<div class='voi-title'>{t('receive.cn_preview_title')}</div>"
+            f"<div class='voi-muted'>{t('receive.ref_invoice')} <b>{html.escape(inv_no)}</b> · {t('receive.date_colon')} <b>{html.escape(_fmt_dt(inv_dt))}</b></div>"
+            f"<div class='voi-muted'>{t('receive.cn_number_colon')} <b>{html.escape(cn_no)}</b> · {t('receive.date_colon')} <b>{html.escape(cn_dt)}</b></div>"
+            f"<div class='voi-muted'>{t('receive.reason_issuance')} <b>{reason_txt}</b></div>"
             "</div>",
             unsafe_allow_html=True,
         )
@@ -4280,8 +4280,8 @@ def _render_incidences_cards(
 
         st.markdown(
             "<div class='voi-card' style='border-color:#bfdbfe;background:#eff6ff'>"
-            "<div class='voi-title'>🚚 Expected re-delivery (preview)</div>"
-            f"<div class='voi-muted'>Supplier: <b>{html.escape(prov)}</b></div>"
+            f"<div class='voi-title'>{t('receive.rd_preview_title')}</div>"
+            f"<div class='voi-muted'>{t('receive.supplier_colon')} <b>{html.escape(prov)}</b></div>"
             + supplier_html
             + "</div>",
             unsafe_allow_html=True,
@@ -4531,7 +4531,7 @@ def _render_incidences_cards(
         _render_commentline(label="💬 Supplier message", text=_supplier_comment_for_provider(ctx, provn))
 
         expanded = bool(st.session_state.get("inc_global_expand_all", False))
-        with st.expander("Details", expanded=expanded):
+        with st.expander(t("receive.details"), expanded=expanded):
 
             # Build quick lookups for prettier line rendering
             prov_lines = ctx.lines_by_provider.get(provn, []) or []
@@ -4680,8 +4680,8 @@ def _render_incidences_cards(
                         if cn_input_key not in st.session_state:
                             st.session_state[cn_input_key] = st.session_state[cn_persist_key]
                         cn_val = st.text_input(
-                            "Credit note number",
-                            placeholder="e.g. CN-123 / ΠΙΣ-45",
+                            t("receive.credit_note_number"),
+                            placeholder=t("receive.cn_placeholder"),
                             key=cn_input_key,
                         )
                         # Keep persistent key in sync with widget value
@@ -4708,7 +4708,7 @@ def _render_incidences_cards(
                             st.caption(t("receive.required_to_close"))
                         with c2:
                             if st.button(
-                                "✅ Verify credit note & close",
+                                t("receive.verify_cn_close"),
                                 use_container_width=True,
                                 key=f"inc_verify_cn_{order.id}_{provn}",
                             ):
@@ -4748,7 +4748,7 @@ def _render_incidences_cards(
                         st.divider()
 
                         if st.button(
-                            "✅ Verify delivery & close",
+                            t("receive.verify_delivery_close"),
                             use_container_width=True,
                             key=f"inc_verify_rd_{order.id}_{provn}",
                         ):
@@ -4903,10 +4903,10 @@ def _render_incidences_cards(
             # -----------------------------
             if state_u == "SUPPLIER_REJECTED":
                 st.warning(t("receive.supplier_rejected"))
-                if a1.button("✅ Accept reject & close", use_container_width=True, key=f"inc_rej_{order.id}_{provn}"):
+                if a1.button(t("receive.accept_reject_close"), use_container_width=True, key=f"inc_rej_{order.id}_{provn}"):
                     res = venue_verify_and_close(ctx=ctx, provider=provn, mode="reject")
                     if res == "ok":
-                        st.success("Closed")
+                        st.success(t("receive.closed"))
                         st.rerun()
                     else:
                         st.error(res)
@@ -4916,14 +4916,14 @@ def _render_incidences_cards(
                 # This prevents the button persisting after request.
                 if not locked:
                     venue_msg = st.text_area(
-                        "Message to supplier",
+                        t("receive.msg_to_supplier"),
                         value="",
-                        placeholder="e.g. Please confirm ETA / credit note number. Any substitution acceptable?",
+                        placeholder=t("receive.msg_placeholder"),
                         key=f"venue_msg_{order.id}_{provn}",
                         height=30,
                     )
 
-                    if a1.button("💾 Save & request decision", use_container_width=True, key=f"inc_req_{order.id}_{provn}"):
+                    if a1.button(t("receive.save_request_decision"), use_container_width=True, key=f"inc_req_{order.id}_{provn}"):
                         # ✅ Lock immediately so next rerun hides the button (even if email is slow/edge cases)
                         st.session_state[decisions_key] = True
 
@@ -4933,7 +4933,7 @@ def _render_incidences_cards(
                         ok, msg = request_supplier_resolution(int(order.venue_id), int(order.id), provn, venue_comment=venue_msg)
                         if ok:
                             st.success(t("msg.link_sent"))
-                            st.link_button("Open supplier link", msg, use_container_width=True)
+                            st.link_button(t("receive.open_supplier_link"), msg, use_container_width=True)
                             st.rerun()
                         else:
                             # If sending failed, unlock so user can try again
@@ -5085,7 +5085,7 @@ def _render_incidences_cards(
                             reorder_key = key_base + "_reorder"
                             done_key = key_base + "_reorder_done"
 
-                            val = st.toggle("Order urgent", key=reorder_key, value=False)
+                            val = st.toggle(t("receive.order_urgent"), key=reorder_key, value=False)
 
                             # If user turns the toggle OFF again, allow future processing
                             if not val:
@@ -5400,7 +5400,7 @@ def _render_receive_provider_panel(ctx: OrderContext, provider: str) -> None:
 
     # --- Full-page button ---
     if st.button(
-        "🔍 Open full page",
+        t("receive.open_full_page"),
         key=f"btn_fullpage_{int(ctx.order.id)}_{prov_key}",
         use_container_width=True,
     ):
@@ -5411,7 +5411,7 @@ def _render_receive_provider_panel(ctx: OrderContext, provider: str) -> None:
         }
         st.rerun()
 
-    with st.expander("Details"):
+    with st.expander(t("receive.details")):
         # ---------- Work area ----------
         _render_expected_lines(
             ctx,
@@ -5741,7 +5741,7 @@ def tracking_dashboard(
             del st.session_state["fullpage_receive"]
             st.rerun()
 
-        st.markdown(f"#### Receive · {fp_provider}")
+        st.markdown(t("receive.receive_title", provider=fp_provider))
 
         fp_ctx = _load_order_context(
             fp_venue_id, fp_order_id,
@@ -5764,16 +5764,16 @@ def tracking_dashboard(
             fc1, fc2 = st.columns([3, 1], vertical_alignment="center")
             with fc1:
                 fp_inv_val = st.text_input(
-                    "Invoice #",
+                    t("receive.invoice_hash"),
                     key=fp_inv_key,
-                    placeholder="Invoice # (required)",
+                    placeholder=t("receive.invoice_placeholder"),
                     disabled=fp_invoice_locked,
                     label_visibility="collapsed",
                 )
                 fp_inv_missing = (not fp_invoice_locked) and (not (fp_inv_val or "").strip())
             with fc2:
                 fp_inv_save = st.button(
-                    "💾 Save",
+                    t("action.save"),
                     use_container_width=True,
                     disabled=fp_invoice_locked or fp_inv_missing,
                     key=f"btn_fp_inv_save_{fp_order_id}_{fp_prov_key}",
@@ -5798,7 +5798,7 @@ def tracking_dashboard(
         _render_receive_form(fp_ctx, fp_provider)
 
         fp_save_all = st.button(
-            "💾 Save All",
+            t("receive.save_all"),
             type="primary",
             use_container_width=True,
             disabled=fp_invoice_locked or fp_inv_missing,
@@ -5814,9 +5814,9 @@ def tracking_dashboard(
 
         return  # stop here – don't render normal dashboard
 
-    st.markdown("# Dashboard")
+    st.markdown(t("receive.dashboard_title"))
 
-    with st.spinner("Loading dashboard..."):
+    with st.spinner(t("receive.loading_dashboard")):
         orders = _get_active_orders(int(venue_id), refresh_token=_orders_refresh_token(int(venue_id)))
         if not orders:
             st.info(t("msg.no_orders_yet"))
@@ -5882,11 +5882,11 @@ def tracking_dashboard(
     active_view = st.session_state[tab_key]
 
     _kpi_data = [
-        ("pending_products",  "Pending",  pending_products),
-        ("open_incidences",   "Open incidences",    open_total),
-        ("re_deliveries",     "Re-deliveries",      redeliveries_pending),
-        ("credit_notes",      "Credit notes",       credit_notes_pending),
-        ("urgent_requests",   "Urgent requests",    urgent_requests_pending),
+        ("pending_products",  t("receive.kpi_pending"),          pending_products),
+        ("open_incidences",   t("receive.kpi_open_incidences"),  open_total),
+        ("re_deliveries",     t("receive.kpi_redeliveries"),     redeliveries_pending),
+        ("credit_notes",      t("receive.kpi_credit_notes"),     credit_notes_pending),
+        ("urgent_requests",   t("receive.kpi_urgent_requests"),  urgent_requests_pending),
     ]
 
     # Visual HTML floating bar
@@ -5923,7 +5923,7 @@ def tracking_dashboard(
 
         # 📦 Pending (Receive)
         if av == "pending_products":
-            with st.spinner("Loading pending items..."):
+            with st.spinner(t("receive.loading_pending")):
                 tasks = _list_pending_receive_items(int(venue_id), refresh_token=_orders_refresh_token(int(venue_id)))
             if not tasks:
                 st.success(t("msg.nothing_pending"))
@@ -5946,7 +5946,7 @@ def tracking_dashboard(
 
             tasks2 = [t for t in tasks if _matches(t)]
             if not tasks2:
-                st.info("No matches.")
+                st.info(t("msg.no_matches"))
                 return
 
             for t in tasks2:
@@ -5962,7 +5962,7 @@ def tracking_dashboard(
 
         # 🚨 Open incidences (all)
         if av == "open_incidences":
-            with st.spinner("Loading open incidences..."):
+            with st.spinner(t("receive.loading_incidences")):
                 items = _list_open_incidences_items(int(venue_id))
             if not items:
                 st.success(t("msg.no_open_incidences"))
@@ -5972,7 +5972,7 @@ def tracking_dashboard(
             with f1:
                 q = st.text_input(t("receive.search"), key="inc_global_search", placeholder=t("receive.search_hint")).strip().lower()
             with f2:
-                expand_all = st.toggle("Expand all", value=False, key="inc_global_expand_all")
+                expand_all = st.toggle(t("receive.expand_all"), value=False, key="inc_global_expand_all")
 
             def _matches_inc(t: Dict[str, Any]) -> bool:
                 if not q:
@@ -5998,7 +5998,7 @@ def tracking_dashboard(
 
         # 🚚 Re-deliveries (filtered incidences)
         if av == "re_deliveries":
-            with st.spinner("Loading re-deliveries..."):
+            with st.spinner(t("receive.loading_redeliveries")):
                 items = _list_open_incidences_items(int(venue_id))
                 REDEL_SET = {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}
                 items = _filter_incidences_by_resolution(items, int(venue_id), REDEL_SET, contexts=contexts) if items else []
@@ -6017,7 +6017,7 @@ def tracking_dashboard(
 
         # 🧾 Credit notes (filtered incidences)
         if av == "credit_notes":
-            with st.spinner("Loading credit notes..."):
+            with st.spinner(t("receive.loading_credit_notes")):
                 items = _list_open_incidences_items(int(venue_id))
                 items = _filter_incidences_by_resolution(items, int(venue_id), {"credit_note"}, contexts=contexts) if items else []
             if not items:

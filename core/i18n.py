@@ -298,6 +298,11 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "new_order.search_placeholder": "Αναζήτηση κατά όνομα, πάροχο...",
         "new_order.loading_catalog":    "Φόρτωση καταλόγου...",
         "new_order.catalog_incomplete": "Ελλιπής δομή καταλόγου (λείπουν: {keys}). Καθαρισμός cache...",
+        
+        #--- Order tab ---
+        "order.order_title":           "Παραγγελία",
+        "order.created":               "Δημιουργήθηκε",
+        "order.created_by":            "Δημιουργήθηκε από",
     },
 
     # =========================================================
@@ -563,6 +568,12 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "new_order.search_placeholder": "Busca por nombre, proveedor...",
         "new_order.loading_catalog":    "Cargando catálogo de productos...",
         "new_order.catalog_incomplete": "Estructura de catálogo incompleta (faltan: {keys}). Limpiando caché...",
+        
+        #--- Order tab ---
+        "order.order_title":           "Pedido",
+        "order.select_borrador":       "Seleccionar borrador",
+        "order.created":               "Creado",
+        "order.created_by":            "Creado por",
     },
 
     # =========================================================
@@ -828,6 +839,11 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "new_order.search_placeholder": "Search by name, supplier...",
         "new_order.loading_catalog":    "Loading product catalog...",
         "new_order.catalog_incomplete": "Incomplete catalog structure (missing: {keys}). Clearing cache...",
+        
+        #--- Order tab ---
+        "order.order_title":           "Order",
+        "order.created":               "Created",
+        "order.created_by":            "Created by",
     },
 }
 
