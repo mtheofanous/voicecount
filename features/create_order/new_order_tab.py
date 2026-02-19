@@ -1708,11 +1708,10 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             return
 
         # Vectorized counting (much faster than iterrows)
-        # Create product keys vectorized
+        # Create product keys vectorized (qty excluded so strike survives edits)
         names = parsed_df['matched_name'].fillna(parsed_df['spoken_name']).fillna('').astype(str).str.strip()
-        quantities = parsed_df['quantity'].astype(str)
         indices = parsed_df.index.astype(str)
-        product_keys = indices + '_' + names + '_' + quantities
+        product_keys = indices + '_' + names
 
         # Count active (non-striked) products
         active_mask = ~product_keys.isin(striked_products)
@@ -1729,19 +1728,60 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         .st-key-my_blue_container {
             background-color: rgba(254, 249, 231, 1);
         }
-        /* Keep strike button on same line as product name */
+        /* Force single-line horizontal layout on all screen sizes */
         .st-key-my_blue_container [data-testid="stHorizontalBlock"] {
             flex-wrap: nowrap !important;
             align-items: center !important;
             gap: 4px !important;
+            min-width: 0 !important;
         }
+        /* Qty input column - shrinks to content width */
         .st-key-my_blue_container [data-testid="stHorizontalBlock"] > [data-testid="stVerticalBlockBorderWrapper"]:first-child {
+            flex: 0 0 auto !important;
+            min-width: 0 !important;
+        }
+        /* Name column - takes remaining space, clips overflow */
+        .st-key-my_blue_container [data-testid="stHorizontalBlock"] > [data-testid="stVerticalBlockBorderWrapper"]:nth-child(2) {
             flex: 1 1 0% !important;
             min-width: 0 !important;
             overflow: hidden !important;
         }
+        /* Strike button column - auto width */
         .st-key-my_blue_container [data-testid="stHorizontalBlock"] > [data-testid="stVerticalBlockBorderWrapper"]:last-child {
             flex: 0 0 auto !important;
+        }
+        /* Qty number input - collapse all wrappers to content size */
+        .st-key-my_blue_container [data-testid="stNumberInput"],
+        .st-key-my_blue_container [data-testid="stNumberInput"] > div,
+        .st-key-my_blue_container [data-testid="stNumberInput"] > div > div {
+            min-height: unset !important;
+            width: auto !important;
+        }
+        .st-key-my_blue_container [data-testid="stNumberInput"] > label {
+            display: none !important;
+        }
+        /* Hide +/- step buttons */
+        .st-key-my_blue_container [data-testid="stNumberInput"] button {
+            display: none !important;
+        }
+        /* Input sizes to its own content */
+        .st-key-my_blue_container [data-testid="stNumberInput"] input {
+            field-sizing: content;
+            min-width: 2ch;
+            width: auto !important;
+            font-weight: 700 !important;
+            font-size: 1rem !important;
+            color: #c41e3a !important;
+            text-align: center !important;
+            padding: 2px 6px !important;
+            background: rgba(196,30,58,0.08) !important;
+            border-color: rgba(196,30,58,0.25) !important;
+            border-radius: 4px !important;
+        }
+        .st-key-my_blue_container [data-testid="stNumberInput"] input:focus {
+            background: rgba(196,30,58,0.15) !important;
+            border-color: #c41e3a !important;
+            box-shadow: 0 0 0 2px rgba(196,30,58,0.15) !important;
         }
         """
 
@@ -1767,21 +1807,35 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 if not name:
                     continue
 
-                product_key = f"{row_idx}_{name}_{qty}"
+                # qty excluded from key so strike state survives qty edits
+                product_key = f"{row_idx}_{name}"
                 is_striked = product_key in striked_products
 
                 with st.container(horizontal=True):
-                    # Product name + details combined in one element
                     strike_style = "text-decoration: line-through; text-decoration-color: #c41e3a; text-decoration-thickness: 2px; opacity: 0.4;" if is_striked else ""
 
-                    qty_badge = ""
-                    if qty:
-                        try:
-                            qty_display = f"{float(qty):g}"
-                            qty_badge = f'<span style="display: inline-flex; align-items: center; justify-content: center; min-width: 28px; padding: 2px 8px; background: rgba(196,30,58,0.15); border-radius: 4px; font-weight: 700; font-size: 1.15rem; color: #c41e3a; margin-right: 8px;">{qty_display}</span>'
-                        except:
-                            pass
+                    # Column 1: editable quantity input (integer)
+                    qty_val = 0
+                    try:
+                        qty_val = int(round(float(qty))) if qty is not None else 0
+                    except Exception:
+                        qty_val = 0
 
+                    new_qty = st.number_input(
+                        "qty",
+                        value=qty_val,
+                        min_value=0,
+                        step=1,
+                        label_visibility="collapsed",
+                        key=K(f"qty_{row_idx}"),
+                    )
+
+                    if new_qty != qty_val:
+                        parsed_df.at[row_idx, "quantity"] = new_qty
+                        st.session_state[S("parsed_df")] = parsed_df
+                        st.rerun(scope="fragment")
+
+                    # Column 2: product name + details
                     details_parts = []
                     if unit and unit != "unit":
                         details_parts.append(unit)
@@ -1792,17 +1846,17 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
                     details_html = ""
                     if details_parts:
-                        details_html = f'<div style="font-family: \'Inter\', sans-serif; font-size: 0.75rem; color: #4a4a4a; padding: 2px 0 6px 0; {strike_style}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{" · ".join(details_parts)}</div>'
+                        details_html = f'<div style="font-family: \'Inter\', sans-serif; font-size: 0.75rem; color: #4a4a4a; padding: 2px 0 6px 0; {strike_style} overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{" · ".join(details_parts)}</div>'
 
                     st.markdown(
                         f'<div style="overflow: hidden;">'
-                        f'<div style="font-family: \'Inter\', sans-serif; font-size: 0.85rem; font-weight: 600; color: #1a1a1a; padding-top: 8px; {strike_style}; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{qty_badge}{name}</div>'
+                        f'<div style="font-family: \'Inter\', sans-serif; font-size: 0.85rem; font-weight: 600; color: #1a1a1a; padding-top: 8px; {strike_style} overflow: hidden; text-overflow: ellipsis; white-space: nowrap;">{name}</div>'
                         f'{details_html}'
                         f'</div>',
                         unsafe_allow_html=True
                     )
 
-                    # Delete button (fragment rerun only)
+                    # Column 3: strike/restore button (fragment rerun only)
                     btn_label = "↺" if is_striked else "✗"
                     if st.button(
                         btn_label,
@@ -1949,407 +2003,192 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     if "fab_menu_open" not in st.session_state:
         st.session_state.fab_menu_open = False
 
-    # Floating UI spacing knobs (modern + consistent)
-    BOTTOM_BAR_OFFSET = "5.00rem"          # your bottom nav height
-    COMPOSER_BOTTOM = BOTTOM_BAR_OFFSET    # composer sits right above bottom nav
-    ADD_BOTTOM = "10.75rem"               # add bar above composer
-    PICKER_BOTTOM = "14.75rem"            # draft picker above add
-    SIDE_PAD = "0.55rem"                  # slightly more breathing room than 0.75
-
-    # Uniform FAB spacing: 5 buttons stacked from bottom
-    FAB_RIGHT = "1.10rem"
-    FAB_SIZE = "3.2rem"
-    FAB_GAP = "3.8rem"          # distance between each FAB center
-    FAB_BASE = "5.5rem"         # bottom of lowest FAB (draft)
-
-    # iOS glass-morphism CSS for all FABs
-    FAB_GLASS_CSS = f"""
-    padding: 0;
-    & button {{
-        width: {FAB_SIZE} !important;
-        height: {FAB_SIZE} !important;
-        min-height: {FAB_SIZE} !important;
-        border-radius: 50% !important;
-        background: rgba(255, 255, 255, 0.35) !important;
-        backdrop-filter: saturate(180%) blur(20px) !important;
-        -webkit-backdrop-filter: saturate(180%) blur(20px) !important;
-        border: 1px solid rgba(255, 255, 255, 0.55) !important;
-        box-shadow: 0 4px 16px rgba(0, 0, 0, 0.10),
-                    0 0 0 0.5px rgba(255, 255, 255, 0.4) inset !important;
-        padding: 0 !important;
-        display: flex !important;
-        align-items: center !important;
-        justify-content: center !important;
-        font-size: 1.25rem !important;
-        transition: transform 0.18s ease, box-shadow 0.18s ease !important;
-    }}
-    & button:hover {{
-        transform: scale(1.08) !important;
-        box-shadow: 0 6px 24px rgba(0, 0, 0, 0.15),
-                    0 0 0 0.5px rgba(255, 255, 255, 0.5) inset !important;
-        background: rgba(255, 255, 255, 0.50) !important;
-    }}
-    & button:active {{
-        transform: scale(0.95) !important;
-    }}
-    """
-
     # =========================================================
-    # 0) Floating FAB menu trigger (⋯ / ✕)
+    # FAB floating menu — isolated in a fragment for fast toggle
     # =========================================================
-    fab_menu_container = st.container()
-    with fab_menu_container:
-        menu_label = "✕" if st.session_state.fab_menu_open else "⋯"
-        if st.button(menu_label, key="fab_menu_toggle", help="Menú"):
-            st.session_state.fab_menu_open = not st.session_state.fab_menu_open
-            st.rerun()
+    @st.fragment
+    def render_fabs(show_add_button):
+        # Spacing knobs
+        SIDE_PAD = "0.55rem"
+        FAB_RIGHT = "1.10rem"
+        FAB_SIZE = "3.2rem"
+        FAB_GAP = "3.8rem"
+        FAB_BASE = "5.5rem"
 
-    fab_menu_css = float_css_helper(
-        right=FAB_RIGHT,
-        bottom=FAB_BASE,
-        width="auto",
-        z_index="10001",
-    )
-    fab_menu_css += FAB_GLASS_CSS
-    fab_menu_container.float(fab_menu_css)
+        FAB_GLASS_CSS = f"""
+        padding: 0;
+        & button {{
+            width: {FAB_SIZE} !important;
+            height: {FAB_SIZE} !important;
+            min-height: {FAB_SIZE} !important;
+            border-radius: 50% !important;
+            background: rgba(255, 255, 255, 0.35) !important;
+            backdrop-filter: saturate(180%) blur(20px) !important;
+            -webkit-backdrop-filter: saturate(180%) blur(20px) !important;
+            border: 1px solid rgba(255, 255, 255, 0.55) !important;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.10),
+                        0 0 0 0.5px rgba(255, 255, 255, 0.4) inset !important;
+            padding: 0 !important;
+            display: flex !important;
+            align-items: center !important;
+            justify-content: center !important;
+            font-size: 1.25rem !important;
+            transition: transform 0.18s ease, box-shadow 0.18s ease !important;
+        }}
+        & button:hover {{
+            transform: scale(1.08) !important;
+            box-shadow: 0 6px 24px rgba(0, 0, 0, 0.15),
+                        0 0 0 0.5px rgba(255, 255, 255, 0.5) inset !important;
+            background: rgba(255, 255, 255, 0.50) !important;
+        }}
+        & button:active {{
+            transform: scale(0.95) !important;
+        }}
+        """
 
-    # =========================================================
-    # 0.1) Expanded FABs (only when menu is open)
-    # =========================================================
-    if st.session_state.fab_menu_open:
-        # Product Adder FAB (position 5 — topmost)
-        fab_product_container = st.container()
-        with fab_product_container:
-            if st.button("➕", key="smart_product_add_fab", help="Añadir productos"):
-                st.session_state.product_adder_fullpage = True
-                st.session_state.show_micro = False
-                st.session_state.show_composer = False
-                st.session_state.show_draft_selector = False
-                st.session_state.fab_menu_open = False
-                st.rerun()
+        # =========================================================
+        # 0) FAB menu trigger (⋯ / ✕) — fragment rerun only
+        # =========================================================
+        fab_menu_container = st.container()
+        with fab_menu_container:
+            menu_label = "✕" if st.session_state.fab_menu_open else "⋯"
+            if st.button(menu_label, key="fab_menu_toggle", help="Menú"):
+                st.session_state.fab_menu_open = not st.session_state.fab_menu_open
+                st.rerun(scope="fragment")  # fast: only reruns this fragment
 
-        fab_product_css = float_css_helper(
+        fab_menu_css = float_css_helper(
             right=FAB_RIGHT,
-            bottom=f"calc({FAB_BASE} + {FAB_GAP} * 5)",
+            bottom=FAB_BASE,
             width="auto",
-            z_index="10000",
+            z_index="10001",
         )
-        fab_product_css += FAB_GLASS_CSS
-        fab_product_container.float(fab_product_css)
+        fab_menu_css += FAB_GLASS_CSS
+        fab_menu_container.float(fab_menu_css)
 
-        # Mic FAB (position 4)
-        fab_mic_container = st.container()
-        with fab_mic_container:
-            if st.button("🎙️", key="smart_add_fab"):
-                st.session_state.show_micro = True
-                st.session_state.show_composer = False
-                st.session_state.show_draft_selector = False
-                st.session_state.fab_menu_open = False
-                st.rerun()
+        # Override: trigger button is bigger and always-visible (dark backdrop)
+        st.html("""<style>
+        .st-key-fab_menu_toggle button {
+            width: 4rem !important;
+            height: 4rem !important;
+            min-height: 4rem !important;
+            font-size: 1.7rem !important;
+            background: rgba(18, 18, 18, 0.88) !important;
+            backdrop-filter: saturate(180%) blur(24px) !important;
+            -webkit-backdrop-filter: saturate(180%) blur(24px) !important;
+            border: 1.5px solid rgba(255,255,255,0.18) !important;
+            box-shadow: 0 8px 32px rgba(0,0,0,0.40),
+                        0 0 0 1px rgba(255,255,255,0.10) inset !important;
+            color: #ffffff !important;
+        }
+        /* Streamlit puts button text inside <p> — target it explicitly */
+        .st-key-fab_menu_toggle button p,
+        .st-key-fab_menu_toggle button span {
+            color: #ffffff !important;
+        }
+        .st-key-fab_menu_toggle button:hover {
+            background: rgba(40, 40, 40, 0.92) !important;
+            transform: scale(1.06) !important;
+            box-shadow: 0 12px 40px rgba(0,0,0,0.50) !important;
+        }
+        .st-key-fab_menu_toggle button:active {
+            transform: scale(0.94) !important;
+        }
+        </style>""")
 
-        fab_mic_css = float_css_helper(
-            right=FAB_RIGHT,
-            bottom=f"calc({FAB_BASE} + {FAB_GAP} * 4)",
-            width="auto",
-            z_index="10000",
-        )
-        fab_mic_css += FAB_GLASS_CSS
-        fab_mic_container.float(fab_mic_css)
-
-        # Composer FAB (position 3)
-        if not st.session_state.show_composer:
-            fab_composer_container = st.container()
-            with fab_composer_container:
-                if st.button("✏️", key="smart_composer_fab", help="Escribir pedido"):
-                    st.session_state.show_composer = True
+        # =========================================================
+        # 0.1) Expanded FABs (only when menu is open)
+        # =========================================================
+        if st.session_state.fab_menu_open:
+            # Product Adder FAB (position 5 — topmost)
+            fab_product_container = st.container()
+            with fab_product_container:
+                if st.button("➕", key="smart_product_add_fab", help="Añadir productos"):
+                    st.session_state.product_adder_fullpage = True
                     st.session_state.show_micro = False
+                    st.session_state.show_composer = False
                     st.session_state.show_draft_selector = False
                     st.session_state.fab_menu_open = False
                     st.rerun()
 
-            fab_composer_css = float_css_helper(
+            fab_product_css = float_css_helper(
+                right=FAB_RIGHT,
+                bottom=f"calc({FAB_BASE} + {FAB_GAP} * 4)",
+                width="auto",
+                z_index="10000",
+            )
+            fab_product_css += FAB_GLASS_CSS
+            fab_product_container.float(fab_product_css)
+
+            # Mic FAB (position 3)
+            fab_mic_container = st.container()
+            with fab_mic_container:
+                if st.button("🎙️", key="smart_add_fab"):
+                    st.session_state.show_micro = True
+                    st.session_state.show_composer = False
+                    st.session_state.show_draft_selector = False
+                    st.session_state.fab_menu_open = False
+                    st.rerun()
+
+            fab_mic_css = float_css_helper(
                 right=FAB_RIGHT,
                 bottom=f"calc({FAB_BASE} + {FAB_GAP} * 3)",
                 width="auto",
                 z_index="10000",
             )
-            fab_composer_css += FAB_GLASS_CSS
-            fab_composer_container.float(fab_composer_css)
-    # fab_btn_container.markdown(
-    # =========================================================
-    # 0.5) PRODUCT ADDER - Now handled by full-page mode above
-    # =========================================================
-    # (Removed old floating dialog - now using full-page interface)
+            fab_mic_css += FAB_GLASS_CSS
+            fab_mic_container.float(fab_mic_css)
 
-    # =========================================================
-    # 1) MIC OVERLAY (audio only)
-    # =========================================================
-    if st.session_state.show_micro:
-        mic_container = st.container()
-        with mic_container:
-            # Header with close button
-            with st.container():
-                col_title, col_close = st.columns([4, 1])
-                with col_title:
-                    st.markdown("**🎙️ Audio**")
-                with col_close:
-                    if st.button("✕", key=K("close_mic"), help="Cerrar"):
+            # Composer FAB (position 2)
+            if not st.session_state.show_composer:
+                fab_composer_container = st.container()
+                with fab_composer_container:
+                    if st.button("✏️", key="smart_composer_fab", help="Escribir pedido"):
+                        st.session_state.show_composer = True
                         st.session_state.show_micro = False
+                        st.session_state.show_draft_selector = False
+                        st.session_state.fab_menu_open = False
                         st.rerun()
 
-            audio_file = st.audio_input("", key=K("audio_msg"), label_visibility="collapsed")
+                fab_composer_css = float_css_helper(
+                    right=FAB_RIGHT,
+                    bottom=f"calc({FAB_BASE} + {FAB_GAP} * 2)",
+                    width="auto",
+                    z_index="10000",
+                )
+                fab_composer_css += FAB_GLASS_CSS
+                fab_composer_container.float(fab_composer_css)
 
-            if st.button("➤ Enviar audio", key=K("btn_send_audio"), use_container_width=True, type="primary"):
-                if audio_file is not None:
-                    st.session_state[S("audio_bytes")] = audio_file.read()
-                st.session_state.show_micro = False
-                st.rerun()
+        # =========================================================
+        # 1) MIC OVERLAY (audio only)
+        # =========================================================
+        if st.session_state.show_micro:
+            mic_container = st.container()
+            with mic_container:
+                with st.container():
+                    col_title, col_close = st.columns([4, 1])
+                    with col_title:
+                        st.markdown("**🎙️ Audio**")
+                    with col_close:
+                        if st.button("✕", key=K("close_mic"), help="Cerrar"):
+                            st.session_state.show_micro = False
+                            st.rerun()
 
-        mic_overlay_css = float_css_helper(
-            left=SIDE_PAD,
-            right=SIDE_PAD,
-            bottom="10.0rem",
-            width="auto",
-            z_index="10001",
-        )
-        mic_overlay_css += """
-        background: rgba(255,255,255,.98);
-        backdrop-filter: saturate(180%) blur(16px);
-        border: 1px solid rgba(148,163,184,.45);
-        border-radius: 20px;
-        padding: 14px 16px;
-        box-shadow: 0 16px 48px rgba(2,6,23,.20), 0 0 0 1px rgba(255,255,255,.5) inset;
-        max-width: 400px;
-        margin: 0 auto;
-        """
-        mic_container.float(mic_overlay_css)
+                audio_file = st.audio_input("", key=K("audio_msg"), label_visibility="collapsed")
 
-
-    # =========================================================
-    # 4) FLOATING WHATSAPP COMPOSER (FAB-STYLE)
-    # =========================================================
-    # Initialize defaults
-    typed = ""
-    send_clicked = False
-
-    # Only show composer when toggled on
-    if st.session_state.show_composer:
-        wa_bar = st.container()
-        with wa_bar:
-            # Header with close button
-            with st.container():
-                col_title, col_close = st.columns([4, 1])
-                with col_title:
-                    st.markdown("**✏️ Escribir pedido**")
-                with col_close:
-                    if st.button("✕", key=K("close_composer"), help="Cerrar"):
-                        st.session_state.show_composer = False
-                        st.rerun()
-
-            with st.form(key=K("wa_compose_form"), clear_on_submit=True):
-                with st.container(horizontal=True):
-                    c1, c2 = st.columns([6, 1])
-                    with c1:
-                        typed = st.text_input(
-                            "",
-                            placeholder="Escribe como en WhatsApp... ej: 3 coca cola, hielo",
-                            key=K("wa_text_input_field"),
-                            label_visibility="collapsed",
-                        )
-
-                    # Enter triggers first submit button -> keep SEND first
-                    with c2:
-                        send_clicked = st.form_submit_button("➤", use_container_width=True, key=K("btn_send_to_notes"))
-
-        # Style the floating composer (more compact FAB-style)
-        wa_css = float_css_helper(
-            left=SIDE_PAD,
-            right="1.10rem",  # keep some space from right edge
-            bottom="8.0rem",  # Positioned away from bottom bar
-            width="auto",
-            z_index="9999",
-        )
-        wa_css += """
-        background: rgba(255,255,255,.98);
-        backdrop-filter: saturate(180%) blur(16px);
-        border: 1px solid rgba(148,163,184,.45);
-        border-radius: 20px;
-        padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
-        box-shadow: 0 16px 48px rgba(2,6,23,.20), 0 0 0 1px rgba(255,255,255,.5) inset;
-        max-width: 600px;
-        margin: 0 auto;
-        """
-
-        # Force horizontal layout on mobile - prevent column stacking
-        wa_css += """
-        /* Force horizontal layout on all screen sizes */
-        div[data-testid="column"] {
-            flex-shrink: 1 !important;
-            min-width: 0 !important;
-        }
-
-        /* Keep horizontal container from wrapping */
-        div[data-testid="stHorizontalBlock"] {
-            flex-wrap: nowrap !important;
-            display: flex !important;
-            gap: 8px !important;
-        }
-
-        /* Ensure text input shrinks appropriately */
-        div[data-testid="stTextInput"] {
-            min-width: 0 !important;
-            flex: 1 !important;
-        }
-
-        div[data-testid="stTextInput"] input {
-            min-width: 0 !important;
-            width: 100% !important;
-            font-size: 0.85rem !important;
-            padding: 8px 10px !important;
-            height: auto !important;
-        }
-
-        div[data-testid="stTextInput"] input::placeholder {
-            font-size: 0.82rem !important;
-        }
-
-        /* Keep buttons at fixed width */
-        button[kind="formSubmit"] {
-            min-width: 40px !important;
-            max-width: 50px !important;
-            white-space: nowrap !important;
-            padding: 8px !important;
-        }
-
-        /* Mobile-specific adjustments */
-        @media (max-width: 640px) {
-            div[data-testid="stHorizontalBlock"] {
-                gap: 6px !important;
-            }
-
-            button[kind="formSubmit"] {
-                min-width: 36px !important;
-                max-width: 44px !important;
-                padding: 6px !important;
-                font-size: 1.1rem !important;
-            }
-        }
-        """
-
-        wa_bar.float(wa_css)
-    else:
-        # Ensure variables are defined when composer is hidden
-        send_clicked = False
-        typed = ""
-
-    # =========================================================
-    # 4.5) FLOATING DELETE BUTTON FAB (inside menu)
-    # =========================================================
-    clear_clicked = False
-    if st.session_state.fab_menu_open:
-        fab_delete_container = st.container()
-        with fab_delete_container:
-            clear_clicked = st.button(
-                "🗑️",
-                key=K("btn_clear_notes"),
-                help="Limpiar todo"
-            )
-
-        fab_delete_css = float_css_helper(
-            right=FAB_RIGHT,
-            bottom=f"calc({FAB_BASE} + {FAB_GAP} * 2)",
-            width="auto",
-            z_index="10000",
-        )
-        fab_delete_css += FAB_GLASS_CSS
-        fab_delete_container.float(fab_delete_css)
-
-    # =========================================================
-    # 🎯 FLOATING DRAFT SELECTOR FAB + PANEL
-    # =========================================================
-    st.session_state.setdefault("show_draft_selector", False)
-
-    if show_add_button:
-        # FAB button (show when menu is open and panel is closed)
-        if st.session_state.fab_menu_open and not st.session_state.show_draft_selector:
-            fab_draft_container = st.container()
-            with fab_draft_container:
-                if st.button("📋", key=K("fab_draft_select"), help="Seleccionar borrador"):
-                    st.session_state.show_draft_selector = True
+                if st.button("➤ Enviar audio", key=K("btn_send_audio"), use_container_width=True, type="primary"):
+                    if audio_file is not None:
+                        st.session_state[S("audio_bytes")] = audio_file.read()
                     st.session_state.show_micro = False
-                    st.session_state.show_composer = False
-                    st.session_state.fab_menu_open = False
                     st.rerun()
 
-            fab_draft_css = float_css_helper(
-                right=FAB_RIGHT,
-                bottom=f"calc({FAB_BASE} + {FAB_GAP} * 1)",
-                width="auto",
-                z_index="10000",
-            )
-            fab_draft_css += FAB_GLASS_CSS
-            fab_draft_container.float(fab_draft_css)
-
-        # Expanded panel (show when toggled on)
-        if st.session_state.show_draft_selector:
-            drafts_list = load_venue_drafts(venue_id, _refresh_token=get_drafts_refresh_token())
-
-            draft_panel = st.container()
-            with draft_panel:
-                col_title, col_close = st.columns([4, 1])
-                with col_title:
-                    st.caption("📋 ¿A qué borrador quieres añadir?")
-                with col_close:
-                    if st.button("✕", key=K("close_draft_selector"), help="Cerrar"):
-                        st.session_state.show_draft_selector = False
-                        st.rerun()
-
-                if drafts_list:
-                    draft_options = []
-                    draft_ids = []
-                    for draft in drafts_list:
-                        title = draft.title or "Sin título"
-                        date = draft.created_at.strftime('%d/%m %H:%M')
-                        draft_options.append(f"#{draft.id} {title} · {date}")
-                        draft_ids.append(int(draft.id))
-
-                    chosen_idx = st.radio(
-                        "Elige:",
-                        range(len(draft_options)),
-                        format_func=lambda i: draft_options[i],
-                        key=K("draft_quick_select"),
-                        label_visibility="collapsed"
-                    )
-
-                    col1, col2 = st.columns(2)
-                    with col1:
-                        if st.button("✓ Aquí", key=K("confirm_quick"), use_container_width=True, type="primary"):
-                            st.session_state[S("selected_draft_id")] = draft_ids[chosen_idx]
-                            st.session_state[S("trigger_add")] = True
-                            st.session_state.show_draft_selector = False
-                            st.rerun()
-
-                    with col2:
-                        if st.button("+ Nuevo", key=K("new_quick"), use_container_width=True):
-                            st.session_state[S("selected_draft_id")] = -1
-                            st.session_state[S("trigger_add")] = True
-                            st.session_state.show_draft_selector = False
-                            st.rerun()
-                else:
-                    if st.button("+ Nuevo borrador", key=K("new_quick"), use_container_width=True, type="primary"):
-                        st.session_state[S("selected_draft_id")] = -1
-                        st.session_state[S("trigger_add")] = True
-                        st.session_state.show_draft_selector = False
-                        st.rerun()
-
-            draft_panel_css = float_css_helper(
+            mic_overlay_css = float_css_helper(
                 left=SIDE_PAD,
                 right=SIDE_PAD,
-                bottom="5.75rem",
+                bottom="10.0rem",
                 width="auto",
                 z_index="10001",
             )
-            draft_panel_css += """
+            mic_overlay_css += """
             background: rgba(255,255,255,.98);
             backdrop-filter: saturate(180%) blur(16px);
             border: 1px solid rgba(148,163,184,.45);
@@ -2359,24 +2198,257 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             max-width: 400px;
             margin: 0 auto;
             """
-            draft_panel.float(draft_panel_css)
+            mic_container.float(mic_overlay_css)
 
-    # Spacer so page content isn't hidden behind picker + add + composer
-    st.markdown("<div style='height:360px'></div>", unsafe_allow_html=True)
+        # =========================================================
+        # 4) FLOATING WHATSAPP COMPOSER (FAB-STYLE)
+        # =========================================================
+        typed = ""
+        send_clicked = False
 
-    # =========================================================
-    # 5) ACTIONS: Notas / preview pipeline
-    # =========================================================
-    if clear_clicked:
-        reset_notes_only(clear_resolved_picks=False)
-        st.session_state.show_composer = False  # Auto-close after clearing
-        st.session_state.fab_menu_open = False
-        st.rerun()
+        if st.session_state.show_composer:
+            wa_bar = st.container()
+            with wa_bar:
+                with st.container():
+                    col_title, col_close = st.columns([4, 1])
+                    with col_title:
+                        st.markdown("**✏️ Escribir pedido**")
+                    with col_close:
+                        if st.button("✕", key=K("close_composer"), help="Cerrar"):
+                            st.session_state.show_composer = False
+                            st.rerun()
 
-    if send_clicked and typed and typed.strip():
-        append_message("user", typed.strip())
-        st.session_state.show_composer = False
-        st.rerun()
+                with st.form(key=K("wa_compose_form"), clear_on_submit=True):
+                    with st.container(horizontal=True):
+                        c1, c2 = st.columns([6, 1])
+                        with c1:
+                            typed = st.text_input(
+                                "",
+                                placeholder="Escribe como en WhatsApp... ej: 3 coca cola, hielo",
+                                key=K("wa_text_input_field"),
+                                label_visibility="collapsed",
+                            )
+                        with c2:
+                            send_clicked = st.form_submit_button("➤", use_container_width=True, key=K("btn_send_to_notes"))
+
+            wa_css = float_css_helper(
+                left=SIDE_PAD,
+                right="1.10rem",
+                bottom="8.0rem",
+                width="auto",
+                z_index="9999",
+            )
+            wa_css += """
+            background: rgba(255,255,255,.98);
+            backdrop-filter: saturate(180%) blur(16px);
+            border: 1px solid rgba(148,163,184,.45);
+            border-radius: 20px;
+            padding: 14px 16px calc(14px + env(safe-area-inset-bottom));
+            box-shadow: 0 16px 48px rgba(2,6,23,.20), 0 0 0 1px rgba(255,255,255,.5) inset;
+            max-width: 600px;
+            margin: 0 auto;
+            """
+            wa_css += """
+            div[data-testid="column"] {
+                flex-shrink: 1 !important;
+                min-width: 0 !important;
+            }
+            div[data-testid="stHorizontalBlock"] {
+                flex-wrap: nowrap !important;
+                display: flex !important;
+                gap: 8px !important;
+            }
+            div[data-testid="stTextInput"] {
+                min-width: 0 !important;
+                flex: 1 !important;
+            }
+            div[data-testid="stTextInput"] input {
+                min-width: 0 !important;
+                width: 100% !important;
+                font-size: 0.85rem !important;
+                padding: 8px 10px !important;
+                height: auto !important;
+            }
+            div[data-testid="stTextInput"] input::placeholder {
+                font-size: 0.82rem !important;
+            }
+            button[kind="formSubmit"] {
+                min-width: 40px !important;
+                max-width: 50px !important;
+                white-space: nowrap !important;
+                padding: 8px !important;
+            }
+            @media (max-width: 640px) {
+                div[data-testid="stHorizontalBlock"] { gap: 6px !important; }
+                button[kind="formSubmit"] {
+                    min-width: 36px !important;
+                    max-width: 44px !important;
+                    padding: 6px !important;
+                    font-size: 1.1rem !important;
+                }
+            }
+            """
+            wa_bar.float(wa_css)
+
+        # =========================================================
+        # 4.5) FLOATING DELETE BUTTON FAB (inside menu)
+        # =========================================================
+        clear_clicked = False
+        if st.session_state.fab_menu_open:
+            fab_delete_container = st.container()
+            with fab_delete_container:
+                clear_clicked = st.button("🗑️", key=K("btn_clear_notes"), help="Limpiar todo")
+
+            fab_delete_css = float_css_helper(
+                right=FAB_RIGHT,
+                bottom=f"calc({FAB_BASE} + {FAB_GAP} * 1)",
+                width="auto",
+                z_index="10000",
+            )
+            fab_delete_css += FAB_GLASS_CSS
+            fab_delete_container.float(fab_delete_css)
+
+        # =========================================================
+        # 🎯 FLOATING DRAFT SELECTOR FAB + PANEL
+        # Always visible (left side, bottom bar level) when products exist
+        # =========================================================
+        st.session_state.setdefault("show_draft_selector", False)
+
+        # Pill CSS for the draft button (not circular like FAB)
+        DRAFT_PILL_CSS = """
+        padding: 0;
+        & button {
+            height: 3.2rem !important;
+            min-height: 3.2rem !important;
+            border-radius: 1.6rem !important;
+            padding: 0 1.1rem !important;
+            background: rgba(255, 255, 255, 0.35) !important;
+            backdrop-filter: saturate(180%) blur(20px) !important;
+            -webkit-backdrop-filter: saturate(180%) blur(20px) !important;
+            border: 1px solid rgba(255, 255, 255, 0.55) !important;
+            box-shadow: 0 4px 16px rgba(0, 0, 0, 0.10),
+                        0 0 0 0.5px rgba(255, 255, 255, 0.4) inset !important;
+            font-size: 0.9rem !important;
+            white-space: nowrap !important;
+            transition: transform 0.18s ease, box-shadow 0.18s ease !important;
+        }
+        & button:hover {
+            transform: scale(1.04) !important;
+            background: rgba(255, 255, 255, 0.52) !important;
+            box-shadow: 0 6px 24px rgba(0, 0, 0, 0.14) !important;
+        }
+        & button:active {
+            transform: scale(0.96) !important;
+        }
+        """
+
+        if show_add_button:
+            if not st.session_state.show_draft_selector:
+                fab_draft_container = st.container()
+                with fab_draft_container:
+                    if st.button("📋 Borrador", key=K("fab_draft_select"), help="Seleccionar borrador"):
+                        st.session_state.show_draft_selector = True
+                        st.session_state.show_micro = False
+                        st.session_state.show_composer = False
+                        st.session_state.fab_menu_open = False
+                        st.rerun()
+
+                fab_draft_css = float_css_helper(
+                    left=SIDE_PAD,
+                    bottom=FAB_BASE,
+                    width="auto",
+                    z_index="10000",
+                )
+                fab_draft_css += DRAFT_PILL_CSS
+                fab_draft_container.float(fab_draft_css)
+
+            if st.session_state.show_draft_selector:
+                drafts_list = load_venue_drafts(venue_id, _refresh_token=get_drafts_refresh_token())
+
+                draft_panel = st.container()
+                with draft_panel:
+                    col_title, col_close = st.columns([4, 1])
+                    with col_title:
+                        st.caption("📋 ¿A qué borrador quieres añadir?")
+                    with col_close:
+                        if st.button("✕", key=K("close_draft_selector"), help="Cerrar"):
+                            st.session_state.show_draft_selector = False
+                            st.rerun()
+
+                    if drafts_list:
+                        draft_options = []
+                        draft_ids = []
+                        for draft in drafts_list:
+                            title = draft.title or "Sin título"
+                            date = draft.created_at.strftime('%d/%m %H:%M')
+                            draft_options.append(f"#{draft.id} {title} · {date}")
+                            draft_ids.append(int(draft.id))
+
+                        chosen_idx = st.radio(
+                            "Elige:",
+                            range(len(draft_options)),
+                            format_func=lambda i: draft_options[i],
+                            key=K("draft_quick_select"),
+                            label_visibility="collapsed"
+                        )
+
+                        col1, col2 = st.columns(2)
+                        with col1:
+                            if st.button("✓ Aquí", key=K("confirm_quick"), use_container_width=True, type="primary"):
+                                st.session_state[S("selected_draft_id")] = draft_ids[chosen_idx]
+                                st.session_state[S("trigger_add")] = True
+                                st.session_state.show_draft_selector = False
+                                st.rerun()
+                        with col2:
+                            if st.button("+ Nuevo", key=K("new_quick"), use_container_width=True):
+                                st.session_state[S("selected_draft_id")] = -1
+                                st.session_state[S("trigger_add")] = True
+                                st.session_state.show_draft_selector = False
+                                st.rerun()
+                    else:
+                        if st.button("+ Nuevo borrador", key=K("new_quick"), use_container_width=True, type="primary"):
+                            st.session_state[S("selected_draft_id")] = -1
+                            st.session_state[S("trigger_add")] = True
+                            st.session_state.show_draft_selector = False
+                            st.rerun()
+
+                draft_panel_css = float_css_helper(
+                    left=SIDE_PAD,
+                    right=SIDE_PAD,
+                    bottom="5.75rem",
+                    width="auto",
+                    z_index="10001",
+                )
+                draft_panel_css += """
+                background: rgba(255,255,255,.98);
+                backdrop-filter: saturate(180%) blur(16px);
+                border: 1px solid rgba(148,163,184,.45);
+                border-radius: 20px;
+                padding: 14px 16px;
+                box-shadow: 0 16px 48px rgba(2,6,23,.20), 0 0 0 1px rgba(255,255,255,.5) inset;
+                max-width: 400px;
+                margin: 0 auto;
+                """
+                draft_panel.float(draft_panel_css)
+
+        # Spacer so page content isn't hidden behind picker + add + composer
+        st.markdown("<div style='height:360px'></div>", unsafe_allow_html=True)
+
+        # =========================================================
+        # 5) ACTIONS: Notas / preview pipeline
+        # =========================================================
+        if clear_clicked:
+            reset_notes_only(clear_resolved_picks=False)
+            st.session_state.show_composer = False
+            st.session_state.fab_menu_open = False
+            st.rerun()
+
+        if send_clicked and typed and typed.strip():
+            append_message("user", typed.strip())
+            st.session_state.show_composer = False
+            st.rerun()
+
+    render_fabs(show_add_button)
 
     # =========================================================
     # 6) ADD TO BORRADOR LOGIC (triggered from draft selector popover)
