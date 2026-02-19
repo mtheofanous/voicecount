@@ -2432,17 +2432,17 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                             st.rerun()
 
                 with st.form(key=K("wa_compose_form"), clear_on_submit=True):
-                    with st.container(horizontal=True):
-                        c1, c2 = st.columns([6, 1])
+                    with st.container():
+                        c1, c2 = st.columns([4, 1])
                         with c1:
                             typed = st.text_input(
                                 "",
                                 placeholder=t("new_order.compose_placeholder"),
                                 key=K("wa_text_input_field"),
-                                label_visibility="collapsed",
+                                label_visibility="collapsed",width=450
                             )
                         with c2:
-                            send_clicked = st.form_submit_button("➤", use_container_width=True, key=K("btn_send_to_notes"))
+                            send_clicked = st.form_submit_button("➤", use_container_width=True, key=K("btn_send_to_notes"),width=80)
 
             wa_css = float_css_helper(
                 left=SIDE_PAD,
