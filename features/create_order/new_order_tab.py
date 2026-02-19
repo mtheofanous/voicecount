@@ -673,13 +673,11 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             prov_list = ["Todos"] + sorted(all_providers)
 
             # Use selectbox for provider selection (much faster than tabs)
-            col1, col2 = st.columns([1, 3])
-            with col1:
-                selected_prov = st.selectbox(
-                    "Proveedor",
-                    options=prov_list,
-                    key=K("provider_selector"),label_visibility="collapsed"
-                )
+            selected_prov = st.selectbox(
+                "Proveedor",
+                options=prov_list,
+                key=K("provider_selector"),label_visibility="collapsed"
+            )
 
             # Filter by provider
             if selected_prov == "Todos":
@@ -688,191 +686,191 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 # Use the pre-built dictionary instead of filtering
                 prov_filtered = products_by_prov.get(selected_prov, [])
 
-            # Category sub-tabs (filtered by provider)
-            categories_in_prov = sorted({getattr(p, "category", "") or "Sin categoría" for p in prov_filtered})
-            cat_list = ["Todas"] + categories_in_prov
-            cat_tabs = st.tabs(cat_list)
+        # Category sub-tabs (filtered by provider)
+        categories_in_prov = sorted({getattr(p, "category", "") or "Sin categoría" for p in prov_filtered})
+        cat_list = ["Todas"] + categories_in_prov
+        cat_tabs = st.tabs(cat_list)
 
-            for j, cat_tab in enumerate(cat_tabs):
-                with cat_tab:
-                    selected_cat = cat_list[j]
+        for j, cat_tab in enumerate(cat_tabs):
+            with cat_tab:
+                selected_cat = cat_list[j]
 
-                    # Final filter
-                    final_products = prov_filtered
-                    if selected_cat != "Todas":
-                        final_products = [
-                            p for p in prov_filtered
-                            if (getattr(p, "category", "") or "Sin categoría") == selected_cat
-                        ]
+                # Final filter
+                final_products = prov_filtered
+                if selected_cat != "Todas":
+                    final_products = [
+                        p for p in prov_filtered
+                        if (getattr(p, "category", "") or "Sin categoría") == selected_cat
+                    ]
 
-                    if not final_products:
-                        st.info("No hay productos en esta categoría/proveedor")
-                        continue
+                if not final_products:
+                    st.info("No hay productos en esta categoría/proveedor")
+                    continue
 
-                    st.caption(f"{len(final_products)} producto(s)")
-                    with st.form(key=K(f"add_form_{selected_prov}_{j}"), border=False):
-                        # -----------------------------
-                        # Pagination (max 30 per page)
-                        # -----------------------------
-                        PAGE_SIZE = 30
-                        page_state_key = K(f"fullpage_page_{selected_prov}_{selected_cat}_{j}")
-                        total_pages = max(1, int(math.ceil(len(final_products) / PAGE_SIZE)))
+                st.caption(f"{len(final_products)} producto(s)")
+                with st.form(key=K(f"add_form_{selected_prov}_{j}"), border=False):
+                    # -----------------------------
+                    # Pagination (max 30 per page)
+                    # -----------------------------
+                    PAGE_SIZE = 30
+                    page_state_key = K(f"fullpage_page_{selected_prov}_{selected_cat}_{j}")
+                    total_pages = max(1, int(math.ceil(len(final_products) / PAGE_SIZE)))
 
-                        page_idx = int(st.session_state.get(page_state_key, 0) or 0)
-                        page_idx = max(0, min(page_idx, total_pages - 1))
-                        st.session_state[page_state_key] = page_idx
-                        st.caption(f"Página {page_idx + 1}/{total_pages} · {len(final_products)} producto(s)")
-                        # Row 1: primary CTA — full width, never compressed
-                        add_clicked = st.form_submit_button(
-                            "✓ Añadir seleccionados", type="primary", use_container_width=True
-                        )
+                    page_idx = int(st.session_state.get(page_state_key, 0) or 0)
+                    page_idx = max(0, min(page_idx, total_pages - 1))
+                    st.session_state[page_state_key] = page_idx
+                    st.caption(f"Página {page_idx + 1}/{total_pages} · {len(final_products)} producto(s)")
+                    # Row 1: primary CTA — full width, never compressed
+                    add_clicked = st.form_submit_button(
+                        "✓ Añadir seleccionados", type="primary", use_container_width=True
+                    )
 
-                        # Row 2: pagination arrows — only shown when more than one page
-                        # CSS is global (injected each iteration, idempotent in browser)
-                        st.html("""<style>
-                        [data-testid="stForm"] [data-testid="stHorizontalBlock"] {
-                            flex-wrap: nowrap !important;
-                            align-items: center !important;
-                            gap: 6px !important;
-                        }
-                        [data-testid="stForm"] [data-testid="stHorizontalBlock"]
-                            > [data-testid="stVerticalBlockBorderWrapper"]:first-child,
-                        [data-testid="stForm"] [data-testid="stHorizontalBlock"]
-                            > [data-testid="stVerticalBlockBorderWrapper"]:last-child {
-                            flex: 0 0 44px !important;
-                            min-width: 0 !important;
-                        }
-                        [data-testid="stForm"] [data-testid="stHorizontalBlock"]
-                            > [data-testid="stVerticalBlockBorderWrapper"]:nth-child(2) {
-                            flex: 1 1 0% !important;
-                            min-width: 0 !important;
-                        }
-                        </style>""")
-                        prev_clicked = False
-                        next_clicked = False
-                        if total_pages > 1:
-                            with st.container(horizontal=True):
-                                col_prev, col_info, col_next = st.columns([1, 3, 1], vertical_alignment="center")
-                                with col_prev:
-                                    prev_clicked = st.form_submit_button(
-                                        "◀", use_container_width=True, disabled=(page_idx == 0)
+                    # Row 2: pagination arrows — only shown when more than one page
+                    # CSS is global (injected each iteration, idempotent in browser)
+                    st.html("""<style>
+                    [data-testid="stForm"] [data-testid="stHorizontalBlock"] {
+                        flex-wrap: nowrap !important;
+                        align-items: center !important;
+                        gap: 6px !important;
+                    }
+                    [data-testid="stForm"] [data-testid="stHorizontalBlock"]
+                        > [data-testid="stVerticalBlockBorderWrapper"]:first-child,
+                    [data-testid="stForm"] [data-testid="stHorizontalBlock"]
+                        > [data-testid="stVerticalBlockBorderWrapper"]:last-child {
+                        flex: 0 0 44px !important;
+                        min-width: 0 !important;
+                    }
+                    [data-testid="stForm"] [data-testid="stHorizontalBlock"]
+                        > [data-testid="stVerticalBlockBorderWrapper"]:nth-child(2) {
+                        flex: 1 1 0% !important;
+                        min-width: 0 !important;
+                    }
+                    </style>""")
+                    prev_clicked = False
+                    next_clicked = False
+                    if total_pages > 1:
+                        with st.container(horizontal=True):
+                            col_prev, col_info, col_next = st.columns([1, 3, 1], vertical_alignment="center")
+                            with col_prev:
+                                prev_clicked = st.form_submit_button(
+                                    "◀", use_container_width=True, disabled=(page_idx == 0)
+                                )
+                            with col_info:
+                                st.markdown(
+                                    f'<div style="text-align:center;font-size:0.42rem;'
+                                    f'color:#888;padding:6px 0;line-height:1;">'
+                                    f'{page_idx + 1} / {total_pages}</div>',
+                                    unsafe_allow_html=True
+                                )
+                            with col_next:
+                                next_clicked = st.form_submit_button(
+                                    "▶", use_container_width=True, disabled=(page_idx >= total_pages - 1)
+                                )
+
+                    # Paging actions first (don’t add products on arrow click)
+                    if prev_clicked:
+                        st.session_state[page_state_key] = max(0, page_idx - 1)
+                        st.rerun()
+                    if next_clicked:
+                        st.session_state[page_state_key] = min(total_pages - 1, page_idx + 1)
+                        st.rerun()
+
+                    # Slice products for this page
+                    start_i = page_idx * PAGE_SIZE
+                    end_i = start_i + PAGE_SIZE
+                    page_products = final_products[start_i:end_i]
+
+                    # -----------------------------
+                    # Render only this page
+                    # (values persist via keys)
+                    # -----------------------------
+                    with st.container(height=600):
+                        for prod in page_products:
+                            pid = int(prod.id)
+                            pname = getattr(prod, "name", "")
+                            pprov = getattr(prod, "provider_name", "")
+                            pdesc = getattr(prod, "description", "")
+                            punit = getattr(prod, "unit", "") or "unit"
+                            pprice = getattr(prod, "price", None)
+
+                            with st.container():
+                                col1, col2 = st.columns([3, 1])
+
+                                with col1:
+                                    st.markdown(f"**{pname}**")
+                                    details = []
+                                    if pdesc:
+                                        details.append(pdesc)
+                                    if pprov:
+                                        details.append(pprov)
+                                    if pprice:
+                                        details.append(f"{float(pprice):.2f}€")
+                                    if details:
+                                        st.caption(" · ".join(details))
+
+                                with col2:
+                                    st.number_input(
+                                        "Cant.",
+                                        min_value=0.0,
+                                        value=float(st.session_state.get(K(f"fullpage_qty_{pid}_{j}"), 0.0) or 0.0),
+                                        step=1.0,
+                                        key=K(f"fullpage_qty_{pid}_{j}"),
+                                        label_visibility="collapsed",
                                     )
-                                with col_info:
-                                    st.markdown(
-                                        f'<div style="text-align:center;font-size:0.82rem;'
-                                        f'color:#888;padding:6px 0;line-height:1;">'
-                                        f'{page_idx + 1} / {total_pages}</div>',
-                                        unsafe_allow_html=True
-                                    )
-                                with col_next:
-                                    next_clicked = st.form_submit_button(
-                                        "▶", use_container_width=True, disabled=(page_idx >= total_pages - 1)
-                                    )
 
-                        # Paging actions first (don’t add products on arrow click)
-                        if prev_clicked:
-                            st.session_state[page_state_key] = max(0, page_idx - 1)
-                            st.rerun()
-                        if next_clicked:
-                            st.session_state[page_state_key] = min(total_pages - 1, page_idx + 1)
-                            st.rerun()
-
-                        # Slice products for this page
-                        start_i = page_idx * PAGE_SIZE
-                        end_i = start_i + PAGE_SIZE
-                        page_products = final_products[start_i:end_i]
-
-                        # -----------------------------
-                        # Render only this page
-                        # (values persist via keys)
-                        # -----------------------------
-                        with st.container(height=600):
-                            for prod in page_products:
-                                pid = int(prod.id)
+                    # -----------------------------
+                    # On submit: collect across ALL pages
+                    # -----------------------------
+                    if add_clicked:
+                        products_to_add = []
+                        for prod in final_products:
+                            pid = int(prod.id)
+                            qty = float(st.session_state.get(K(f"fullpage_qty_{pid}_{j}"), 0.0) or 0.0)
+                            if qty > 0:
                                 pname = getattr(prod, "name", "")
                                 pprov = getattr(prod, "provider_name", "")
-                                pdesc = getattr(prod, "description", "")
                                 punit = getattr(prod, "unit", "") or "unit"
-                                pprice = getattr(prod, "price", None)
+                                products_to_add.append((pid, pname, qty, punit, pprov))
 
-                                with st.container():
-                                    col1, col2 = st.columns([3, 1])
+                        if products_to_add:
+                            parsed_df = st.session_state.get(S("parsed_df"))
 
-                                    with col1:
-                                        st.markdown(f"**{pname}**")
-                                        details = []
-                                        if pdesc:
-                                            details.append(pdesc)
-                                        if pprov:
-                                            details.append(pprov)
-                                        if pprice:
-                                            details.append(f"{float(pprice):.2f}€")
-                                        if details:
-                                            st.caption(" · ".join(details))
+                            for pid, pname, qty, punit, pprov in products_to_add:
+                                new_row = pd.DataFrame([{
+                                    "spoken_name": pname,
+                                    "matched_product_id": pid,
+                                    "matched_name": pname,
+                                    "confidence": 100.0,
+                                    "quantity": qty,
+                                    "unit": punit,
+                                    "unit_custom": "",
+                                    "suggestions": [],
+                                    "recommended_pid": pid,
+                                    "status": "OK",
+                                    "provider": pprov,
+                                    "source": "manual",
+                                }])
 
-                                    with col2:
-                                        st.number_input(
-                                            "Cant.",
-                                            min_value=0.0,
-                                            value=float(st.session_state.get(K(f"fullpage_qty_{pid}_{j}"), 0.0) or 0.0),
-                                            step=1.0,
-                                            key=K(f"fullpage_qty_{pid}_{j}"),
-                                            label_visibility="collapsed",
-                                        )
-
-                        # -----------------------------
-                        # On submit: collect across ALL pages
-                        # -----------------------------
-                        if add_clicked:
-                            products_to_add = []
-                            for prod in final_products:
-                                pid = int(prod.id)
-                                qty = float(st.session_state.get(K(f"fullpage_qty_{pid}_{j}"), 0.0) or 0.0)
-                                if qty > 0:
-                                    pname = getattr(prod, "name", "")
-                                    pprov = getattr(prod, "provider_name", "")
-                                    punit = getattr(prod, "unit", "") or "unit"
-                                    products_to_add.append((pid, pname, qty, punit, pprov))
-
-                            if products_to_add:
-                                parsed_df = st.session_state.get(S("parsed_df"))
-
-                                for pid, pname, qty, punit, pprov in products_to_add:
-                                    new_row = pd.DataFrame([{
-                                        "spoken_name": pname,
-                                        "matched_product_id": pid,
-                                        "matched_name": pname,
-                                        "confidence": 100.0,
-                                        "quantity": qty,
-                                        "unit": punit,
-                                        "unit_custom": "",
-                                        "suggestions": [],
-                                        "recommended_pid": pid,
-                                        "status": "OK",
-                                        "provider": pprov,
-                                        "source": "manual",
-                                    }])
-
-                                    if isinstance(parsed_df, pd.DataFrame) and not parsed_df.empty:
-                                        existing_mask = parsed_df['matched_product_id'] == pid
-                                        if existing_mask.any():
-                                            idx = parsed_df.index[existing_mask][0]
-                                            parsed_df.at[idx, 'quantity'] = float(parsed_df.at[idx, 'quantity']) + qty
-                                        else:
-                                            parsed_df = pd.concat([parsed_df, new_row], ignore_index=True)
+                                if isinstance(parsed_df, pd.DataFrame) and not parsed_df.empty:
+                                    existing_mask = parsed_df['matched_product_id'] == pid
+                                    if existing_mask.any():
+                                        idx = parsed_df.index[existing_mask][0]
+                                        parsed_df.at[idx, 'quantity'] = float(parsed_df.at[idx, 'quantity']) + qty
                                     else:
-                                        if parsed_df is None:
-                                            parsed_df = new_row
-                                        else:
-                                            parsed_df = pd.concat([parsed_df, new_row], ignore_index=True)
+                                        parsed_df = pd.concat([parsed_df, new_row], ignore_index=True)
+                                else:
+                                    if parsed_df is None:
+                                        parsed_df = new_row
+                                    else:
+                                        parsed_df = pd.concat([parsed_df, new_row], ignore_index=True)
 
-                                st.session_state[S("parsed_df")] = parsed_df
-                                st.success(f"✓ Añadidos {len(products_to_add)} producto(s)")
-                                time.sleep(0.5)
-                                st.session_state.product_adder_fullpage = False
-                                st.rerun()
-                            else:
-                                st.warning("No seleccionaste ningún producto")
+                            st.session_state[S("parsed_df")] = parsed_df
+                            st.success(f"✓ Añadidos {len(products_to_add)} producto(s)")
+                            time.sleep(0.5)
+                            st.session_state.product_adder_fullpage = False
+                            st.rerun()
+                        else:
+                            st.warning("No seleccionaste ningún producto")
 
         # Stop rendering the rest of the page
         return
