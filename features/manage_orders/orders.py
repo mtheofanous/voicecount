@@ -1710,9 +1710,10 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
             wrapText=False,
             minWidth=220,
             flex=2,
+            tooltipField="product_label"
         )
 
-        gb.configure_column("unit", header_name="Unidad", editable=False, flex=1, maxWidth=150)
+        gb.configure_column("unit", header_name="Unidad", editable=False, flex=1, maxWidth=100)
 
         gb.configure_column(
             "quantity",
@@ -1730,9 +1731,9 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
             editable=True,
             cellRenderer="agCheckboxCellRenderer",
             flex=1,
-            maxWidth=100,
+            maxWidth=80,
         )
-        gb.configure_selection("single", use_checkbox=False)
+
         grid_options = gb.build()
 
         # optional: auto-size AFTER load (can fight with flex; keep off if you prefer flex)
@@ -1756,19 +1757,13 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
         grid_response = AgGrid(
             _df,
             gridOptions=grid_options,
-            update_mode=GridUpdateMode.MODEL_CHANGED.SELECTION_CHANGED,
+            update_mode=GridUpdateMode.MODEL_CHANGED, 
             allow_unsafe_jscode=True,
             fit_columns_on_grid_load=False,
             theme=yellow_notebook_theme,     # 👈 custom theme goes here
             height=620,
             key="theming_grid",
         )
-        
-        selected = grid_response["selected_rows"]
-        
-        if selected:
-            st.markdown("### 📖 Producto completo")
-            st.info(selected[0]["product_label"])
 
         edited = grid_response["data"].drop(columns=["product_label"])
 

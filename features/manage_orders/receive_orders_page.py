@@ -5928,12 +5928,7 @@ def tracking_dashboard(
             if not tasks:
                 st.success(t("msg.nothing_pending"))
                 return
-
-            # f1, f2 = st.columns([2.2, 1.0], vertical_alignment="center")
-            # with f1:
-            #     q = st.text_input("Search provider / invoice / order", placeholder="e.g. makro, 2026-, #12").strip().lower()
-            # with f2:
-            #     expand_all = st.toggle("Expand all", value=False)
+            
             q = ""  # search disabled – keep filter as pass-through
 
             def _matches(t: Dict[str, Any]) -> bool:
