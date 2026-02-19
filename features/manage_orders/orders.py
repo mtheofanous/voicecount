@@ -1707,7 +1707,14 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
         gb.configure_column("line_id", hide=True)
 
         # show "Producto" as label (read-only like disabled=True)
-        gb.configure_column("product_label", header_name="Producto", editable=False)
+        gb.configure_column(
+                "product_label",
+                header_name="Producto",
+                editable=False,
+                wrapText=True,
+                autoHeight=True,
+                resizable=True,
+            )
 
         # keep product_id hidden (since label is shown)
         gb.configure_column("product_id", hide=True)
