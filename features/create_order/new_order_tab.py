@@ -772,8 +772,8 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                             punit = getattr(prod, "unit", "") or "unit"
                             pprice = getattr(prod, "price", None)
 
-                            with st.container():
-                                col1, col2 = st.columns([3, 1])
+                            with st.container(horizontal=True):
+                                col1, col2,col3 = st.columns([1, 3, 1])
 
                                 with col1:
                                     st.markdown(f"**{pname}**")
@@ -784,17 +784,18 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                                         details.append(pprov)
                                     if pprice:
                                         details.append(f"{float(pprice):.2f}€")
+                                with col2:
                                     if details:
                                         st.caption(" · ".join(details))
 
-                                with col2:
+                                with col3:
                                     st.number_input(
                                         "Cant.",
-                                        min_value=0.0,
-                                        value=float(st.session_state.get(K(f"fullpage_qty_{pid}_{j}"), 0.0) or 0.0),
-                                        step=1.0,
+                                        min_value=0,
+                                        value=(st.session_state.get(K(f"fullpage_qty_{pid}_{j}"), 0) or 0),
+                                        step=1,
                                         key=K(f"fullpage_qty_{pid}_{j}"),
-                                        label_visibility="collapsed",
+                                        label_visibility="collapsed", width=150
                                     )
 
                     # -----------------------------
