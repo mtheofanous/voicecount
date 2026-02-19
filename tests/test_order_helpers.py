@@ -21,6 +21,11 @@ from features.manage_orders.orders import (
 
 class TestStatusChip:
 
+    @pytest.fixture(autouse=True)
+    def _spanish(self, monkeypatch):
+        """Force Spanish so tests are independent of runtime session state."""
+        monkeypatch.setattr("core.i18n.get_lang", lambda: "es")
+
     def test_draft(self):
         assert _status_chip("draft") == "📝 Borrador"
 
