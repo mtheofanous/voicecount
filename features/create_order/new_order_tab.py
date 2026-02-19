@@ -784,8 +784,8 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                                     if pprice:
                                         details.append(f"{float(pprice):.2f}€")
                                 
-                                    if details:
-                                        st.caption(" · ".join(details))
+                                    # if details:
+                                    #     st.caption(" · ".join(details))
 
                                 with col3:
                                     st.number_input(
