@@ -136,7 +136,7 @@ def load_venue_drafts(venue_id: int, _refresh_token: int = 0):
         drafts = s.exec(
             select(Order)
             .options(load_only(Order.id, Order.title, Order.created_at, Order.status, Order.venue_id))
-            .where(Order.venue_id == venue_id, Order.status == "draft")
+            .where(Order.venue_id == venue_id, Order.status == "draft", Order.title != "__autosave__")
             .order_by(Order.created_at.desc())
         ).all()
     return drafts
@@ -424,6 +424,15 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         st.session_state[S("audio_widget_key")] = f"{NS}asr_audio_in_{int(time.time())}"
         st.session_state[S("audiorecorder_key")] = f"{NS}audiorecorder_{int(time.time())}"
 
+        # Delete the auto-save draft from DB so it doesn't restore on next load
+        _aid = st.session_state.pop(S("autosave_order_id"), None)
+        st.session_state.pop(S("autosave_hash"), None)
+        if _aid:
+            try:
+                _delete_autosave(order_id=_aid)
+            except Exception:
+                pass
+
         if do_rerun:
             st.rerun()
 
@@ -502,6 +511,179 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     # Draft targeting (shared key with orders.py)
     # ---------------------------
     ACTIVE_DRAFT_KEY = f"orders_active_order_id_{venue_id}"
+    AUTOSAVE_TITLE = "__autosave__"
+
+    # ------------------------------------------------------------------
+    # Auto-save helpers (persist Summary card across tab-navigation reloads)
+    # NOTE: defined early so they are available before the catalog is loaded.
+    # Closures capture variables by reference — products_by_id is resolved
+    # at call-time, after it has been set by load_catalog_and_indexes().
+    # ------------------------------------------------------------------
+
+    def _autosave_parsed_df(df: pd.DataFrame, existing_order_id: Optional[int] = None) -> int:
+        """Upsert a hidden auto-save draft Order+OrderLines for the current session.
+
+        Unlike _create_draft_and_insert_lines, this saves ALL rows — including
+        unmatched items (product_id=None) — so the Summary card is fully restored.
+        Returns the autosave order_id.
+        """
+        actor = current_actor()
+        with get_session() as s:
+            order = None
+
+            # 1. Try to reuse the known autosave order (fastest path)
+            if existing_order_id:
+                order = s.exec(
+                    select(Order).where(
+                        Order.id == existing_order_id,
+                        Order.venue_id == int(venue_id),
+                        Order.title == AUTOSAVE_TITLE,
+                    )
+                ).first()
+
+            # 2. Fall back to querying by marker + actor
+            if order is None:
+                order = s.exec(
+                    select(Order).where(
+                        Order.venue_id == int(venue_id),
+                        Order.status == "draft",
+                        Order.title == AUTOSAVE_TITLE,
+                        Order.created_by == actor,
+                    )
+                ).first()
+
+            if order is not None:
+                order_id = int(order.id)
+                # Delete existing lines (full replace)
+                existing_lines = s.exec(
+                    select(OrderLine).where(OrderLine.order_id == order_id)
+                ).all()
+                for ln in existing_lines:
+                    s.delete(ln)
+                s.commit()
+                order.updated_at = datetime.utcnow()
+                order.updated_by = actor
+                s.add(order)
+            else:
+                # Create new autosave Order
+                order = Order(
+                    venue_id=int(venue_id),
+                    status="draft",
+                    title=AUTOSAVE_TITLE,
+                    created_at=datetime.utcnow(),
+                    updated_at=datetime.utcnow(),
+                    created_by=actor,
+                    updated_by=actor,
+                )
+                s.add(order)
+                s.commit()
+                s.refresh(order)
+                order_id = int(order.id)
+
+            # Insert all rows (including unmatched — product_id may be None)
+            for _, r in df.iterrows():
+                pid = r.get("matched_product_id", None)
+                try:
+                    pid_i = int(pid) if pid is not None and not pd.isna(pid) else None
+                except Exception:
+                    pid_i = None
+
+                try:
+                    qty = float(r.get("quantity") or 0.0)
+                except Exception:
+                    qty = 0.0
+                if qty <= 0:
+                    continue
+
+                s.add(OrderLine(
+                    venue_id=int(venue_id),
+                    order_id=order_id,
+                    product_id=pid_i,
+                    spoken_name=str(r.get("spoken_name") or r.get("matched_name") or ""),
+                    matched_name=str(r.get("matched_name") or ""),
+                    quantity=qty,
+                    unit=str(r.get("unit") or "unit").strip().lower() or "unit",
+                    confidence=float(r.get("confidence") or 0.0),
+                    provider=r.get("provider") or None,
+                    updated_at=datetime.utcnow(),
+                    updated_by=actor,
+                ))
+
+            s.commit()
+        return order_id
+
+    def _restore_from_autosave() -> Optional[tuple[pd.DataFrame, int]]:
+        """Reload the auto-save draft back into parsed_df after a page reload.
+
+        Returns (df, order_id) or None if no autosave exists for this user/venue.
+        products_by_id is captured by closure — resolved at call-time.
+        """
+        actor = current_actor()
+        with get_session() as s:
+            order = s.exec(
+                select(Order).where(
+                    Order.venue_id == int(venue_id),
+                    Order.status == "draft",
+                    Order.title == AUTOSAVE_TITLE,
+                    Order.created_by == actor,
+                )
+            ).first()
+            if order is None:
+                return None
+
+            lines = s.exec(
+                select(OrderLine).where(OrderLine.order_id == int(order.id))
+            ).all()
+            if not lines:
+                return None
+
+            rows = []
+            for ln in lines:
+                pid = getattr(ln, "product_id", None)
+                prod = products_by_id.get(int(pid)) if pid is not None else None
+                rows.append({
+                    "spoken_name":        getattr(ln, "spoken_name", "") or "",
+                    "matched_product_id": pid,
+                    "matched_name":       getattr(ln, "matched_name", "") or (prod.name if prod else None),
+                    "confidence":         float(getattr(ln, "confidence", 0) or 0),
+                    "quantity":           float(getattr(ln, "quantity", 1) or 1),
+                    "unit":               getattr(ln, "unit", "unit") or "unit",
+                    "unit_custom":        "",
+                    "provider":           getattr(ln, "provider", None) or (prod.provider_name if prod else None),
+                    "source":             "autosave",
+                    "status":             "OK" if pid is not None else "Revisar",
+                })
+
+        if not rows:
+            return None
+        return pd.DataFrame(rows), int(order.id)
+
+    def _delete_autosave(order_id: Optional[int] = None) -> None:
+        """Delete the hidden auto-save draft (and its lines) from the DB."""
+        actor = current_actor()
+        with get_session() as s:
+            if order_id is not None:
+                orders_to_delete = s.exec(
+                    select(Order).where(
+                        Order.id == int(order_id),
+                        Order.title == AUTOSAVE_TITLE,
+                    )
+                ).all()
+            else:
+                orders_to_delete = s.exec(
+                    select(Order).where(
+                        Order.venue_id == int(venue_id),
+                        Order.title == AUTOSAVE_TITLE,
+                        Order.created_by == actor,
+                    )
+                ).all()
+
+            for o in orders_to_delete:
+                lines = s.exec(select(OrderLine).where(OrderLine.order_id == int(o.id))).all()
+                for ln in lines:
+                    s.delete(ln)
+                s.delete(o)
+            s.commit()
     active_draft_id = st.session_state.get(ACTIVE_DRAFT_KEY)
     try:
         active_draft_id = int(active_draft_id) if active_draft_id is not None else None
@@ -626,6 +808,18 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     alias_to_products = alias_indexes["alias_to_products"]
 
     catalog_names = list(catalog_norm_to_pids.keys())
+
+    # =========================================================
+    # RESTORE AUTO-SAVE (lost session state after tab navigation reload)
+    # =========================================================
+    _existing_parsed = st.session_state.get(S("parsed_df"))
+    if not isinstance(_existing_parsed, pd.DataFrame) or _existing_parsed.empty:
+        _restored = _restore_from_autosave()
+        if _restored is not None:
+            _df_restored, _autosave_id = _restored
+            st.session_state[S("parsed_df")] = _df_restored
+            st.session_state[S("autosave_order_id")] = _autosave_id
+            st.toast("↩️ " + t("new_order.autosave_restored"), icon="✅")
 
     # =========================================================
     # FULL-PAGE PRODUCT ADDER (similar to _render_lines_editor)
@@ -785,7 +979,6 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 
                                 if details:
                                     st.caption(" · ".join(details))
-
                 
                                 st.number_input(
                                     "Cant.",
@@ -793,7 +986,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                                     value=(st.session_state.get(K(f"fullpage_qty_{pid}_{j}"), 0) or 0),
                                     step=1,
                                     key=K(f"fullpage_qty_{pid}_{j}"),
-                                    label_visibility="collapsed", width=150
+                                    label_visibility="collapsed"
                                 )
 
                     # -----------------------------
@@ -1695,6 +1888,22 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 st.session_state[S("finalize_parse_pending")] = False
         st.rerun()
 
+
+    # =========================================================
+    # AUTO-SAVE parsed_df to DB (debounced by content hash)
+    # =========================================================
+    _autosave_df = st.session_state.get(S("parsed_df"))
+    if isinstance(_autosave_df, pd.DataFrame) and not _autosave_df.empty:
+        _df_hash = hashlib.md5(
+            _autosave_df.astype(str).to_json().encode()
+        ).hexdigest()
+        if _df_hash != st.session_state.get(S("autosave_hash")):
+            _aid = _autosave_parsed_df(
+                _autosave_df,
+                existing_order_id=st.session_state.get(S("autosave_order_id")),
+            )
+            st.session_state[S("autosave_order_id")] = _aid
+            st.session_state[S("autosave_hash")] = _df_hash
 
     # =========================================================
     # Parsed summary preview card (Unified notebook with delete buttons)

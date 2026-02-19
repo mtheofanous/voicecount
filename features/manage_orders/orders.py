@@ -2635,8 +2635,12 @@ def borrador_tab(
     else:
         deep_order_id = None
 
-    # Filter draft only
-    orders = [o for o in orders_all if _s(getattr(o, "status", "draft")).lower() == "draft"]
+    # Filter draft only (exclude hidden auto-save drafts)
+    orders = [
+        o for o in orders_all
+        if _s(getattr(o, "status", "draft")).lower() == "draft"
+        and _s(getattr(o, "title", "") or "") != "__autosave__"
+    ]
     if not orders:
         st.info(t("msg.no_drafts"))
         return

@@ -292,6 +292,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "new_order.no_title":           "Χωρίς τίτλο",
         "new_order.choose_colon":       "Επιλέξτε:",
         "new_order.added_to_draft":     "✅ Προστέθηκε στο πρόχειρο #{n}",
+        "new_order.autosave_restored":  "Η προηγούμενη παραγγελία σου επαναφέρθηκε",
         "new_order.restore":            "Αναίρεση",
         "new_order.cross_out":          "Διαγραφή",
         "new_order.search_product":     "Αναζήτηση προϊόντος",
@@ -302,7 +303,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         #--- Order tab ---
         "order.order_title":           "Παραγγελία",
         "order.created":               "Δημιουργήθηκε",
-        "order.created_by":            "Δημιουργήθηκε από",
+        "order.created_by":            "από",
     },
 
     # =========================================================
@@ -562,6 +563,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "new_order.no_title":           "Sin título",
         "new_order.choose_colon":       "Elige:",
         "new_order.added_to_draft":     "✅ Añadido al borrador #{n}",
+        "new_order.autosave_restored":  "Tu pedido anterior fue restaurado",
         "new_order.restore":            "Restaurar",
         "new_order.cross_out":          "Tachar",
         "new_order.search_product":     "Buscar producto",
@@ -573,7 +575,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "order.order_title":           "Pedido",
         "order.select_borrador":       "Seleccionar borrador",
         "order.created":               "Creado",
-        "order.created_by":            "Creado por",
+        "order.created_by":            "por",
     },
 
     # =========================================================
@@ -833,6 +835,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "new_order.no_title":           "No title",
         "new_order.choose_colon":       "Choose:",
         "new_order.added_to_draft":     "✅ Added to draft #{n}",
+        "new_order.autosave_restored":  "Your previous order was restored",
         "new_order.restore":            "Restore",
         "new_order.cross_out":          "Cross out",
         "new_order.search_product":     "Search product",
@@ -843,7 +846,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         #--- Order tab ---
         "order.order_title":           "Order",
         "order.created":               "Created",
-        "order.created_by":            "Created by",
+        "order.created_by":            "by",
     },
 }
 
