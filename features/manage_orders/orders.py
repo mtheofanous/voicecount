@@ -1711,9 +1711,8 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
                 "product_label",
                 header_name="Producto",
                 editable=False,
-                wrapText=False,
-                autoHeight=True,
-                resizable=True,
+                minWidth=300,
+                flex=2
             )
 
         # keep product_id hidden (since label is shown)
