@@ -1761,7 +1761,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
             allow_unsafe_jscode=True,
             fit_columns_on_grid_load=False,
             theme=yellow_notebook_theme,     # 👈 custom theme goes here
-            height=620,
+            height=450,
             key="theming_grid",
         )
 

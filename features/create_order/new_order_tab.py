@@ -721,33 +721,35 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 st.session_state[page_state_key] = page_idx
 
                 if total_pages > 1:
-                    # col_prev, col_info, col_next = st.columns(
-                    #     [1, 4, 1], vertical_alignment="center"
-                    # )
+
                     with st.container(horizontal=True):
-                        if st.button(
-                            "◀",
-                            key=K(f"prev_{selected_prov}_{j}"),
-                            disabled=(page_idx == 0),
-                            use_container_width=True,
-                        ):
-                            st.session_state[page_state_key] = max(0, page_idx - 1)
-                            st.rerun()
-                    # with col_info:
-                        st.markdown(
-                            f'<div style="text-align:center;font-size:0.9rem;color:#888;">'
-                            f'{page_idx + 1} / {total_pages}</div>',
-                            unsafe_allow_html=True,
-                        )
-                    # with col_next:
-                        if st.button(
-                            "▶",
-                            key=K(f"next_{selected_prov}_{j}"),
-                            disabled=(page_idx >= total_pages - 1),
-                            use_container_width=True,
-                        ):
-                            st.session_state[page_state_key] = min(total_pages - 1, page_idx + 1)
-                            st.rerun()
+                        col_prev, col_info, col_next = st.columns(
+                            [1, 4, 1], vertical_alignment="center")
+             
+                        with col_prev:
+                            if st.button(
+                                "◀",
+                                key=K(f"prev_{selected_prov}_{j}"),
+                                disabled=(page_idx == 0),
+                                use_container_width=True,
+                            ):
+                                st.session_state[page_state_key] = max(0, page_idx - 1)
+                                st.rerun()
+                        with col_info:
+                            st.markdown(
+                                f'<div style="text-align:center;font-size:0.9rem;color:#888;">'
+                                f'{page_idx + 1} / {total_pages}</div>',
+                                unsafe_allow_html=True,
+                            )
+                        with col_next:
+                            if st.button(
+                                "▶",
+                                key=K(f"next_{selected_prov}_{j}"),
+                                disabled=(page_idx >= total_pages - 1),
+                                use_container_width=True,
+                            ):
+                                st.session_state[page_state_key] = min(total_pages - 1, page_idx + 1)
+                                st.rerun()
 
                 # Slice products for this page
                 start_i = page_idx * PAGE_SIZE
