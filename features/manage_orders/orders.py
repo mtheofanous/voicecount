@@ -1711,7 +1711,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
                 "product_label",
                 header_name="Producto",
                 editable=False,
-                minWidth=250,
+                minWidth=220,
                 flex=2
             )
 
@@ -1754,7 +1754,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
             allow_unsafe_jscode=True,
             fit_columns_on_grid_load=False,
             onGridReady=on_grid_ready,
-            height=400,
+            height=600,
             theme="streamlit",
         )
 
@@ -2066,8 +2066,8 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
                 provider = _s(r.get("Proveedor") or r.get("Provider"))
                 qty_txt = f"{float(r.get('Qty') or 0.0):g} {_s(r.get('Unidad'))}"
 
-                if " — " in label:
-                    name_part, desc_part = label.split(" — ", 1)
+                if " · " in label:
+                    name_part, desc_part = label.split(" · ", 1)
                 else:
                     name_part, desc_part = label, ""
 
