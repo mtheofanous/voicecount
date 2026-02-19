@@ -1711,7 +1711,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
                 "product_label",
                 header_name="Producto",
                 editable=False,
-                minWidth=300,
+                minWidth=250,
                 flex=2
             )
 
