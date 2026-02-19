@@ -15,6 +15,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, date
 from typing import Any, Optional
+from core.i18n import t
 
 
 import pandas as pd
@@ -59,10 +60,10 @@ def _render_history_tab(venue_id: int, *, deep_provider: Optional[str] = None) -
       - Match credit notes (CN number) to invoice/provider
       - Filter by incidence kind + solution type
     """
-    with st.spinner("Loading history..."):
+    with st.spinner(t("msg.loading_history")):
         orders = _get_history_orders(int(venue_id))
     if not orders:
-        st.info("No closed supplier history yet.")
+        st.info(t("msg.no_closed_history"))
         return
 
     # ---------- helpers ----------
@@ -82,10 +83,10 @@ def _render_history_tab(venue_id: int, *, deep_provider: Optional[str] = None) -
     def _pretty_kind(k: str) -> str:
         k = (k or "").strip().lower()
         return {
-            "invoice_discrepancy": "Invoice discrepancy",
-            "damaged": "Damaged",
-            "wrong_item": "Wrong item",
-            "missing": "Missing",
+            "invoice_discrepancy": t("incident.invoice_discrepancy"),
+            "damaged": t("incident.damaged"),
+            "wrong_item": t("incident.wrong_item"),
+            "missing": t("incident.missing"),
             "operational_missing": "Operational missing",
         }.get(k, k.replace("_", " ").title() if k else "—")
 
@@ -150,7 +151,7 @@ def _render_history_tab(venue_id: int, *, deep_provider: Optional[str] = None) -
         return out
 
     # ---------- top filters ----------
-    st.markdown("### History")
+    st.markdown(t("history.title"))
 
     # default window: last 30 days (nice UX)
     today = datetime.utcnow().date()
@@ -159,13 +160,13 @@ def _render_history_tab(venue_id: int, *, deep_provider: Optional[str] = None) -
     f0, f1, f2, f3 = st.columns([1.4, 1.2, 1.2, 1.2], vertical_alignment="center")
     with f0:
         q = st.text_input(
-            "Search provider / invoice / order",
-            placeholder="e.g. makro, CN-12, 2025-, #120",
+            t("history.search"),
+            placeholder=t("history.search_hint"),
         ).strip().lower()
 
     with f1:
         dr = st.date_input(
-            "Date range",
+            t("label.date_range"),
             value=(default_start, today),
             format="DD/MM/YYYY",
         )
@@ -176,15 +177,15 @@ def _render_history_tab(venue_id: int, *, deep_provider: Optional[str] = None) -
 
     # incidence kind filter
     KIND_OPTIONS = [
-        ("invoice_discrepancy", "Invoice discrepancy"),
-        ("damaged", "Damaged"),
-        ("wrong_item", "Wrong item"),
-        ("missing", "Missing"),
-        ("operational_missing", "Operational missing"),
+        ("invoice_discrepancy", t("incident.invoice_discrepancy")),
+        ("damaged", t("incident.damaged")),
+        ("wrong_item", t("incident.wrong_item")),
+        ("missing", t("incident.missing")),
+        ("operational_missing", t("incident.operational_missing")),
     ]
     with f2:
         kind_sel = st.multiselect(
-            "Incidences",
+            t("history.incidences"),
             options=[k for k, _ in KIND_OPTIONS],
             default=[],
             format_func=lambda k: dict(KIND_OPTIONS).get(k, _pretty_kind(k)),
@@ -193,15 +194,15 @@ def _render_history_tab(venue_id: int, *, deep_provider: Optional[str] = None) -
 
     # solution filter
     SOL_OPTIONS = [
-        ("credit_note", "Credit note"),
-        ("supplementary_delivery", "Re-delivery"),
-        ("ok_internal", "Internal"),
-        ("closed", "Closed (unknown)"),
-        ("reject", "Rejected"),
+        ("credit_note", t("solution.credit_note")),
+        ("supplementary_delivery", t("solution.redelivery")),
+        ("ok_internal", t("solution.internal")),
+        ("closed", t("solution.closed_unknown")),
+        ("reject", t("solution.rejected")),
     ]
     with f3:
         sol_sel = st.multiselect(
-            "Solutions",
+            t("history.solutions"),
             options=[k for k, _ in SOL_OPTIONS],
             default=[],
             format_func=lambda k: dict(SOL_OPTIONS).get(k, k),
@@ -306,7 +307,7 @@ def _render_history_tab(venue_id: int, *, deep_provider: Optional[str] = None) -
             )
 
     if not rows:
-        st.info("No history matches your filters.")
+        st.info(t("msg.no_history_filters"))
         return
 
     # newest first
@@ -342,7 +343,7 @@ def _render_history_tab(venue_id: int, *, deep_provider: Optional[str] = None) -
 
     st.dataframe(pd.DataFrame(preview_rows), use_container_width=True, hide_index=True)
 
-    st.caption("Open any row below to see expected lines, incidences and credit note matching.")
+    st.caption(t("history.open_row_hint"))
 
     # ---------- detailed expanders ----------
     for r in rows[:200]:
@@ -366,9 +367,9 @@ def _render_history_tab(venue_id: int, *, deep_provider: Optional[str] = None) -
             ctx = _load_order_context(int(venue_id), oid)
 
             # Tabs: expected lines always; credit note tab only if credit note; incidences always
-            tab_names = ["Invoice / expected lines", "Incidences"]
+            tab_names = [t("history.invoice_expected"), t("history.incidences")]
             if sol_key == "credit_note":
-                tab_names.insert(1, "Credit note (matched)")
+                tab_names.insert(1, t("history.credit_note_matched"))
 
             tabs = st.tabs(tab_names)
 
@@ -871,22 +872,22 @@ def _iva_by_rate(df: pd.DataFrame, expected_rates: list[float]) -> pd.DataFrame:
 
 
 def reports_page(venue_id: int, venue_role: str) -> None:
-    st.header("Reports")
-    st.caption("IVA/ΦΠΑ breakdown + credit note coverage + spend analytics.")
+    st.header(t("reports.title"))
+    st.caption(t("reports.subtitle"))
 
     today = datetime.utcnow().date()
     default_start = today.replace(day=1) - timedelta(days=90)
 
     c0, c1, c2 = st.columns([1.4, 1.2, 1.2], vertical_alignment="center")
     with c0:
-        dr = st.date_input("Date range", value=(default_start, today), format="DD/MM/YYYY")
+        dr = st.date_input(t("label.date_range"), value=(default_start, today), format="DD/MM/YYYY")
         if isinstance(dr, tuple) and len(dr) == 2:
             d_from, d_to = dr[0], dr[1]
         else:
             d_from, d_to = default_start, today
 
     with c1:
-        vat_profile = st.selectbox("VAT profile", ["Spain (IVA)", "Greece (ΦΠΑ)"], index=0)
+        vat_profile = st.selectbox(t("reports.vat_profile"), ["Spain (IVA)", "Greece (ΦΠΑ)"], index=0)
     with c2:
         show_outstanding_cn = st.checkbox("Only outstanding credit notes", value=False)
 
@@ -894,7 +895,7 @@ def reports_page(venue_id: int, venue_role: str) -> None:
 
     df_all = _build_reports_df(int(venue_id))
     if df_all.empty:
-        st.info("No history available yet (no CLOSED supplier workflows).")
+        st.info(t("msg.no_closed_history"))
         return
 
     df = _filter_df(df_all, d_from, d_to)
@@ -1013,7 +1014,7 @@ def reports_page(venue_id: int, venue_role: str) -> None:
     # Spend analytics (pro)
     # =========================
     st.divider()
-    st.header("Spend analytics")
+    st.header(t("reports.spend_analytics"))
 
     # --- Filter bar ---
     f1, f2, f3, f4 = st.columns([1.1, 1.1, 1.6, 1.0], vertical_alignment="center")
@@ -1046,16 +1047,15 @@ def reports_page(venue_id: int, venue_role: str) -> None:
 
     with f3:
         selected_products = st.multiselect(
-            "Products (filter)",
+            t("label.products_filter"),
             options=list(prod_spend.index.astype(str))[:1000],  # avoid huge UI, but still large enough
             default=[],
-            help="Search + select products to focus the analytics. Leave empty to include all products.",
             key="reports_products_ms",
         )
 
     with f4:
         chart_mode = st.selectbox(
-            "View",
+            t("label.view"),
             ["Charts + tables", "Charts only", "Tables only"],
             index=0,
             key="reports_view_mode",
@@ -1094,7 +1094,7 @@ def reports_page(venue_id: int, venue_role: str) -> None:
         dfA = dfA[dfA["category"].astype(str).isin(set(st.session_state["reports_categories_ms"]))]
 
     if dfA.empty:
-        st.info("No data matches the analytics filters.")
+        st.info(t("msg.no_analytics_data"))
         return
 
     # Ensure we never show time-of-day
@@ -1287,7 +1287,7 @@ def history_reports_page(
     deep_provider: str | None = None,
 ) -> None:
 
-    tabs = st.tabs(["🗂️ History", "📈 Reports"])
+    tabs = st.tabs([t("tab.history"), t("tab.reports")])
 
     with tabs[0]:
         _render_history_tab(int(venue_id), deep_provider=deep_provider)

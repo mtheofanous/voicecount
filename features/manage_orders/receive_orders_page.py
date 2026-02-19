@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+from core.i18n import t
+
 """features.manage_orders.receive_orders
 
 Venue-side dashboard to:
@@ -1311,7 +1313,7 @@ def _render_urgent_tab(ctx: 'OrderContext') -> None:
     st.markdown("### ⚡ Urgent reorders")
     reqs = _list_open_urgent_requests()
     if not reqs:
-        st.info("No urgent reorder requests yet. Use **Order urgent** in Incidences and click **Save & request decision**.")
+        st.info(t("receive.no_urgent_requests"))
         return
 
     providers_by_name = ctx.providers_by_name or {}
@@ -2360,7 +2362,7 @@ def _render_expected_lines(
     prov = norm_provider(provider)
     lines = ctx.lines_by_provider.get(prov, []) or []
     if not lines:
-        st.info("No products.")
+        st.info(t("msg.no_products"))
         return
 
     # ---------- Batch prefetch prev-month quantities (single query) ----------
@@ -2745,7 +2747,7 @@ def _render_receive_form(ctx: OrderContext, provider: str) -> None:
         exp_html = f" <span style='font-size:.82em;opacity:.7;font-weight:700;'>· {qty_expected:g} {unit}</span>"
         st.markdown(f"**{name}**{desc_html}{exp_html}", unsafe_allow_html=True)
         if supplier_confirmed_missing:
-            st.caption("🚫 Supplier confirmed: **Not sending**")
+            st.caption(t("msg.supplier_not_sending"))
 
         # --- Widgets row (stays horizontal on mobile) ---
         with st.container(key=f"recv_row_{int(order.id)}_{prov}_{lid}", horizontal=True):
@@ -4632,11 +4634,11 @@ def _render_incidences_cards(
                 show_cn = has_credit_pending and view_mode in ("all", "credit_note") or view_mode == "credit_note"
                 show_rd = has_redel_pending and view_mode in ("all", "re_delivery") or view_mode == "re_delivery"
 
-                labels = ["Invoice / expected lines"]
+                labels = [t("history.invoice_expected")]
                 if show_cn:
-                    labels.append("🧾 Expected credit note")
+                    labels.append(t("receive.expected_credit_note"))
                 if show_rd:
-                    labels.append("🚚 Expected re-delivery")
+                    labels.append(t("receive.expected_redelivery"))
 
                 tabs = st.tabs(labels)
 
@@ -4703,7 +4705,7 @@ def _render_incidences_cards(
 
                         c1, c2 = st.columns([1.2, 1.0], vertical_alignment="center")
                         with c1:
-                            st.caption("Required to close (supplier may leave it blank; venue fills it here).")
+                            st.caption(t("receive.required_to_close"))
                         with c2:
                             if st.button(
                                 "✅ Verify credit note & close",
@@ -4711,7 +4713,7 @@ def _render_incidences_cards(
                                 key=f"inc_verify_cn_{order.id}_{provn}",
                             ):
                                 if not _s(cn_val).strip():
-                                    st.warning("⚠️ Please enter the credit note number before closing.")
+                                    st.warning(t("msg.enter_cn_number"))
                                 else:
                                     res_close = venue_verify_and_close(
                                         ctx=ctx,
@@ -4720,7 +4722,7 @@ def _render_incidences_cards(
                                         credit_note_invoice=_s(cn_val).strip(),
                                     )
                                     if res_close == "ok":
-                                        st.success("Credit note closed")
+                                        st.success(t("msg.credit_note_closed"))
                                         st.rerun()
                                     else:
                                         st.error(res_close)
@@ -4752,7 +4754,7 @@ def _render_incidences_cards(
                         ):
                             res_close = venue_verify_and_close(ctx=ctx, provider=provn, mode="supplementary")
                             if res_close == "ok":
-                                st.success("Re-delivery closed")
+                                st.success(t("msg.redelivery_closed"))
                                 st.rerun()
                             else:
                                 st.error(res_close)
@@ -4900,7 +4902,7 @@ def _render_incidences_cards(
             # State-specific actions
             # -----------------------------
             if state_u == "SUPPLIER_REJECTED":
-                st.warning("Supplier rejected the claim (typically used for *Wrong item* / *Damaged* disputes).")
+                st.warning(t("receive.supplier_rejected"))
                 if a1.button("✅ Accept reject & close", use_container_width=True, key=f"inc_rej_{order.id}_{provn}"):
                     res = venue_verify_and_close(ctx=ctx, provider=provn, mode="reject")
                     if res == "ok":
@@ -4930,7 +4932,7 @@ def _render_incidences_cards(
                         # Default path: request supplier resolution link
                         ok, msg = request_supplier_resolution(int(order.venue_id), int(order.id), provn, venue_comment=venue_msg)
                         if ok:
-                            st.success("Link sent")
+                            st.success(t("msg.link_sent"))
                             st.link_button("Open supplier link", msg, use_container_width=True)
                             st.rerun()
                         else:
@@ -4941,8 +4943,8 @@ def _render_incidences_cards(
 
 
             elif state_u == "SUPPLIER_CREDIT_NOTE_PENDING":
-                st.warning("⏳ Supplier chose credit note, but the credit note number is still missing.")
-                st.caption("Ask the supplier to open the link again and add the credit note number.")
+                st.warning(t("msg.cn_missing_number"))
+                st.caption(t("msg.ask_supplier_add_cn"))
 
 
             # ---------------------------------------------------------
@@ -5094,7 +5096,7 @@ def _render_incidences_cards(
             #     st.success("✔ Decisions requested.")            
 
         if not open_any:
-            st.success("✅ No incidences requiring action.")
+            st.success(t("msg.no_incidences_action"))
 
 
 # =============================
@@ -5735,7 +5737,7 @@ def tracking_dashboard(
         fp_provider = fp["provider"]
         fp_venue_id = int(fp.get("venue_id") or venue_id)
 
-        if st.button("← Back to Dashboard", key="btn_fp_back"):
+        if st.button(t("msg.back_to_dashboard"), key="btn_fp_back"):
             del st.session_state["fullpage_receive"]
             st.rerun()
 
@@ -5787,7 +5789,7 @@ def tracking_dashboard(
                 actor="",
             )
             if ok:
-                st.success("Invoice # saved ✓")
+                st.success(t("msg.invoice_saved"))
                 st.rerun()
             else:
                 st.error(msg)
@@ -5817,7 +5819,7 @@ def tracking_dashboard(
     with st.spinner("Loading dashboard..."):
         orders = _get_active_orders(int(venue_id), refresh_token=_orders_refresh_token(int(venue_id)))
         if not orders:
-            st.info("No orders yet.")
+            st.info(t("msg.no_orders_yet"))
             return
 
         order_ids = [int(o.id) for o in orders if o.id is not None]
@@ -5847,7 +5849,7 @@ def tracking_dashboard(
         st.session_state[f"recv_desired_provider_{int(ctx.order.id)}"] = desired_norm
         
     if not providers:
-        st.info("No suppliers found for this order.")
+        st.info(t("msg.no_suppliers"))
         return
 
 
@@ -5924,7 +5926,7 @@ def tracking_dashboard(
             with st.spinner("Loading pending items..."):
                 tasks = _list_pending_receive_items(int(venue_id), refresh_token=_orders_refresh_token(int(venue_id)))
             if not tasks:
-                st.success("✅ Nothing pending to receive right now.")
+                st.success(t("msg.nothing_pending"))
                 return
 
             # f1, f2 = st.columns([2.2, 1.0], vertical_alignment="center")
@@ -5963,12 +5965,12 @@ def tracking_dashboard(
             with st.spinner("Loading open incidences..."):
                 items = _list_open_incidences_items(int(venue_id))
             if not items:
-                st.success("✅ No open incidences.")
+                st.success(t("msg.no_open_incidences"))
                 return
 
             f1, f2 = st.columns([2.2, 1.0], vertical_alignment="center")
             with f1:
-                q = st.text_input("Search provider / invoice / order", key="inc_global_search", placeholder="e.g. invoice, #34").strip().lower()
+                q = st.text_input(t("receive.search"), key="inc_global_search", placeholder=t("receive.search_hint")).strip().lower()
             with f2:
                 expand_all = st.toggle("Expand all", value=False, key="inc_global_expand_all")
 
@@ -5980,14 +5982,14 @@ def tracking_dashboard(
                 oid = str(t.get("order_id") or "")
                 return (q in prov) or (q in inv) or (q in oid) or (q in f"#{oid}")
 
-            items2 = [t for t in items if _matches_inc(t)]
+            items2 = [item for item in items if _matches_inc(item)]
             if not items2:
-                st.info("No matches.")
+                st.info(t("msg.no_matches"))
                 return
 
-            for t in items2:
-                oid = int(t["order_id"])
-                prov = _s(t.get("provider") or "—")
+            for item in items2:
+                oid = int(item["order_id"])
+                prov = _s(item.get("provider") or "—")
 
                 ctx_i = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
                 _render_incidences_cards(ctx_i, [prov], show_prices=True, include_iva=True)
@@ -6001,12 +6003,12 @@ def tracking_dashboard(
                 REDEL_SET = {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}
                 items = _filter_incidences_by_resolution(items, int(venue_id), REDEL_SET, contexts=contexts) if items else []
             if not items:
-                st.success("✅ No pending re-deliveries.")
+                st.success(t("msg.no_pending_redeliveries"))
                 return
 
-            for t in items:
-                oid = int(t["order_id"])
-                prov = _s(t.get("provider") or "—")
+            for item in items:
+                oid = int(item["order_id"])
+                prov = _s(item.get("provider") or "—")
 
                 ctx_r = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
                 _render_incidences_cards(ctx_r, [prov], show_prices=True, include_iva=True, view_mode="re_delivery")
@@ -6019,12 +6021,12 @@ def tracking_dashboard(
                 items = _list_open_incidences_items(int(venue_id))
                 items = _filter_incidences_by_resolution(items, int(venue_id), {"credit_note"}, contexts=contexts) if items else []
             if not items:
-                st.success("✅ No pending credit notes.")
+                st.success(t("msg.no_pending_credit_notes"))
                 return
 
-            for t in items:
-                oid = int(t["order_id"])
-                prov = _s(t.get("provider") or "—")
+            for item in items:
+                oid = int(item["order_id"])
+                prov = _s(item.get("provider") or "—")
 
                 ctx_c = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
                 _render_incidences_cards(ctx_c, [prov], show_prices=True, include_iva=True, view_mode="credit_note")

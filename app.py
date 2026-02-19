@@ -54,6 +54,7 @@ from features.auth_and_manage.auth_multi_tenant import (
     manage_organization_ui,
 )
 from core.url_nav import qp_int, qp_str, set_query_params
+from core.i18n import t, get_lang, set_lang
 
 warnings.filterwarnings("ignore", message=".*use_container_width.*")
 warnings.filterwarnings("ignore", message=".*label.*got an empty value.*")
@@ -225,10 +226,10 @@ def _bottom_tabbar(current_page: str) -> None:
     require an extra rerun. This removes the 'double-run' feeling on page switch.
     """
     tabs = [
-        ("new", "➕", "New"),
-        ("borrador", "📝", "Borrador"),
-        ("orders", "📦", "Orders"),
-        ("tracking", "✅", "Receive"),
+        ("new",      "➕", t("nav.new")),
+        ("borrador", "📝", t("nav.draft")),
+        ("orders",   "📦", t("nav.orders")),
+        ("tracking", "✅", t("nav.receive")),
     ]
 
     token = st.session_state.get("_session_token", "")
@@ -281,15 +282,34 @@ def _inject_topbar(
     catalog_active = "active" if is_catalog_page else ""
     history_active = "active" if is_history_page else ""
 
+    # Language switcher hrefs (preserve current page + token)
+    current_lang = get_lang()
+    current_page = st.session_state.get("page", "orders")
+    page_param = f"page={current_page}"
+    lang_el_href = f"?{page_param}&lang=el{token_param}"
+    lang_es_href = f"?{page_param}&lang=es{token_param}"
+    lang_en_href = f"?{page_param}&lang=en{token_param}"
+    lang_el_active = "voi-lang-active" if current_lang == "el" else ""
+    lang_es_active = "voi-lang-active" if current_lang == "es" else ""
+    lang_en_active = "voi-lang-active" if current_lang == "en" else ""
+
     manage_icon_html = (
-        f'<a class="voi-topbar-icon {manage_active}" href="{manage_href}" target="_self" title="Manage Org">⚙️</a>'
+        f'<a class="voi-topbar-icon {manage_active}" href="{manage_href}" target="_self" title="{t("nav.manage_org")}">⚙️</a>'
         if show_manage_org else ""
     )
-    catalog_icon_html = f'<a class="voi-topbar-icon {catalog_active}" href="{catalog_href}" target="_self" title="Catalog">🧾</a>'
-    history_icon_html = f'<a class="voi-topbar-icon {history_active}" href="{history_href}" target="_self" title="History">📈</a>'
+    catalog_icon_html = f'<a class="voi-topbar-icon {catalog_active}" href="{catalog_href}" target="_self" title="{t("nav.catalog")}">🧾</a>'
+    history_icon_html = f'<a class="voi-topbar-icon {history_active}" href="{history_href}" target="_self" title="{t("nav.history")}">📈</a>'
+
+    lang_switcher_html = (
+        f'<div id="voi-lang-switcher">'
+        f'<a class="voi-lang-btn {lang_el_active}" href="{lang_el_href}" target="_self">ΕΛ</a>'
+        f'<a class="voi-lang-btn {lang_es_active}" href="{lang_es_href}" target="_self">ES</a>'
+        f'<a class="voi-lang-btn {lang_en_active}" href="{lang_en_href}" target="_self">EN</a>'
+        f'</div>'
+    )
 
     # show venue next to account
-    acc_venue = f"Account: {account_name or 'â€”'} â€” {venue_name or 'â€”'}"
+    acc_venue = f"{account_name or '-'} — {venue_name or '-'}"
 
     components_html(
         f"""
@@ -358,6 +378,34 @@ def _inject_topbar(
         font-size: 13px;
         font-weight: 600;
       }}
+      #voi-lang-switcher {{
+        display: flex;
+        align-items: center;
+        gap: 2px;
+        border: 1px solid rgba(0,0,0,0.12);
+        border-radius: 10px;
+        overflow: hidden;
+        padding: 2px;
+        background: #f8fafc;
+      }}
+      .voi-lang-btn {{
+        padding: 4px 8px;
+        border-radius: 7px;
+        text-decoration: none !important;
+        color: rgba(0,0,0,0.50);
+        font-size: 11px;
+        font-weight: 700;
+        letter-spacing: 0.03em;
+      }}
+      .voi-lang-btn:hover {{
+        background: rgba(0,0,0,0.06);
+        color: rgba(0,0,0,0.85);
+      }}
+      .voi-lang-active {{
+        background: #fff;
+        color: rgba(0,0,0,0.9) !important;
+        box-shadow: 0 1px 4px rgba(0,0,0,0.10);
+      }}
     `;
     doc.head.appendChild(style);
   }}
@@ -373,10 +421,11 @@ def _inject_topbar(
     <div id="voi-topbar-inner">
       <div id="voi-topbar-acc">{acc_venue}</div>
       <div id="voi-topbar-right">
+        {lang_switcher_html}
         {catalog_icon_html}
         {history_icon_html}
         {manage_icon_html}
-        <a id="voi-topbar-logout" href="{logout_href}" target="_self">Logout</a>
+        <a id="voi-topbar-logout" href="{logout_href}" target="_self">{t("nav.logout")}</a>
       </div>
     </div>
   `;
@@ -541,6 +590,16 @@ def main():
     # Handle logout / actions early
     _handle_actions_from_query_params()
 
+    # Read language from URL and store in session state
+    try:
+        url_lang = st.query_params.get("lang", "").strip().lower()
+        if url_lang in ("el", "es", "en"):
+            set_lang(url_lang)
+        elif "lang" not in st.session_state:
+            set_lang("el")  # default: Greek
+    except Exception:
+        pass
+
     # Read page from URL (auth_gate now preserves these params)
     try:
         url_page = st.query_params.get("page", "").strip().lower()
@@ -585,7 +644,7 @@ def main():
 
     # ✅ Let Manage Org work even if user has no venue yet
     if not active:
-        st.warning("You don't have access to any venue yet.")
+        st.warning(t("msg.no_venue_access"))
 
         u0 = current_user() or {}
         account_role = (u0.get("account_role") or "member").lower()
@@ -599,9 +658,9 @@ def main():
 
         # Default message for other pages
         if account_role in {"owner", "admin", "manager"}:
-            st.info("Create your first venue in Manage Org.")
+            st.info(t("msg.create_first_venue"))
         else:
-            st.info("Ask an admin to grant you access.")
+            st.info(t("msg.ask_admin_access"))
         return
 
 

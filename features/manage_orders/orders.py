@@ -48,6 +48,8 @@ from domain.models import (
     ProviderDiscountRule,
 )
 
+from core.i18n import t
+
 try:
     from domain.models import ProviderReceipt  # type: ignore
 except Exception:  # pragma: no cover
@@ -180,13 +182,13 @@ def _order_label(o: Order) -> str:
 def _status_chip(status: str) -> str:
     s = (_s(status)).lower()
     if s == "draft":
-        return "📝 Borrador"
+        return t("status.draft")
     if s == "ready_to_send":
-        return "📤 Listo"
+        return t("status.ready")
     if s == "pending_receive":
-        return "📦 Pendiente"
+        return t("status.pending")
     if s == "final":
-        return "✅ Historial"
+        return t("status.history")
     return s or "—"
 
 
@@ -1145,7 +1147,7 @@ def _render_workflow_actions(*, venue_id: int, order: Order, role: Optional[str]
     can_manage = (_s(role)).lower() in {"owner", "manager"}
     with st.container(horizontal=True):
         if status == "draft":
-            if st.button("✅ Pasar a Cesta", type="primary", use_container_width=True):
+            if st.button(t("action.move_to_basket"), type="primary", use_container_width=True):
                 _set_order_status(int(order.id), "ready_to_send", actor)
                 st.session_state.pop(f"orders_active_order_id_{venue_id}", None)
                 st.session_state[f"orders_active_order_id_{venue_id}"] = int(order.id)
@@ -1155,7 +1157,7 @@ def _render_workflow_actions(*, venue_id: int, order: Order, role: Optional[str]
                 st.rerun()
 
         elif status == "ready_to_send":
-            if st.button("↩️ Volver a Borrador", use_container_width=True):
+            if st.button(t("action.back_to_draft"), use_container_width=True):
                 _set_order_status(int(order.id), "draft", actor)
                 st.session_state.pop(f"orders_active_order_id_{venue_id}", None)
                 st.session_state[f"borrador_active_order_id_{venue_id}"] = int(order.id)
@@ -1165,7 +1167,7 @@ def _render_workflow_actions(*, venue_id: int, order: Order, role: Optional[str]
                 st.rerun()
 
         if status == "pending_receive":
-            if st.button("✅ Cerrar (Historial)", type="primary", use_container_width=True):
+            if st.button(t("action.close_history"), type="primary", use_container_width=True):
                 _set_order_status(int(order.id), "final", actor); _bump_refresh(venue_id); st.rerun()
 
 
@@ -1739,7 +1741,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
             st.session_state[qa_nonce_key] = int(st.session_state.get(qa_nonce_key, 0) or 0) + 1
 
             _bump_refresh(venue_id)
-            st.success("Guardado ✓")
+            st.success(t("msg.saved"))
             st.rerun()
 
         elif eliminar:
@@ -1756,13 +1758,13 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
     v = _load_venue_templates(venue_id, _refresh_token(venue_id))
     missing_required = _venue_missing_required(v)
     if missing_required:
-        st.error("Faltan campos obligatorios del local para enviar:\n" + "\n".join([f"- {x}" for x in missing_required]))
+        st.error(t("msg.missing_venue_fields") + "\n" + "\n".join([f"- {x}" for x in missing_required]))
         return
 
     products_by_id = {int(p.id): p for p in products if p.id is not None}
     grouped = _group_lines_by_provider(lines, products_by_id)
     if not grouped:
-        st.info("No hay líneas para enviar.")
+        st.info(t("msg.no_lines_to_send"))
         return
 
     st.markdown("### Summary")
@@ -1999,7 +2001,7 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
 
     def _render_rows(rows: list[dict[str, Any]]) -> None:
         if not rows:
-            st.info("No hay líneas para resumir.")
+            st.info(t("msg.no_summary_lines"))
             return
 
         if compact:
@@ -2163,7 +2165,7 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
                 elif (not apply_smart_prices) and saved_net > 0:
                     st.markdown(f"⚡ **Ahorro smart potencial:** **{saved_net:,.2f}€** si aplicas precios inteligentes")
 
-            st.caption("Estimación: catálogo + reglas. La factura oficial del proveedor manda.")
+            st.caption(t("msg.price_estimate_note"))
         else:
             st.caption(f"{len(rows_all_eff)} líneas en total.")
     else:
@@ -2366,7 +2368,7 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
         g1, g2 = st.columns([1.6, 1.0], vertical_alignment="center")
         with g1:
             send_all_disabled = (not use_email)
-            if st.button("🚀 Enviar a todos (Email)", type="primary", use_container_width=True, disabled=send_all_disabled):
+            if st.button(t("action.send_all_email"), type="primary", use_container_width=True, disabled=send_all_disabled):
                 ok, fail = 0, 0
 
                 # ✅ IMPORTANT: If smart is ON, persist to DB ONCE and rebuild sending groups
@@ -2573,7 +2575,7 @@ def borrador_tab(
     # Filter draft only
     orders = [o for o in orders_all if _s(getattr(o, "status", "draft")).lower() == "draft"]
     if not orders:
-        st.info("No hay borradores.")
+        st.info(t("msg.no_drafts"))
         return
 
     # Order picker
@@ -2605,7 +2607,7 @@ def borrador_tab(
         ).first()
 
     if not order:
-        st.error("Pedido no encontrado.")
+        st.error(t("msg.order_not_found"))
         return
 
     products, products_by_id, label_by_id, cat_by_pid, prov_by_pid, all_categories, all_providers, base_pids = _product_ui_index_cached(get_session, venue_id)
@@ -2655,7 +2657,7 @@ def orders_tab(
     # Filter ready_to_send only
     orders = [o for o in orders_all if _s(getattr(o, "status", "draft")).lower() == "ready_to_send"]
     if not orders:
-        st.info("No hay pedidos listos para enviar.")
+        st.info(t("msg.no_ready_orders"))
         return
 
     # Order picker
@@ -2686,7 +2688,7 @@ def orders_tab(
         ).first()
 
     if not order:
-        st.error("Pedido no encontrado.")
+        st.error(t("msg.order_not_found"))
         return
 
     products, products_by_id, label_by_id, cat_by_pid, prov_by_pid, all_categories, all_providers, base_pids = _product_ui_index_cached(get_session, venue_id)

@@ -7,6 +7,7 @@ Optimized for performance with minimal reruns.
 
 from __future__ import annotations
 
+from core.i18n import t
 import os
 import base64
 import hmac
@@ -890,29 +891,29 @@ def auth_gate(
         st.title(title)
 
         # Use tabs for login/signup
-        t_login, t_signup = st.tabs(["🔐 Login", "✨ Sign up"])
+        t_login, t_signup = st.tabs([f"🔐 {t('login.tab_login')}", f"✨ {t('login.tab_register')}"])
 
         with t_login:
             # Wrap in form to prevent reruns
             with st.form(key="login_form", clear_on_submit=False):
-                email = st.text_input("Email", key="login_email").strip().lower()
-                pwd = st.text_input("Password", type="password", key="login_pwd")
+                email = st.text_input(t("label.email"), key="login_email").strip().lower()
+                pwd = st.text_input(t("label.password"), type="password", key="login_pwd")
 
                 col1, col2 = st.columns([1, 2])
                 with col1:
-                    submitted = st.form_submit_button("Login", type="primary")
+                    submitted = st.form_submit_button(t("login.tab_login"), type="primary")
                 with col2:
-                    st.caption("Use the same email you registered with.")
+                    st.caption(t("login.hint"))
 
             if submitted:
-                with st.spinner("Authenticating..."):
+                with st.spinner("..."):
                     res = authenticate(email, pwd)
                     if not res:
-                        st.error("Invalid email or password.")
+                        st.error(t("login.invalid"))
                     else:
                         user_id, account_id = res
                         _set_auth(user_id, account_id)
-                        st.success("Logged in ✅")
+                        st.success(t("login.success"))
                         st.session_state[rerun_key] = True
                         time.sleep(0.5)
                         # Restore query params before rerun
@@ -925,20 +926,20 @@ def auth_gate(
                         st.rerun()
 
         with t_signup:
-            st.caption("Create a new company account. The first user becomes the owner.")
+            st.caption(t("login.create_hint"))
 
             # Wrap in form
             with st.form(key="signup_form", clear_on_submit=False):
-                acc_name = st.text_input("Company / Account name", key="su_acc_name")
-                full_name = st.text_input("Your full name", key="su_full_name")
-                email = st.text_input("Email", key="su_email").strip().lower()
-                pwd = st.text_input("Password (min 8 chars)", type="password", key="su_pwd")
-                pwd2 = st.text_input("Repeat password", type="password", key="su_pwd2")
+                acc_name = st.text_input(t("label.company_name"), key="su_acc_name")
+                full_name = st.text_input(t("label.full_name"), key="su_full_name")
+                email = st.text_input(t("label.email"), key="su_email").strip().lower()
+                pwd = st.text_input(t("login.password_min"), type="password", key="su_pwd")
+                pwd2 = st.text_input(t("label.repeat_password"), type="password", key="su_pwd2")
 
-                submitted = st.form_submit_button("Create account", type="primary")
+                submitted = st.form_submit_button(t("login.tab_register"), type="primary")
 
             if submitted:
-                with st.spinner("Creating account..."):
+                with st.spinner("..."):
                     try:
                         if pwd != pwd2:
                             raise ValueError("Passwords do not match.")
@@ -946,7 +947,7 @@ def auth_gate(
                         acc_id, user_id = create_account_with_owner(acc_name, full_name, email, pwd)
                         _set_auth(user_id, acc_id)
                         invalidate_auth_caches()
-                        st.success("Account created ✅")
+                        st.success(t("login.account_created"))
                         st.session_state[rerun_key] = True
                         time.sleep(0.5)
                         # Restore query params before rerun
@@ -1000,20 +1001,20 @@ def auth_gate(
                 st.rerun()
 
         else:
-            st.warning("You don't have access to any venue yet.")
+            st.warning(t("msg.no_venue_access"))
 
             u0 = current_user() or {}
             role0 = (u0.get("account_role") or "member").lower()
 
             if role0 in {"owner", "manager"}:
-                st.info("Create your first venue below to start using the app.")
+                st.info(t("org.create_venue_hint"))
 
                 if show_manage_org:
                     manage_organization_ui(venue_role="owner")
 
                 st.stop()
             else:
-                st.info("Ask an admin to grant you access.")
+                st.info(t("msg.ask_admin_access"))
                 st.stop()
 
     # -------------------------
@@ -1303,17 +1304,17 @@ def _df_to_xlsx_bytes(df: pd.DataFrame, *, sheet_name: str = "credit_notes") -> 
     return bio.getvalue()
 
 def manage_organization_ui(venue_role: str = None):
-    st.subheader("🏢 Manage organization")
+    st.subheader(t("org.title"))
 
     acc = current_account()
     if not acc:
-        st.error("Account not found. Please log in again.")
+        st.error(t("org.account_not_found"))
         st.stop()
-        
+
     u = current_user() or {}
     uid = u.get("id")
     if not uid:
-        st.error("User not found. Please log in again.")
+        st.error(t("org.user_not_found"))
         st.stop()
 
     # Get venues + roles for the current user
@@ -1324,10 +1325,10 @@ def manage_organization_ui(venue_role: str = None):
         u0 = current_user() or {}
         role0 = (u0.get("account_role") or "member").lower()
 
-        st.info("You don't have access to any venue yet.")
+        st.info(t("msg.no_venue_access"))
 
         if role0 not in {"owner", "manager", "admin"}:
-            st.info("Ask an admin/owner to create a venue and grant you access.")
+            st.info(t("org.ask_admin"))
             st.stop()
 
         st.markdown("### ➕ Create your first venue")
@@ -1466,7 +1467,7 @@ def manage_organization_ui(venue_role: str = None):
                             add_user_to_venue(int(active_vid), int(nu.id), "staff")
 
                     invalidate_auth_caches()
-                    st.success("User created ✅")
+                    st.success(t("org.user_created"))
                     time.sleep(0.5)
                     st.rerun()
 
@@ -1508,12 +1509,12 @@ def manage_organization_ui(venue_role: str = None):
                     matrix.append(row)
 
                 df = pd.DataFrame(matrix, index=user_rows, columns=venue_cols)
-                st.caption("Role per user per venue (— means no access)")
+                st.caption(t("org.role_per_user"))
                 st.dataframe(df, width='stretch')
 
                 # Edit permissions
                 st.divider()
-                st.subheader("Edit permissions")
+                st.subheader(t("org.edit_permissions"))
                 
                 user_opt = {f"{u2.email} — {u2.full_name} (#{u2.id})": u2 for u2 in all_users}
                 venue_opt = {f"{v.name} (#{v.id})": v for v in all_venues}
@@ -1560,7 +1561,7 @@ def manage_organization_ui(venue_role: str = None):
                             s.commit()
 
                         invalidate_auth_caches()
-                        st.success("Permission saved ✅")
+                        st.success(t("org.permission_saved"))
                         time.sleep(0.3)
                         st.rerun()
                     except Exception as e:
@@ -1580,11 +1581,11 @@ def manage_organization_ui(venue_role: str = None):
                                 s.delete(link)
                                 s.commit()
                                 invalidate_auth_caches()
-                                st.success("Access removed ✅")
+                                st.success(t("org.access_removed"))
                                 time.sleep(0.3)
                                 st.rerun()
                             else:
-                                st.info("No access to remove.")
+                                st.info(t("org.no_access_remove"))
                     except Exception as e:
                         st.error(str(e))
 
@@ -1626,12 +1627,12 @@ def manage_organization_ui(venue_role: str = None):
                 venues = list_venues_for_account(acc["id"])
                 
                 if not venues:
-                    st.info("No venues found.")
+                    st.info(t("org.no_venues_found"))
                 else:
                     venue_opts = {f"{v.name} (#{v.id})": v for v in venues}
-                    
+
                     with st.form("edit_venue_form", clear_on_submit=False):
-                        v_label = st.selectbox("Select venue", options=list(venue_opts.keys()), key="mv_select_venue")
+                        v_label = st.selectbox(t("label.select_venue"), options=list(venue_opts.keys()), key="mv_select_venue")
                         chosen_venue = venue_opts[v_label]
 
                         c1, c2 = st.columns(2)
