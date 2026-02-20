@@ -616,6 +616,20 @@ def split_fragment_by_catalog_aliases(fragment: str, alias_to_products: Dict[str
     if len(first_tokens) == 1:
         return [fragment.strip()]
 
+    # ✅ Guardrail 4: if all spans resolve to the same product(s), don't split.
+    # e.g. "coca cola" has aliases "coca" and "cola" both pointing to "Coca Cola" —
+    # splitting would produce two duplicate items for the same product.
+    span_product_sets = []
+    for _i, _j, ph in non_overlapping:
+        prods = set(alias_to_products.get(ph, []))
+        if prods:
+            span_product_sets.append(prods)
+
+    if span_product_sets and len(span_product_sets) > 1:
+        common = span_product_sets[0].intersection(*span_product_sets[1:])
+        if common:
+            return [fragment.strip()]
+
     # Convert spans into fragments
     out: List[str] = []
     for (i, j, _ph) in non_overlapping:

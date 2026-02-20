@@ -11,7 +11,7 @@ import pandas as pd
 import streamlit as st
 from sqlmodel import Session, select
 from datetime import datetime
-from sqlalchemy import desc, func, and_
+from sqlalchemy import desc, func, and_, or_
 from sqlalchemy.orm import load_only
 from streamlit_float import float_init, float_css_helper, float_dialog
 from domain.models import Product, Order, OrderLine, VenueTranscriptionSettings, ProviderSendStatus
@@ -136,7 +136,11 @@ def load_venue_drafts(venue_id: int, _refresh_token: int = 0):
         drafts = s.exec(
             select(Order)
             .options(load_only(Order.id, Order.title, Order.created_at, Order.status, Order.venue_id))
-            .where(Order.venue_id == venue_id, Order.status == "draft", Order.title != "__autosave__")
+            .where(
+                Order.venue_id == venue_id,
+                Order.status == "draft",
+                or_(Order.title.is_(None), Order.title != "__autosave__"),
+            )
             .order_by(Order.created_at.desc())
         ).all()
     return drafts
@@ -424,14 +428,15 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         st.session_state[S("audio_widget_key")] = f"{NS}asr_audio_in_{int(time.time())}"
         st.session_state[S("audiorecorder_key")] = f"{NS}audiorecorder_{int(time.time())}"
 
-        # Delete the auto-save draft from DB so it doesn't restore on next load
-        _aid = st.session_state.pop(S("autosave_order_id"), None)
+        # Delete ALL autosave drafts for this user+venue from DB.
+        # Pass order_id=None so _delete_autosave falls back to venue+actor query,
+        # which removes every autosave record regardless of what's in session state.
+        st.session_state.pop(S("autosave_order_id"), None)
         st.session_state.pop(S("autosave_hash"), None)
-        if _aid:
-            try:
-                _delete_autosave(order_id=_aid)
-            except Exception:
-                pass
+        try:
+            _delete_autosave(order_id=None)
+        except Exception:
+            pass
 
         if do_rerun:
             st.rerun()
@@ -659,30 +664,25 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         return pd.DataFrame(rows), int(order.id)
 
     def _delete_autosave(order_id: Optional[int] = None) -> None:
-        """Delete the hidden auto-save draft (and its lines) from the DB."""
-        actor = current_actor()
-        with get_session() as s:
-            if order_id is not None:
-                orders_to_delete = s.exec(
-                    select(Order).where(
-                        Order.id == int(order_id),
-                        Order.title == AUTOSAVE_TITLE,
-                    )
-                ).all()
-            else:
-                orders_to_delete = s.exec(
-                    select(Order).where(
-                        Order.venue_id == int(venue_id),
-                        Order.title == AUTOSAVE_TITLE,
-                        Order.created_by == actor,
-                    )
-                ).all()
+        """Mark all autosave drafts for this venue as 'cleared'.
 
-            for o in orders_to_delete:
-                lines = s.exec(select(OrderLine).where(OrderLine.order_id == int(o.id))).all()
-                for ln in lines:
-                    s.delete(ln)
-                s.delete(o)
+        Using status='cleared' instead of DELETE is more reliable:
+        - no cascade / foreign-key issues
+        - survives across sessions (tab-bar navigations create new Streamlit sessions)
+        - _restore_from_autosave filters on status='draft', so it won't find these
+        - _autosave_parsed_df also filters on status='draft', so next autosave creates fresh
+        """
+        with get_session() as s:
+            autosaves = s.exec(
+                select(Order).where(
+                    Order.venue_id == int(venue_id),
+                    Order.title == AUTOSAVE_TITLE,
+                    Order.status == "draft",
+                )
+            ).all()
+            for o in autosaves:
+                o.status = "cleared"
+                s.add(o)
             s.commit()
     active_draft_id = st.session_state.get(ACTIVE_DRAFT_KEY)
     try:
@@ -705,23 +705,14 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         st.session_state[ACTIVE_DRAFT_KEY] = int(order_id)
 
     def _go_orders(order_id: int) -> None:
-        """Navigate to Orders (draft) using a real URL redirect (faster than st.rerun).
-
-        This mirrors the 'Option B' optimization used in the bottom tabbar:
-        we update the URL (?page=...) and let the browser navigate, avoiding an extra
-        full-script pass that happens when triggering navigation late + st.rerun().
-        """
-        token = st.session_state.get("_session_token", "")
-        token_param = f"&st={token}" if token else ""
-        url = f"?page=orders&order_id={int(order_id)}&status=draft{token_param}"
-
-        # Use a small client-side redirect, then stop this run.
-        # (Safe quoting to avoid breaking the script tag.)
-        st.markdown(
-            f"""<script>window.location.href={json.dumps(url)};</script>""",
-            unsafe_allow_html=True,
-        )
-        st.stop()
+        """Navigate to the Orders page for the given draft."""
+        st.session_state["page"] = "orders"
+        params: dict = {"page": "orders", "order_id": str(int(order_id)), "status": "draft"}
+        token = st.session_state.get("_session_token")
+        if token:
+            params["st"] = str(token)
+        set_query_params(**params)
+        st.rerun()
 
     # =========================================================
     # 1) ASR CONFIG (READ-ONLY, per venue)
@@ -811,15 +802,20 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
     # =========================================================
     # RESTORE AUTO-SAVE (lost session state after tab navigation reload)
+    # Runs at most ONCE per session via restore_attempted flag.
+    # The flag is lost naturally when Streamlit clears session state
+    # on tab navigation, so the restore can fire again on a real fresh load.
     # =========================================================
-    _existing_parsed = st.session_state.get(S("parsed_df"))
-    if not isinstance(_existing_parsed, pd.DataFrame) or _existing_parsed.empty:
-        _restored = _restore_from_autosave()
-        if _restored is not None:
-            _df_restored, _autosave_id = _restored
-            st.session_state[S("parsed_df")] = _df_restored
-            st.session_state[S("autosave_order_id")] = _autosave_id
-            st.toast("↩️ " + t("new_order.autosave_restored"), icon="✅")
+    if not st.session_state.get(S("restore_attempted"), False):
+        st.session_state[S("restore_attempted")] = True
+        _existing_parsed = st.session_state.get(S("parsed_df"))
+        if not isinstance(_existing_parsed, pd.DataFrame) or _existing_parsed.empty:
+            _restored = _restore_from_autosave()
+            if _restored is not None:
+                _df_restored, _autosave_id = _restored
+                st.session_state[S("parsed_df")] = _df_restored
+                st.session_state[S("autosave_order_id")] = _autosave_id
+                st.toast("↩️ " + t("new_order.autosave_restored"), icon="✅")
 
     # =========================================================
     # FULL-PAGE PRODUCT ADDER (similar to _render_lines_editor)
@@ -1347,7 +1343,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         return rows
 
 
-    def _create_draft_and_insert_lines(*, venue_id: int, actor: str, df: pd.DataFrame) -> int:
+    def _create_draft_and_insert_lines(*, venue_id: int, actor: str, df: pd.DataFrame, title: Optional[str] = None) -> int:
         rows = _df_to_orderline_rows(df)
         if not rows:
             return 0
@@ -1360,7 +1356,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 updated_at=datetime.utcnow(),
                 created_by=actor,
                 updated_by=actor,
-                title=None,
+                title=title or None,
                 note=None,
             )
             s.add(o)
@@ -1861,7 +1857,9 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     auto_parse_pending = st.session_state.get(S("auto_parse_pending"), False)
 
     # Skip parsing if no text or already finalized
-    if auto_parse_pending and has_any_text and not st.session_state.get(S("parsed_df")):
+    _parsed_df_val = st.session_state.get(S("parsed_df"))
+    _parsed_df_empty = _parsed_df_val is None or (hasattr(_parsed_df_val, "empty") and _parsed_df_val.empty)
+    if auto_parse_pending and has_any_text and _parsed_df_empty:
         candidates_df = _parse_chat_to_candidates()
         st.session_state[S("parse_candidates_df")] = candidates_df
         st.session_state[S("finalize_parse_pending")] = True
@@ -1999,17 +1997,29 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         """
 
         st.html(f"<style>{css}</style>")
+        unmatched_words: list[str] = []
         with st.container(key="my_blue_container"):
             for row_idx, r in parsed_df.iterrows():
-                name = safe_str(r.get("matched_name") or r.get("spoken_name") or "").strip()
-                qty = r.get("quantity", None)
                 pid = r.get("matched_product_id", None)
+                pid_valid = pid is not None and not (isinstance(pid, float) and pd.isna(pid))
+                status = safe_str(r.get("status") or "").strip().lower()
+                matched_name = safe_str(r.get("matched_name") or "").strip()
+
+                # Truly unmatched: no pid, no matched name, status revisar → skip from list
+                if not pid_valid and not matched_name and "revis" in status:
+                    spoken = safe_str(r.get("spoken_name") or "").strip()
+                    if spoken:
+                        unmatched_words.append(f'"{spoken}"')
+                    continue
+
+                name = matched_name or safe_str(r.get("spoken_name") or "").strip()
+                qty = r.get("quantity", None)
                 unit = safe_str(r.get("unit") or "unit").strip()
                 provider = safe_str(r.get("provider") or "").strip()
 
                 # Get description
                 description = ""
-                if pid is not None and not (isinstance(pid, float) and pd.isna(pid)):
+                if pid_valid:
                     try:
                         prod = products_by_id.get(int(pid))
                         if prod:
@@ -2046,7 +2056,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                     if new_qty != qty_val:
                         parsed_df.at[row_idx, "quantity"] = new_qty
                         st.session_state[S("parsed_df")] = parsed_df
-                        st.rerun(scope="fragment")
+                        st.rerun()
 
                     # Column 2: product name + details
                     details_parts = []
@@ -2082,10 +2092,20 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                         else:
                             striked_products.add(product_key)
                         st.session_state[S("striked_products")] = striked_products
-                        st.rerun(scope="fragment")  # Only rerun this fragment!
+                        st.rerun()  # Only rerun this fragment!
 
                 # Separator line
                 st.markdown('<div style="border-bottom: 1px dotted rgba(0,0,0,0.1); margin: 0;"></div>', unsafe_allow_html=True)
+
+        if unmatched_words:
+            words_str = ", ".join(unmatched_words)
+            msg = t("new_order.unmatched_warning").format(n=len(unmatched_words), words=words_str)
+            st.markdown(
+                f'<div style="margin-top:10px;padding:10px 14px;background:rgba(255,193,7,0.12);'
+                f'border-left:3px solid #f0a500;border-radius:8px;font-size:0.82rem;'
+                f'color:#7a5800;line-height:1.45;">⚠️ {msg}</div>',
+                unsafe_allow_html=True,
+            )
 
     # Call the fragment
     parsed_df = st.session_state.get(S("parsed_df"))
@@ -2267,7 +2287,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             menu_label = "✕" if st.session_state.fab_menu_open else "⋯"
             if st.button(menu_label, key="fab_menu_toggle", help=t("new_order.menu")):
                 st.session_state.fab_menu_open = not st.session_state.fab_menu_open
-                st.rerun(scope="fragment")  # fast: only reruns this fragment
+                st.rerun()  # fast: only reruns this fragment
 
         fab_menu_css = float_css_helper(
             right=FAB_RIGHT,
@@ -2614,13 +2634,33 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                                 st.rerun()
                         with col2:
                             if st.button(t("new_order.new_label"), key=K("new_quick"), use_container_width=True):
+                                st.session_state[S("show_new_draft_title")] = True
+                                st.rerun()
+
+                        if st.session_state.get(S("show_new_draft_title"), False):
+                            new_title = st.text_input(
+                                "",
+                                placeholder=t("new_order.new_draft_title_placeholder"),
+                                key=K("new_draft_title_input"),
+                                label_visibility="collapsed",
+                            )
+                            if st.button(t("action.ok"), key=K("confirm_new_draft_titled"), use_container_width=True, type="primary"):
                                 st.session_state[S("selected_draft_id")] = -1
+                                st.session_state[S("new_draft_title")] = new_title.strip() or None
                                 st.session_state[S("trigger_add")] = True
+                                st.session_state[S("show_new_draft_title")] = False
                                 st.session_state.show_draft_selector = False
                                 st.rerun()
                     else:
+                        new_title_no_drafts = st.text_input(
+                            "",
+                            placeholder=t("new_order.new_draft_title_placeholder"),
+                            key=K("new_draft_title_input"),
+                            label_visibility="collapsed",
+                        )
                         if st.button(t("action.new_draft"), key=K("new_quick"), use_container_width=True, type="primary"):
                             st.session_state[S("selected_draft_id")] = -1
+                            st.session_state[S("new_draft_title")] = new_title_no_drafts.strip() or None
                             st.session_state[S("trigger_add")] = True
                             st.session_state.show_draft_selector = False
                             st.rerun()
@@ -2713,14 +2753,17 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         drafts = load_venue_drafts(venue_id, _refresh_token=get_drafts_refresh_token())
 
         target_id: int = 0
+        lines_already_inserted = False
+        new_draft_title: Optional[str] = st.session_state.pop(S("new_draft_title"), None)
 
         # Check if user already selected from popover
         selected_from_popover = st.session_state.get(S("selected_draft_id"))
 
         if selected_from_popover == -1:
-            new_id = _create_draft_and_insert_lines(venue_id=venue_id, actor=actor, df=df_to_use)
+            new_id = _create_draft_and_insert_lines(venue_id=venue_id, actor=actor, df=df_to_use, title=new_draft_title)
             if new_id:
                 target_id = int(new_id)
+                lines_already_inserted = True
                 st.session_state.pop(S("selected_draft_id"), None)
 
         elif selected_from_popover:
@@ -2735,26 +2778,26 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
             _set_active_draft(target_id)
 
         else:
-            new_id = _create_draft_and_insert_lines(venue_id=venue_id, actor=actor, df=df_to_use)
+            new_id = _create_draft_and_insert_lines(venue_id=venue_id, actor=actor, df=df_to_use, title=new_draft_title)
             if new_id:
                 target_id = int(new_id)
+                lines_already_inserted = True
 
         if target_id:
-            _add_lines_to_existing_draft(
-                venue_id=venue_id,
-                order_id=int(target_id),
-                actor=actor,
-                df=df_to_use,
-            )
+            if not lines_already_inserted:
+                _add_lines_to_existing_draft(
+                    venue_id=venue_id,
+                    order_id=int(target_id),
+                    actor=actor,
+                    df=df_to_use,
+                )
 
             _set_active_draft(target_id)
             bump_orders_refresh_token()
             bump_drafts_refresh_token()  # Invalidate draft cache
 
-            st.success(t("new_order.added_to_draft", n=str(target_id)))
             st.session_state[S("striked_products")] = set()
             reset_notes_only(do_rerun=False)
-            time.sleep(0.3)
             _go_orders(target_id)
 
         # NOTE: You have a duplicated second "determine draft target" block in your original snippet.

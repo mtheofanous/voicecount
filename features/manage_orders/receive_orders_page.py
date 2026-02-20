@@ -2754,7 +2754,6 @@ def _render_receive_form(ctx: OrderContext, provider: str) -> None:
             st.selectbox(
                 "Status",
                 STATUS_OPTIONS,
-                index=0 if supplier_confirmed_missing else STATUS_OPTIONS.index(st.session_state[status_key]),
                 key=status_key,
                 label_visibility="collapsed",
                 disabled=supplier_confirmed_missing,
@@ -2807,7 +2806,6 @@ def _render_receive_form(ctx: OrderContext, provider: str) -> None:
             st.selectbox(
                 "Invoice listed",
                 INVOICE_OPTIONS,
-                index=0 if supplier_confirmed_missing else INVOICE_OPTIONS.index(st.session_state[invoice_key]),
                 disabled=(not needs_invoice) or supplier_confirmed_missing,
                 key=invoice_key,
                 label_visibility="collapsed",
@@ -5939,14 +5937,14 @@ def tracking_dashboard(
                 oid = str(t.get("order_id") or "")
                 return (q in prov) or (q in inv) or (q in oid) or (q in f"#{oid}")
 
-            tasks2 = [t for t in tasks if _matches(t)]
+            tasks2 = [task for task in tasks if _matches(task)]
             if not tasks2:
                 st.info(t("msg.no_matches"))
                 return
 
-            for t in tasks2:
-                oid = int(t["order_id"])
-                prov_norm = t["provider_norm"] or ""
+            for task in tasks2:
+                oid = int(task["order_id"])
+                prov_norm = task["provider_norm"] or ""
 
                 ctx_r = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
                 _render_receive_provider_panel(ctx_r, prov_norm)

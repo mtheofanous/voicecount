@@ -290,6 +290,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "new_order.clear_all":          "Καθαρισμός όλων",
         "new_order.select_draft_help":  "Επιλογή πρόχειρου",
         "new_order.no_title":           "Χωρίς τίτλο",
+        "new_order.new_draft_title_placeholder": "Τίτλος (προαιρετικό)",
         "new_order.choose_colon":       "Επιλέξτε:",
         "new_order.added_to_draft":     "✅ Προστέθηκε στο πρόχειρο #{n}",
         "new_order.autosave_restored":  "Η προηγούμενη παραγγελία σου επαναφέρθηκε",
@@ -299,7 +300,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "new_order.search_placeholder": "Αναζήτηση κατά όνομα, πάροχο...",
         "new_order.loading_catalog":    "Φόρτωση καταλόγου...",
         "new_order.catalog_incomplete": "Ελλιπής δομή καταλόγου (λείπουν: {keys}). Καθαρισμός cache...",
-        
+        "new_order.unmatched_warning":  "Δεν αναγνωρίστηκαν {n} προϊόν(τα) από τον κατάλογό σας: {words}. Ελέγξτε την ορθογραφία ή προσθέστε τα χειροκίνητα.",
+
         #--- Order tab ---
         "order.order_title":           "Παραγγελία",
         "order.created":               "Δημιουργήθηκε",
@@ -561,6 +563,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "new_order.clear_all":          "Limpiar todo",
         "new_order.select_draft_help":  "Seleccionar borrador",
         "new_order.no_title":           "Sin título",
+        "new_order.new_draft_title_placeholder": "Título (opcional)",
         "new_order.choose_colon":       "Elige:",
         "new_order.added_to_draft":     "✅ Añadido al borrador #{n}",
         "new_order.autosave_restored":  "Tu pedido anterior fue restaurado",
@@ -570,7 +573,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "new_order.search_placeholder": "Busca por nombre, proveedor...",
         "new_order.loading_catalog":    "Cargando catálogo de productos...",
         "new_order.catalog_incomplete": "Estructura de catálogo incompleta (faltan: {keys}). Limpiando caché...",
-        
+        "new_order.unmatched_warning":  "No se reconocieron {n} producto(s) del catálogo: {words}. Revisa la ortografía o añádelos manualmente.",
+
         #--- Order tab ---
         "order.order_title":           "Pedido",
         "order.select_borrador":       "Seleccionar borrador",
@@ -833,6 +837,7 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "new_order.clear_all":          "Clear all",
         "new_order.select_draft_help":  "Select draft",
         "new_order.no_title":           "No title",
+        "new_order.new_draft_title_placeholder": "Title (optional)",
         "new_order.choose_colon":       "Choose:",
         "new_order.added_to_draft":     "✅ Added to draft #{n}",
         "new_order.autosave_restored":  "Your previous order was restored",
@@ -842,7 +847,8 @@ TRANSLATIONS: dict[str, dict[str, str]] = {
         "new_order.search_placeholder": "Search by name, supplier...",
         "new_order.loading_catalog":    "Loading product catalog...",
         "new_order.catalog_incomplete": "Incomplete catalog structure (missing: {keys}). Clearing cache...",
-        
+        "new_order.unmatched_warning":  "{n} item(s) were not found in your catalog: {words}. Check the spelling or add them manually.",
+
         #--- Order tab ---
         "order.order_title":           "Order",
         "order.created":               "Created",

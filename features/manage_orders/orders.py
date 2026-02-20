@@ -49,6 +49,7 @@ from domain.models import (
 )
 
 from core.i18n import t
+from streamlit_float import float_init, float_css_helper  # type: ignore
 
 try:
     from domain.models import ProviderReceipt  # type: ignore
@@ -1818,6 +1819,7 @@ def _render_lines_editor(*, venue_id: int, order: Order, actor: str, products: l
 
 @st.fragment
 def _render_send_section(*, venue_id: int, order: Order, products: list[Product], lines: list[OrderLine], actor: str) -> None:
+    float_init()
     v = _load_venue_templates(venue_id, _refresh_token(venue_id))
     missing_required = _venue_missing_required(v)
     if missing_required:
@@ -2403,204 +2405,259 @@ def _render_send_section(*, venue_id: int, order: Order, products: list[Product]
     products_by_id = {int(p.id): p for p in products if getattr(p, "id", None) is not None}
 
 
-    # -----------------------------
-    # Send settings (mobile-friendly)
-    # -----------------------------
-    with st.expander("⚙️ Envío: canales y CC", expanded=False):
-        cset1, cset2 = st.columns([1.0, 1.0], vertical_alignment="center")
-        with cset1:
-            use_email = st.toggle("Email", value=True, key=f"use_email_{int(order.id)}")
-        with cset2:
-            use_wa = st.toggle("WhatsApp", value=False, key=f"use_wa_{int(order.id)}")
+    # ─────────────────────────────────────────────────────────────
+    # FAB: floating send panel  (📤 button, bottom-right)
+    # ─────────────────────────────────────────────────────────────
+    fab_key = f"fab_send_open_{int(order.id)}"
+    st.session_state.setdefault(fab_key, False)
+    fab_is_open = st.session_state[fab_key]
 
-        wa_cc = st.text_input("Prefijo país (WhatsApp)", value="+34", key=f"wa_cc_{int(order.id)}")
+    _FAB_BTN_CSS = """
+    padding: 0;
+    & button {
+        width: 3.5rem !important;
+        height: 3.5rem !important;
+        min-height: 3.5rem !important;
+        border-radius: 50% !important;
+        background: rgba(18, 18, 18, 0.88) !important;
+        backdrop-filter: saturate(180%) blur(20px) !important;
+        -webkit-backdrop-filter: saturate(180%) blur(20px) !important;
+        border: 1px solid rgba(255, 255, 255, 0.18) !important;
+        box-shadow: 0 8px 32px rgba(0,0,0,0.40) !important;
+        color: #fff !important;
+        font-size: 1.5rem !important;
+    }
+    & button p, & button span { color: #fff !important; }
+    & button:hover {
+        background: rgba(40, 40, 40, 0.92) !important;
+        transform: scale(1.06) !important;
+    }
+    & button:active { transform: scale(0.94) !important; }
+    """
 
-        st.caption(f"CC: {v.email_cc or '—'} · BCC: {v.email_bcc or '—'}")
-
-    # -----------------------------
-    # Global actions
-    # -----------------------------
-    sent_count = sum(
-        1
-        for prov in grouped_send.keys()
-        if bool(send_map.get(norm_provider(prov)) and getattr(send_map[norm_provider(prov)], "sent", False))
+    _fab_btn = st.container()
+    with _fab_btn:
+        if st.button("✕" if fab_is_open else "📤", key=f"fab_send_toggle_{int(order.id)}"):
+            st.session_state[fab_key] = not fab_is_open
+            st.rerun()
+    _fab_btn.float(
+        float_css_helper(right="1.1rem", bottom="5.5rem", width="auto", z_index="10001")
+        + _FAB_BTN_CSS
     )
-    st.progress(sent_count / max(1, len(grouped_send)))
-    st.caption(f"Enviados: {sent_count}/{len(grouped_send)}")
-    with st.container(horizontal=True):
-        g1, g2 = st.columns([1.6, 1.0], vertical_alignment="center")
-        with g1:
-            send_all_disabled = (not use_email)
-            if st.button(t("action.send_all_email"), type="primary", use_container_width=True, disabled=send_all_disabled):
-                ok, fail = 0, 0
 
-                # ✅ IMPORTANT: If smart is ON, persist to DB ONCE and rebuild sending groups
-                if apply_smart_for_send:
-                    changed = _materialize_smart_to_db_for_send(provider_name=None)
-                    if changed:
-                        lines = _reload_lines_from_db()
-                        grouped = _group_lines_by_provider(lines, products_by_id)
-                        grouped_send = _group_lines_for_sending(apply_smart=True)
-                        _bump_refresh(venue_id)
+    st.markdown('<div style="height:80px"></div>', unsafe_allow_html=True)
 
-                for prov, prov_lines in grouped_send.items():
-                    prov_norm = norm_provider(prov)
-                    p = provider_dir.get(prov_norm)
-                    to_email = _split_first_pipe(_s(getattr(p, "order_email", None) or getattr(p, "email", None) or getattr(p, "emails", None))) if p else ""
-                    if not to_email:
-                        _touch_send_status(
-                            venue_id=venue_id,
-                            order_id=int(order.id),
-                            provider_name=prov_norm,
-                            actor=actor,
-                            channel="email",
-                            ok=False,
-                            error="missing provider email",
-                        )
-                        fail += 1
-                        continue
+    if fab_is_open:
+        _send_panel = st.container()
+        with _send_panel:
+            # ─── Send settings ───────────────────────────────────
+            with st.expander("⚙️ Envío: canales y CC", expanded=True):
+                cset1, cset2 = st.columns([1.0, 1.0], vertical_alignment="center")
+                with cset1:
+                    use_email = st.toggle("Email", value=True, key=f"use_email_{int(order.id)}")
+                with cset2:
+                    use_wa = st.toggle("WhatsApp", value=False, key=f"use_wa_{int(order.id)}")
+                wa_cc = st.text_input("Prefijo país (WhatsApp)", value="+34", key=f"wa_cc_{int(order.id)}")
+                st.caption(f"CC: {v.email_cc or '—'} · BCC: {v.email_bcc or '—'}")
 
-                    _ensure_workflow_order_sent(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor)
-                    subject = _build_subject(v, int(order.id), prov_norm)
-                    body_text = _build_supplier_message_text(
-                        templates=v,
-                        order_id=int(order.id),
-                        provider_name=prov_norm,
-                        prov_lines=prov_lines,
-                        products_by_id=products_by_id,
-                    )
-
-                    try:
-                        send_smtp_email(
-                            to=_split_emails(to_email),
-                            cc=_split_emails(v.email_cc),
-                            bcc=_split_emails(v.email_bcc),
-                            subject=subject,
-                            text_body=body_text,
-                        )
-                        _touch_send_status(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor, channel="email", ok=True)
-                        ok += 1
-                    except Exception as e:
-                        _touch_send_status(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor, channel="email", ok=False, error=str(e))
-                        fail += 1
-
-
-                # move order to pending_receive only if every supplier has been sent at least once
-                if _all_providers_sent(order_id=int(order.id), provider_names=list(grouped_send.keys())):
-                    _set_order_status(int(order.id), "pending_receive", actor)
-                    _bump_refresh(venue_id)
-                    st.success(f"✅ Enviados {ok} · ❌ Fallos {fail} · Pedido → Pendiente")
-                    st.rerun()
-                else:
-                    st.success(f"✅ Enviados {ok} · ❌ Fallos {fail}")
-                    st.rerun()
-
-        with g2:
-            if st.button(
-                "🧹 Reset enviados",
-                use_container_width=True,
-                key=f"reset_send_{int(order.id)}",
-                ):
-                _reset_send_status(order_id=int(order.id))
-                st.rerun()
-
-    # st.markdown("<div class='voi-divider'></div>", unsafe_allow_html=True)
-
-    # -----------------------------
-    # Per-provider cards (mobile-first)
-    # -----------------------------
-    for prov, prov_lines in grouped_send.items():
-        prov_norm = norm_provider(prov)
-        p = provider_dir.get(prov_norm)
-
-        to_email = _split_first_pipe(_s(getattr(p, "order_email", None) or getattr(p, "email", None) or getattr(p, "emails", None))) if p else ""
-        phone = _split_first_pipe(_s(getattr(p, "order_phone", None) or getattr(p, "phone", None) or getattr(p, "phones", None))) if p else ""
-
-        srow = send_map.get(prov_norm)
-        sent = bool(getattr(srow, "sent", False)) if srow else False
-        last_error = _s(getattr(srow, "last_error", "")) if srow else ""
-        attempts = int(getattr(srow, "send_attempts", 0) or 0) if srow else 0
-        chip_txt, chip_cls = _chip_for_send(sent, last_error)
-
-        supplier_link = build_seguimiento_url(order_id=int(order.id), provider_name=prov_norm, role=ROLE_SUPPLIER, page_path="seguimiento")
-        venue_link = build_seguimiento_url(order_id=int(order.id), provider_name=prov_norm, role=ROLE_VENUE, page_path="seguimiento")
-
-        active_lines = len([x for x in prov_lines if _safe_float(x.get("qty"), 0) > 0])
-
-        with st.container(horizontal=True, border=True):
-            st.markdown(
-                f"<div style='display:flex;justify-content:space-between;gap:10px;align-items:flex-start;'>"
-                f"<div><div style='font-weight:900;font-size:1.05rem'>{prov_norm}</div>"
-                f"<div class='voi-muted'>{active_lines} líneas · intentos: {attempts}</div></div>"
-                f"<div class='{chip_cls}'>{chip_txt}</div>"
-                f"</div>",
-                unsafe_allow_html=True,
+            # ─── Global actions ───────────────────────────────────
+            sent_count = sum(
+                1
+                for prov in grouped_send.keys()
+                if bool(send_map.get(norm_provider(prov)) and getattr(send_map[norm_provider(prov)], "sent", False))
             )
-            if last_error:
-                st.caption(f"⚠️ {last_error}")
+            st.progress(sent_count / max(1, len(grouped_send)))
+            st.caption(f"Enviados: {sent_count}/{len(grouped_send)}")
+            with st.container(horizontal=True):
+                g1, g2 = st.columns([1.6, 1.0], vertical_alignment="center")
+                with g1:
+                    send_all_disabled = (not use_email)
+                    if st.button(t("action.send_all_email"), type="primary", use_container_width=True, disabled=send_all_disabled):
+                        ok, fail = 0, 0
 
-            # Primary actions
-            b1, b2 = st.columns(2, vertical_alignment="center")
-            with b1:
-                email_disabled = (not use_email) or (not to_email)
-                email_label = "🔁 Reenviar email" if sent else "✅ Enviar email"
-                if st.button(email_label, type="primary", use_container_width=True, disabled=email_disabled, key=f"send_email_{int(order.id)}_{prov_norm}"):
-                    # ✅ IMPORTANT: If smart is ON, persist to DB and rebuild groups BEFORE sending
-                    if apply_smart_for_send:
-                        changed = _materialize_smart_to_db_for_send(provider_name=None)
-                        if changed:
-                            lines = _reload_lines_from_db()
-                            grouped = _group_lines_by_provider(lines, products_by_id)
-                            grouped_send = _group_lines_for_sending(apply_smart=True)
-                            _bump_refresh(venue_id)
+                        # ✅ IMPORTANT: If smart is ON, persist to DB ONCE and rebuild sending groups
+                        if apply_smart_for_send:
+                            changed = _materialize_smart_to_db_for_send(provider_name=None)
+                            if changed:
+                                lines = _reload_lines_from_db()
+                                grouped = _group_lines_by_provider(lines, products_by_id)
+                                grouped_send = _group_lines_for_sending(apply_smart=True)
+                                _bump_refresh(venue_id)
 
-                            # refresh prov_lines so email matches DB + link
-                            prov_lines = grouped_send.get(prov_norm, prov_lines)
-                            
-                    _ensure_workflow_order_sent(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor)
-                    subject = _build_subject(v, int(order.id), prov_norm)
-                    body_text = _build_supplier_message_text(
-                        templates=v,
-                        order_id=int(order.id),
-                        provider_name=prov_norm,
-                        prov_lines=prov_lines,
-                        products_by_id=products_by_id,
-                    )
-                    try:
-                        send_smtp_email(
-                            to=_split_emails(to_email),
-                            cc=_split_emails(v.email_cc),
-                            bcc=_split_emails(v.email_bcc),
-                            subject=subject,
-                            text_body=body_text,
-                        )
-                        _touch_send_status(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor, channel="email", ok=True)
+                        for prov, prov_lines in grouped_send.items():
+                            prov_norm = norm_provider(prov)
+                            p = provider_dir.get(prov_norm)
+                            to_email = _split_first_pipe(_s(getattr(p, "order_email", None) or getattr(p, "email", None) or getattr(p, "emails", None))) if p else ""
+                            if not to_email:
+                                _touch_send_status(
+                                    venue_id=venue_id,
+                                    order_id=int(order.id),
+                                    provider_name=prov_norm,
+                                    actor=actor,
+                                    channel="email",
+                                    ok=False,
+                                    error="missing provider email",
+                                )
+                                fail += 1
+                                continue
+
+                            _ensure_workflow_order_sent(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor)
+                            subject = _build_subject(v, int(order.id), prov_norm)
+                            body_text = _build_supplier_message_text(
+                                templates=v,
+                                order_id=int(order.id),
+                                provider_name=prov_norm,
+                                prov_lines=prov_lines,
+                                products_by_id=products_by_id,
+                            )
+
+                            try:
+                                send_smtp_email(
+                                    to=_split_emails(to_email),
+                                    cc=_split_emails(v.email_cc),
+                                    bcc=_split_emails(v.email_bcc),
+                                    subject=subject,
+                                    text_body=body_text,
+                                )
+                                _touch_send_status(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor, channel="email", ok=True)
+                                ok += 1
+                            except Exception as e:
+                                _touch_send_status(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor, channel="email", ok=False, error=str(e))
+                                fail += 1
+
+                        # move order to pending_receive only if every supplier has been sent at least once
                         if _all_providers_sent(order_id=int(order.id), provider_names=list(grouped_send.keys())):
                             _set_order_status(int(order.id), "pending_receive", actor)
                             _bump_refresh(venue_id)
-                        st.rerun()
-                    except Exception as e:
-                        _touch_send_status(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor, channel="email", ok=False, error=str(e))
-                        st.error(f"No se pudo enviar: {e}")
+                            st.success(f"✅ Enviados {ok} · ❌ Fallos {fail} · Pedido → Pendiente")
+                            st.session_state[fab_key] = False
+                            st.session_state["page"] = "orders"
+                            set_query_params(page="orders")
+                            st.rerun()
+                        else:
+                            st.success(f"✅ Enviados {ok} · ❌ Fallos {fail}")
+                            st.rerun()
 
-            with b2:
-                wa_disabled = (not use_wa) or (not phone)
-                if wa_disabled:
-                    st.button("📲 WhatsApp", use_container_width=True, disabled=True, key=f"wa_disabled_{int(order.id)}_{prov_norm}")
-                else:
-                    phone_norm = _normalize_phone(phone, wa_cc)
-                    body_text = _build_supplier_message_text(
-                        templates=v,
-                        order_id=int(order.id),
-                        provider_name=prov_norm,
-                        prov_lines=prov_lines,
-                        products_by_id=products_by_id,
+                with g2:
+                    if st.button(
+                        "🧹 Reset enviados",
+                        use_container_width=True,
+                        key=f"reset_send_{int(order.id)}",
+                    ):
+                        _reset_send_status(order_id=int(order.id))
+                        st.rerun()
+
+            # ─── Per-provider cards ───────────────────────────────
+            for prov, prov_lines in grouped_send.items():
+                prov_norm = norm_provider(prov)
+                p = provider_dir.get(prov_norm)
+
+                to_email = _split_first_pipe(_s(getattr(p, "order_email", None) or getattr(p, "email", None) or getattr(p, "emails", None))) if p else ""
+                phone = _split_first_pipe(_s(getattr(p, "order_phone", None) or getattr(p, "phone", None) or getattr(p, "phones", None))) if p else ""
+
+                srow = send_map.get(prov_norm)
+                sent = bool(getattr(srow, "sent", False)) if srow else False
+                last_error = _s(getattr(srow, "last_error", "")) if srow else ""
+                attempts = int(getattr(srow, "send_attempts", 0) or 0) if srow else 0
+                chip_txt, chip_cls = _chip_for_send(sent, last_error)
+
+                supplier_link = build_seguimiento_url(order_id=int(order.id), provider_name=prov_norm, role=ROLE_SUPPLIER, page_path="seguimiento")
+                venue_link = build_seguimiento_url(order_id=int(order.id), provider_name=prov_norm, role=ROLE_VENUE, page_path="seguimiento")
+
+                active_lines = len([x for x in prov_lines if _safe_float(x.get("qty"), 0) > 0])
+
+                with st.container(horizontal=True, border=True):
+                    st.markdown(
+                        f"<div style='display:flex;justify-content:space-between;gap:10px;align-items:flex-start;'>"
+                        f"<div><div style='font-weight:900;font-size:1.05rem'>{prov_norm}</div>"
+                        f"<div class='voi-muted'>{active_lines} líneas · intentos: {attempts}</div></div>"
+                        f"<div class='{chip_cls}'>{chip_txt}</div>"
+                        f"</div>",
+                        unsafe_allow_html=True,
                     )
-                    if phone_norm:
-                        wa = f"https://wa.me/{phone_norm.replace('+','')}?text={up.quote(body_text)}"
-                        st.link_button("📲 WhatsApp", wa, use_container_width=True)
-                    else:
-                        st.button("📲 WhatsApp", use_container_width=True, disabled=True, key=f"wa_bad_{int(order.id)}_{prov_norm}")
+                    if last_error:
+                        st.caption(f"⚠️ {last_error}")
+
+                    # Primary actions
+                    b1, b2 = st.columns(2, vertical_alignment="center")
+                    with b1:
+                        email_disabled = (not use_email) or (not to_email)
+                        email_label = "🔁 Reenviar email" if sent else "✅ Enviar email"
+                        if st.button(email_label, type="primary", use_container_width=True, disabled=email_disabled, key=f"send_email_{int(order.id)}_{prov_norm}"):
+                            # ✅ IMPORTANT: If smart is ON, persist to DB and rebuild groups BEFORE sending
+                            if apply_smart_for_send:
+                                changed = _materialize_smart_to_db_for_send(provider_name=None)
+                                if changed:
+                                    lines = _reload_lines_from_db()
+                                    grouped = _group_lines_by_provider(lines, products_by_id)
+                                    grouped_send = _group_lines_for_sending(apply_smart=True)
+                                    _bump_refresh(venue_id)
+
+                                    # refresh prov_lines so email matches DB + link
+                                    prov_lines = grouped_send.get(prov_norm, prov_lines)
+
+                            _ensure_workflow_order_sent(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor)
+                            subject = _build_subject(v, int(order.id), prov_norm)
+                            body_text = _build_supplier_message_text(
+                                templates=v,
+                                order_id=int(order.id),
+                                provider_name=prov_norm,
+                                prov_lines=prov_lines,
+                                products_by_id=products_by_id,
+                            )
+                            try:
+                                send_smtp_email(
+                                    to=_split_emails(to_email),
+                                    cc=_split_emails(v.email_cc),
+                                    bcc=_split_emails(v.email_bcc),
+                                    subject=subject,
+                                    text_body=body_text,
+                                )
+                                _touch_send_status(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor, channel="email", ok=True)
+                                if _all_providers_sent(order_id=int(order.id), provider_names=list(grouped_send.keys())):
+                                    _set_order_status(int(order.id), "pending_receive", actor)
+                                    _bump_refresh(venue_id)
+                                    st.session_state[fab_key] = False
+                                    st.session_state["page"] = "orders"
+                                    set_query_params(page="orders")
+                                st.rerun()
+                            except Exception as e:
+                                _touch_send_status(venue_id=venue_id, order_id=int(order.id), provider_name=prov_norm, actor=actor, channel="email", ok=False, error=str(e))
+                                st.error(f"No se pudo enviar: {e}")
+
+                    with b2:
+                        wa_disabled = (not use_wa) or (not phone)
+                        if wa_disabled:
+                            st.button("📲 WhatsApp", use_container_width=True, disabled=True, key=f"wa_disabled_{int(order.id)}_{prov_norm}")
+                        else:
+                            phone_norm = _normalize_phone(phone, wa_cc)
+                            body_text = _build_supplier_message_text(
+                                templates=v,
+                                order_id=int(order.id),
+                                provider_name=prov_norm,
+                                prov_lines=prov_lines,
+                                products_by_id=products_by_id,
+                            )
+                            if phone_norm:
+                                wa = f"https://wa.me/{phone_norm.replace('+','')}?text={up.quote(body_text)}"
+                                st.link_button("📲 WhatsApp", wa, use_container_width=True)
+                            else:
+                                st.button("📲 WhatsApp", use_container_width=True, disabled=True, key=f"wa_bad_{int(order.id)}_{prov_norm}")
+
+        _send_panel.float(
+            float_css_helper(right="0", bottom="0", width="min(100vw, 720px)", z_index="10000")
+            + """
+            overflow-y: auto;
+            max-height: 82vh;
+            background: rgba(255, 255, 255, 0.97);
+            backdrop-filter: saturate(180%) blur(24px) !important;
+            -webkit-backdrop-filter: saturate(180%) blur(24px) !important;
+            border-radius: 16px 16px 0 0 !important;
+            border: 1px solid rgba(0, 0, 0, 0.08) !important;
+            box-shadow: 0 -4px 40px rgba(0, 0, 0, 0.20) !important;
+            padding: 12px 10px 24px !important;
+            """
+        )
 
 
 def borrador_tab(
