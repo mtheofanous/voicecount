@@ -23,7 +23,6 @@ This module does NOT handle payments.
 from dataclasses import dataclass, field
 from datetime import datetime, date
 from typing import Any, Dict, List, Optional, Tuple
-import functools
 import json
 import math
 import re
@@ -3657,7 +3656,6 @@ def _provider_open_tickets(ctx: OrderContext, provider: str) -> List[Seguimiento
 
 
 
-@functools.lru_cache(maxsize=512)
 def _parse_supplier_solution_meta(note: str) -> Dict[str, Any]:
     """Parse workflow.note written by supplier/venue.
 
@@ -3792,7 +3790,6 @@ def _is_redelivery_item(it: Dict[str, Any]) -> bool:
 # =========================================================
 _META_KV_RE = re.compile(r"^\s*([a-zA-Z_]+)\s*=\s*(.+?)\s*$")
 
-@functools.lru_cache(maxsize=512)
 def _parse_ticket_resolution_note(note: str) -> Dict[str, Any]:
     """Parse SeguimientoTicket.resolution_note written by supplier.
 
@@ -5415,6 +5412,7 @@ def _render_receive_provider_panel(ctx: OrderContext, provider: str) -> None:
             "provider": current_provider,
             "venue_id": int(ctx.order.venue_id),
         }
+        set_query_params(page="tracking", order_id=str(int(ctx.order.id)), provider=current_provider)
         st.rerun()
 
     with st.expander(t("receive.details")):
@@ -5753,6 +5751,14 @@ def tracking_dashboard(
     _fp_tab_key = f"tracking_global_tab_{int(venue_id)}"
     st.session_state.setdefault(_fp_tab_key, "pending_products")
 
+    # ── Auto-enter full-page mode from URL params (enables refresh/share) ──
+    if deep_order_id and deep_provider and not st.session_state.get("fullpage_receive"):
+        st.session_state["fullpage_receive"] = {
+            "order_id": int(deep_order_id),
+            "provider": deep_provider,
+            "venue_id": int(venue_id),
+        }
+
     # ── Full-page receive form mode ──
     fp = st.session_state.get("fullpage_receive")
     if fp:
@@ -5762,6 +5768,7 @@ def tracking_dashboard(
 
         if st.button(t("msg.back_to_dashboard"), key="btn_fp_back"):
             del st.session_state["fullpage_receive"]
+            set_query_params(page="tracking", order_id="", provider="")
             st.rerun()
 
         st.markdown(t("receive.receive_title", provider=fp_provider))
