@@ -47,6 +47,7 @@ from datetime import datetime, timedelta
 
 from features.manage_orders.orders import _load_venue_templates
 from features.manage_orders.emails import build_resolution_email_full, build_urgent_email_full
+from streamlit_float import float_init, float_css_helper
 
 from sqlalchemy import func
 from sqlalchemy.orm import load_only
@@ -88,14 +89,9 @@ def _inject_css() -> None:
 
 .voi-hr{height:1px;background:var(--border);margin:12px 0;}
 
-/* --- KPI floating nav bar --- */
+/* --- KPI nav bar (layout only; background/position handled by float container) --- */
 .voi-kpi-bar{
-  position:sticky;top:0;z-index:999;
-  background:rgba(255,255,255,.96);
-  backdrop-filter:saturate(180%) blur(12px);
-  border-bottom:1px solid rgba(148,163,184,.35);
   padding:5px 4px;
-  margin:0 -0.75rem 8px;
 }
 .voi-kpi{display:flex;gap:5px;justify-content:space-between;overflow-x:auto;-webkit-overflow-scrolling:touch;scrollbar-width:none;}
 .voi-kpi::-webkit-scrollbar{display:none;}
@@ -5723,6 +5719,7 @@ def tracking_dashboard(
     deep_provider: Optional[str] = None,
 ) -> None:
     _inject_css()
+    float_init()
 
     # Ensure the KPI tab key exists (fragments may reference it on rerun)
     _fp_tab_key = f"tracking_global_tab_{int(venue_id)}"
@@ -5812,8 +5809,6 @@ def tracking_dashboard(
 
         return  # stop here – don't render normal dashboard
 
-    st.markdown(t("receive.dashboard_title"))
-
     with st.spinner(t("receive.loading_dashboard")):
         orders = _get_active_orders(int(venue_id), refresh_token=_orders_refresh_token(int(venue_id)))
         if not orders:
@@ -5887,20 +5882,35 @@ def tracking_dashboard(
         ("urgent_requests",   t("receive.kpi_urgent_requests"),  urgent_requests_pending),
     ]
 
-    # Visual HTML floating bar
-    cards = []
-    for view_key, label, value in _kpi_data:
-        cls = "k active" if view_key == active_view else "k"
-        cards.append(
-            f'<div class="{cls}" data-kpi="{view_key}">'
-            f'<div class="t">{label}</div>'
-            f'<div class="v">{value}</div>'
-            f'</div>'
+    # --- Fixed floating header: title + KPI bar ---
+    _header_ctr = st.container()
+    with _header_ctr:
+        st.markdown(t("receive.dashboard_title"))
+ 
+        cards = []
+        for view_key, label, value in _kpi_data:
+            cls = "k active" if view_key == active_view else "k"
+            cards.append(
+                f'<div class="{cls}" data-kpi="{view_key}">'
+                f'<div class="t">{label}</div>'
+                f'<div class="v">{value}</div>'
+                f'</div>'
+            )
+        st.markdown(
+            '<div class="voi-kpi-bar"><div class="voi-kpi">' + "".join(cards) + '</div></div>',
+            unsafe_allow_html=True,
         )
-    st.markdown(
-        '<div class="voi-kpi-bar"><div class="voi-kpi">' + "".join(cards) + '</div></div>',
-        unsafe_allow_html=True,
-    )
+    _header_ctr.float(float_css_helper(
+        top="1rem",
+        left="0",
+        right="0",
+        width="100vw",
+        z_index="999",
+        background="rgba(255,255,255,0.96)",
+        css="backdrop-filter:saturate(180%) blur(12px);border-bottom:1px solid rgba(148,163,184,.35);padding:6px 12px 0;",
+    ))
+    # Spacer so content below isn't hidden behind the fixed header
+    st.markdown('<div style="height:6rem"></div>', unsafe_allow_html=True)
 
     # --- Content area (fragment = only this reruns on KPI click) ---
     @st.fragment

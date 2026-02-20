@@ -2669,14 +2669,13 @@ def borrador_tab(
     """Page for draft (borrador) orders only."""
 
     _inject_css()
+    float_init()
     actor = _s(
         st.session_state.get("user_email")
         or st.session_state.get("actor")
         or st.session_state.get("email")
         or current_actor()
     )
-
-    st.markdown(f"#### 📝 {t('nav.draft')}")
 
     active_key = f"borrador_active_order_id_{venue_id}"
 
@@ -2710,13 +2709,28 @@ def borrador_tab(
     if default_oid not in ids:
         default_oid = ids[0]
 
-    picked = st.selectbox(
-        t("order.order_title"),
-        options=ids,
-        index=ids.index(default_oid),
-        format_func=lambda oid: labels.get(int(oid), str(oid)),
-        key=f"borrador_picker_{venue_id}",
-    )
+    # --- Fixed floating header: title + order picker ---
+    _header_ctr = st.container()
+    with _header_ctr:
+        st.markdown(f"#### 📝 {t('nav.draft')}")
+        picked = st.selectbox(
+            t("order.order_title"),
+            options=ids,
+            index=ids.index(default_oid),
+            format_func=lambda oid: labels.get(int(oid), str(oid)),
+            key=f"borrador_picker_{venue_id}",
+        )
+    _header_ctr.float(float_css_helper(
+        top="3rem",
+        left="0",
+        right="0",
+        width="100vw",
+        z_index="999",
+        background="rgba(255,255,255,0.96)",
+        css="backdrop-filter:saturate(180%) blur(12px);border-bottom:1px solid rgba(148,163,184,.35);padding:6px 12px 0;",
+    ))
+    # Spacer so content below isn't hidden behind the fixed header
+    st.markdown('<div style="height:5rem"></div>', unsafe_allow_html=True)
     st.session_state[active_key] = int(picked)
 
     # URL sync
@@ -2755,14 +2769,13 @@ def orders_tab(
     """Page for ready-to-send (listo) orders only."""
 
     _inject_css()
+    float_init()
     actor = _s(
         st.session_state.get("user_email")
         or st.session_state.get("actor")
         or st.session_state.get("email")
         or current_actor()
     )
-
-    st.markdown("#### 🧾 Pedidos")
 
     active_key = f"orders_active_order_id_{venue_id}"
 
@@ -2792,12 +2805,27 @@ def orders_tab(
     if default_oid not in ids:
         default_oid = ids[0]
 
-    picked = st.selectbox(
-        "Pedido",
-        options=ids,
-        index=ids.index(default_oid),
-        format_func=lambda oid: labels.get(int(oid), str(oid)),
-    )
+    # --- Fixed floating header: title + order picker ---
+    _header_ctr = st.container()
+    with _header_ctr:
+        st.markdown("#### 🧾 Pedidos")
+        picked = st.selectbox(
+            "Pedido",
+            options=ids,
+            index=ids.index(default_oid),
+            format_func=lambda oid: labels.get(int(oid), str(oid)),
+        )
+    _header_ctr.float(float_css_helper(
+        top="3rem",
+        left="0",
+        right="0",
+        width="100vw",
+        z_index="999",
+        background="rgba(255,255,255,0.96)",
+        css="backdrop-filter:saturate(180%) blur(12px);border-bottom:1px solid rgba(148,163,184,.35);padding:6px 12px 0;",
+    ))
+    # Spacer so content below isn't hidden behind the fixed header
+    st.markdown('<div style="height:5rem"></div>', unsafe_allow_html=True)
     st.session_state[active_key] = int(picked)
 
     # URL sync

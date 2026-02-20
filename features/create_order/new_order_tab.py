@@ -1312,7 +1312,20 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     # =========================================================
     # HEADER (notes mindset) + Active draft display
     # =========================================================
-    st.markdown(t("new_order.header"), unsafe_allow_html=True)
+    _header_ctr = st.container()
+    with _header_ctr:
+        st.markdown(t("new_order.header"), unsafe_allow_html=True)
+    _header_ctr.float(float_css_helper(
+        top="7rem",
+        left="0",
+        right="0",
+        width="100vw",
+        z_index="999",
+        background="rgba(255,255,255,0.96)",
+        css="backdrop-filter:saturate(180%) blur(12px);border-bottom:1px solid rgba(148,163,184,.35);padding:6px 12px 0;",
+    ))
+    # Spacer so content below isn't hidden behind the fixed header
+    st.markdown('<div style="height:4rem"></div>', unsafe_allow_html=True)
 
     # =========================================================
     # Convert df -> order lines
