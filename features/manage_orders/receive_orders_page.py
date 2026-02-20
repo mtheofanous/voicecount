@@ -23,6 +23,7 @@ This module does NOT handle payments.
 from dataclasses import dataclass, field
 from datetime import datetime, date
 from typing import Any, Dict, List, Optional, Tuple
+import functools
 import json
 import math
 import re
@@ -3510,19 +3511,10 @@ def venue_verify_and_close(*, ctx: OrderContext, provider: str, mode: str, credi
             s.add(receipt)
         # -----------------------
         # 4) Determine next workflow state based on REMAINING OPEN TICKETS
-        # (not ProviderResolution rows, which may be missing/incomplete)
+        # Reuse the already-fetched tickets list; state changes are reflected
+        # in-memory via SQLAlchemy's identity map (no second DB round-trip needed).
         # -----------------------
-        remaining = list(
-            s.exec(
-                select(SeguimientoTicket).where(
-                    SeguimientoTicket.order_id == int(order.id),
-                    SeguimientoTicket.provider_name == prov,
-                    SeguimientoTicket.kind.in_(
-                        ["invoice_discrepancy", "damaged", "wrong_item", "operational_missing"]
-                    ),
-                )
-            ).all()
-        )
+        remaining = tickets
 
         remaining_types: set[str] = set()
         has_cn_invoice = False
@@ -3665,6 +3657,7 @@ def _provider_open_tickets(ctx: OrderContext, provider: str) -> List[Seguimiento
 
 
 
+@functools.lru_cache(maxsize=512)
 def _parse_supplier_solution_meta(note: str) -> Dict[str, Any]:
     """Parse workflow.note written by supplier/venue.
 
@@ -3799,6 +3792,7 @@ def _is_redelivery_item(it: Dict[str, Any]) -> bool:
 # =========================================================
 _META_KV_RE = re.compile(r"^\s*([a-zA-Z_]+)\s*=\s*(.+?)\s*$")
 
+@functools.lru_cache(maxsize=512)
 def _parse_ticket_resolution_note(note: str) -> Dict[str, Any]:
     """Parse SeguimientoTicket.resolution_note written by supplier.
 
@@ -3840,6 +3834,7 @@ def _parse_ticket_resolution_note(note: str) -> Dict[str, Any]:
 
     return out
 
+@st.fragment
 def _render_incidences_cards(
     ctx: OrderContext,
     providers: List[str],
@@ -3959,13 +3954,30 @@ def _render_incidences_cards(
 
         rows: List[Dict[str, Any]] = []
         total_net = 0.0
-        total_vat = 0.0  
+        total_vat = 0.0
 
         line_by_id_local: Dict[int, OrderLine] = {
             int(getattr(ln, "id", 0) or 0): ln
             for ln in (ctx.lines_by_provider.get(provn, []) or [])
             if int(getattr(ln, "id", 0) or 0)
         }
+
+        # Batch-prefetch prev-month quantities for all candidate products (single query)
+        _pids_cn_set: set = set()
+        for _t2 in credit_candidates:
+            _lid2 = int(getattr(_t2, "order_line_id", 0) or 0)
+            _ln2 = line_by_id_local.get(_lid2)
+            if _ln2:
+                _pid_raw2 = getattr(_ln2, "product_id", None)
+                if _pid_raw2 not in (None, "", 0, "0"):
+                    try:
+                        _pids_cn_set.add(int(_pid_raw2))
+                    except Exception:
+                        pass
+        _pm_qtys_cn: Optional[Dict[Optional[int], float]] = (
+            _prev_month_qty_batch(int(ctx.order.venue_id), provn, tuple(_pids_cn_set))
+            if _pids_cn_set else None
+        )
 
         for t in credit_candidates:
             lid = int(getattr(t, "order_line_id", 0) or 0)
@@ -4006,6 +4018,7 @@ def _render_incidences_cards(
                     pid=pid,
                     qty=float(qty),
                     gross_unit=float(gross_unit) if gross_unit > 0 else 0.0,
+                    prev_month_qtys=_pm_qtys_cn,
                 )
                 if (gross_unit > 0 and qty > 0)
                 else {"net_unit": 0.0, "discount_pct": 0.0, "applied": False}
@@ -4016,7 +4029,6 @@ def _render_incidences_cards(
 
             net_amount = qty * net_unit
 
-      
             # VAT is 0 unless include_iva=True
             vat_pct = _iva_pct_for_pid(ctx.products_by_id, pid, 21.0) if include_iva else 0.0
             vat_eur = net_amount * (vat_pct / 100.0) if include_iva else 0.0
@@ -5610,6 +5622,20 @@ def _filter_incidences_by_resolution(
 #     return grouped
 
 
+@st.cache_data(ttl=15, show_spinner=False)
+def _count_open_urgent_requests(refresh_token: int = 0) -> int:
+    """Cached count of pending urgent reorder requests (single COUNT query)."""
+    _ = int(refresh_token or 0)
+    with get_session() as s:
+        val = s.exec(
+            select(func.count()).where(UrgentReorderRequest.status == "pending")
+        ).one()
+        try:
+            return int(val or 0)
+        except Exception:
+            return 0
+
+
 def _compute_kpi_data(
     venue_id: int,
     contexts: Dict[int, "OrderContext"],
@@ -5694,7 +5720,9 @@ def _compute_kpi_data(
                         redeliveries_pending += 1
 
     try:
-        urgent_requests_pending = len(_list_open_urgent_requests())
+        urgent_requests_pending = _count_open_urgent_requests(
+            refresh_token=_orders_refresh_token(int(venue_id))
+        )
     except Exception:
         urgent_requests_pending = 0
 
@@ -5809,14 +5837,13 @@ def tracking_dashboard(
 
         return  # stop here – don't render normal dashboard
 
-    with st.spinner(t("receive.loading_dashboard")):
-        orders = _get_active_orders(int(venue_id), refresh_token=_orders_refresh_token(int(venue_id)))
-        if not orders:
-            st.info(t("msg.no_orders_yet"))
-            return
+    orders = _get_active_orders(int(venue_id), refresh_token=_orders_refresh_token(int(venue_id)))
+    if not orders:
+        st.info(t("msg.no_orders_yet"))
+        return
 
-        order_ids = [int(o.id) for o in orders if o.id is not None]
-        bundle = _load_dashboard_bundle(int(venue_id), tuple(order_ids), refresh_token=_orders_refresh_token(int(venue_id)))
+    order_ids = [int(o.id) for o in orders if o.id is not None]
+    bundle = _load_dashboard_bundle(int(venue_id), tuple(order_ids), refresh_token=_orders_refresh_token(int(venue_id)))
     # NOTE: avoid escaped quotes (was causing SyntaxError on Streamlit Cloud)
     contexts = bundle.get("contexts", {})
     sent_providers_by_order = bundle.get("sent_providers_by_order", {})
@@ -5920,19 +5947,17 @@ def tracking_dashboard(
         st.session_state.setdefault(tab_key, _KPI_VIEWS[0])
         if st.session_state[tab_key] not in _KPI_VIEWS:
             st.session_state[tab_key] = _KPI_VIEWS[0]
-        # Hidden offscreen buttons (inside fragment so only fragment reruns)
+        # Hidden offscreen buttons (inside fragment — fragment reruns automatically on click)
         for view_key, _lbl, _val in _kpi_data:
             if st.button("_", key=f"_kpi_{view_key}_{int(venue_id)}"):
                 st.session_state[tab_key] = view_key
                 set_query_params(page="tracking", view=view_key, order_id="", provider="")
-                st.rerun()
 
         av = st.session_state[tab_key]
 
         # 📦 Pending (Receive)
         if av == "pending_products":
-            with st.spinner(t("receive.loading_pending")):
-                tasks = _list_pending_receive_items(int(venue_id), refresh_token=_orders_refresh_token(int(venue_id)))
+            tasks = _list_pending_receive_items(int(venue_id), refresh_token=_orders_refresh_token(int(venue_id)))
             if not tasks:
                 st.success(t("msg.nothing_pending"))
                 return
@@ -5965,8 +5990,7 @@ def tracking_dashboard(
 
         # 🚨 Open incidences (all)
         if av == "open_incidences":
-            with st.spinner(t("receive.loading_incidences")):
-                items = _list_open_incidences_items(int(venue_id))
+            items = _list_open_incidences_items(int(venue_id))
             if not items:
                 st.success(t("msg.no_open_incidences"))
                 return
@@ -5990,49 +6014,102 @@ def tracking_dashboard(
                 st.info(t("msg.no_matches"))
                 return
 
-            for item in items2:
+            _PAGE_SIZE = 10
+            _page_key = f"inc_page_open_{int(venue_id)}"
+            _q_key = f"inc_search_prev_{int(venue_id)}"
+            if st.session_state.get(_q_key) != q:
+                st.session_state[_page_key] = 0
+                st.session_state[_q_key] = q
+            _page = max(0, int(st.session_state.get(_page_key, 0) or 0))
+            _total_pages = max(1, math.ceil(len(items2) / _PAGE_SIZE))
+            _page = min(_page, _total_pages - 1)
+            _page_items = items2[_page * _PAGE_SIZE : (_page + 1) * _PAGE_SIZE]
+
+            for item in _page_items:
                 oid = int(item["order_id"])
                 prov = _s(item.get("provider") or "—")
-
                 ctx_i = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
                 _render_incidences_cards(ctx_i, [prov], show_prices=True, include_iva=True)
+
+            if _total_pages > 1:
+                _pc1, _pc2, _pc3 = st.columns([1, 2, 1])
+                with _pc1:
+                    if st.button("← Prev", key=f"inc_prev_open_{int(venue_id)}", disabled=(_page == 0), use_container_width=True):
+                        st.session_state[_page_key] = _page - 1
+                with _pc2:
+                    st.caption(f"Page {_page + 1} / {_total_pages}  ·  {len(items2)} items")
+                with _pc3:
+                    if st.button("Next →", key=f"inc_next_open_{int(venue_id)}", disabled=(_page >= _total_pages - 1), use_container_width=True):
+                        st.session_state[_page_key] = _page + 1
 
             return
 
         # 🚚 Re-deliveries (filtered incidences)
         if av == "re_deliveries":
-            with st.spinner(t("receive.loading_redeliveries")):
-                items = _list_open_incidences_items(int(venue_id))
-                REDEL_SET = {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}
-                items = _filter_incidences_by_resolution(items, int(venue_id), REDEL_SET, contexts=contexts) if items else []
+            items = _list_open_incidences_items(int(venue_id))
+            REDEL_SET = {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}
+            items = _filter_incidences_by_resolution(items, int(venue_id), REDEL_SET, contexts=contexts) if items else []
             if not items:
                 st.success(t("msg.no_pending_redeliveries"))
                 return
 
-            for item in items:
+            _PAGE_SIZE = 10
+            _page_key_rd = f"inc_page_rdel_{int(venue_id)}"
+            _page_rd = max(0, int(st.session_state.get(_page_key_rd, 0) or 0))
+            _total_pages_rd = max(1, math.ceil(len(items) / _PAGE_SIZE))
+            _page_rd = min(_page_rd, _total_pages_rd - 1)
+            _page_items_rd = items[_page_rd * _PAGE_SIZE : (_page_rd + 1) * _PAGE_SIZE]
+
+            for item in _page_items_rd:
                 oid = int(item["order_id"])
                 prov = _s(item.get("provider") or "—")
-
                 ctx_r = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
                 _render_incidences_cards(ctx_r, [prov], show_prices=True, include_iva=True, view_mode="re_delivery")
+
+            if _total_pages_rd > 1:
+                _pc1, _pc2, _pc3 = st.columns([1, 2, 1])
+                with _pc1:
+                    if st.button("← Prev", key=f"inc_prev_rdel_{int(venue_id)}", disabled=(_page_rd == 0), use_container_width=True):
+                        st.session_state[_page_key_rd] = _page_rd - 1
+                with _pc2:
+                    st.caption(f"Page {_page_rd + 1} / {_total_pages_rd}  ·  {len(items)} items")
+                with _pc3:
+                    if st.button("Next →", key=f"inc_next_rdel_{int(venue_id)}", disabled=(_page_rd >= _total_pages_rd - 1), use_container_width=True):
+                        st.session_state[_page_key_rd] = _page_rd + 1
 
             return
 
         # 🧾 Credit notes (filtered incidences)
         if av == "credit_notes":
-            with st.spinner(t("receive.loading_credit_notes")):
-                items = _list_open_incidences_items(int(venue_id))
-                items = _filter_incidences_by_resolution(items, int(venue_id), {"credit_note"}, contexts=contexts) if items else []
+            items = _list_open_incidences_items(int(venue_id))
+            items = _filter_incidences_by_resolution(items, int(venue_id), {"credit_note"}, contexts=contexts) if items else []
             if not items:
                 st.success(t("msg.no_pending_credit_notes"))
                 return
 
-            for item in items:
+            _PAGE_SIZE = 10
+            _page_key_cn = f"inc_page_cn_{int(venue_id)}"
+            _page_cn = max(0, int(st.session_state.get(_page_key_cn, 0) or 0))
+            _total_pages_cn = max(1, math.ceil(len(items) / _PAGE_SIZE))
+            _page_cn = min(_page_cn, _total_pages_cn - 1)
+            _page_items_cn = items[_page_cn * _PAGE_SIZE : (_page_cn + 1) * _PAGE_SIZE]
+
+            for item in _page_items_cn:
                 oid = int(item["order_id"])
                 prov = _s(item.get("provider") or "—")
-
                 ctx_c = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
                 _render_incidences_cards(ctx_c, [prov], show_prices=True, include_iva=True, view_mode="credit_note")
+
+            if _total_pages_cn > 1:
+                _pc1, _pc2, _pc3 = st.columns([1, 2, 1])
+                with _pc1:
+                    if st.button("← Prev", key=f"inc_prev_cn_{int(venue_id)}", disabled=(_page_cn == 0), use_container_width=True):
+                        st.session_state[_page_key_cn] = _page_cn - 1
+                with _pc2:
+                    st.caption(f"Page {_page_cn + 1} / {_total_pages_cn}  ·  {len(items)} items")
+                with _pc3:
+                    if st.button("Next →", key=f"inc_next_cn_{int(venue_id)}", disabled=(_page_cn >= _total_pages_cn - 1), use_container_width=True):
+                        st.session_state[_page_key_cn] = _page_cn + 1
 
             return
 
