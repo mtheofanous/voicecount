@@ -54,6 +54,10 @@ def ensure_google_credentials_file():
     if raw_env.startswith("{") and "private_key" in raw_env:
         p = Path("/tmp/google-creds.json")
         p.write_text(raw_env, encoding="utf-8")
+        try:
+            p.chmod(0o600)  # owner-read-only — prevent other processes from reading the key
+        except Exception:
+            pass
         os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(p)
         return
 
@@ -80,8 +84,12 @@ def ensure_google_credentials_file():
             "Set GOOGLE_CREDENTIALS_JSON in Streamlit secrets or env."
         )
 
-    # Write JSON to temp file
+    # Write JSON to temp file (owner-readable only)
     p = Path("/tmp/google-creds.json")
     p.write_text(creds, encoding="utf-8")
+    try:
+        p.chmod(0o600)
+    except Exception:
+        pass
 
     os.environ["GOOGLE_APPLICATION_CREDENTIALS"] = str(p)

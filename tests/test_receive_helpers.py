@@ -536,9 +536,9 @@ class TestStateBadge:
         text, kind = _state_badge("INVOICE_DISCREPANCY")
         assert kind == "bad"
 
-    def test_waiting_supplier_is_bad(self):
+    def test_waiting_supplier_is_warn(self):
         text, kind = _state_badge("WAITING_SUPPLIER_ACTION")
-        assert kind == "bad"
+        assert kind == "warn"
 
     def test_credit_note_pending_is_warn(self):
         text, kind = _state_badge("SUPPLIER_CREDIT_NOTE_PENDING")

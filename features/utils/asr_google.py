@@ -7,6 +7,16 @@ from typing import List, Optional
 import os
 from core.config import ensure_google_credentials_file
 
+# Module-level singleton — avoids a new gRPC connection on every voice call.
+_speech_client = None
+
+def _get_speech_client():
+    global _speech_client
+    if _speech_client is None:
+        from google.cloud import speech  # type: ignore
+        _speech_client = speech.SpeechClient()
+    return _speech_client
+
 
 
 def _looks_like_wav(b: bytes) -> bool:
@@ -92,10 +102,12 @@ def asr_google(audio_bytes: bytes, vocab: List[str], language: str = "es") -> st
     and on Streamlit Cloud (GOOGLE_CREDENTIALS_JSON stored in secrets).
     """
 
-    # ✅ Make sure creds exist and GOOGLE_APPLICATION_CREDENTIALS is set to a FILE PATH
-    ensure_google_credentials_file()
-
+    # Credentials are set up once during bootstrap_once() in app.py.
+    # Only re-check here if the env var is somehow missing (e.g. first call before bootstrap).
     credentials_path = (os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
+    if not credentials_path:
+        ensure_google_credentials_file()
+        credentials_path = (os.getenv("GOOGLE_APPLICATION_CREDENTIALS") or "").strip()
     if not credentials_path:
         raise RuntimeError(
             "Google Speech credentials missing.\n"
@@ -107,7 +119,7 @@ def asr_google(audio_bytes: bytes, vocab: List[str], language: str = "es") -> st
         return ""
 
     try:
-        from google.cloud import speech  # type: ignore
+        from google.cloud import speech  # type: ignore  # noqa: F401 (import check only)
     except Exception as e:
         raise RuntimeError("Missing dependency: pip install google-cloud-speech") from e
 
@@ -134,7 +146,7 @@ def asr_google(audio_bytes: bytes, vocab: List[str], language: str = "es") -> st
     sample_rate_hz = int(sr or 16000)
     channels = int(ch or 1)
 
-    client = speech.SpeechClient()
+    client = _get_speech_client()
 
     config = speech.RecognitionConfig(
         encoding=speech.RecognitionConfig.AudioEncoding.LINEAR16,

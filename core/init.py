@@ -24,8 +24,10 @@ def init_db() -> None:
     # (keep as you already had, but do it once)
     from domain import models  # noqa: F401
 
-    # In production, prefer migrations (Alembic) and disable create_all.
-    # Default = enabled for local/dev, disabled when env says so.
+    # In production set DB_AUTO_CREATE=0 (in Streamlit secrets or .env).
+    # Leaving it enabled on Postgres runs schema-inspection queries on every cold
+    # start and risks silent schema drift. Use Alembic for production migrations.
+    # Default = "1" (enabled) only for local/dev safety.
     auto_create = os.getenv("DB_AUTO_CREATE", "1").strip().lower() not in {"0", "false", "no"}
 
     if auto_create:

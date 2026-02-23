@@ -496,23 +496,30 @@ def _home_card():
 
 
 
+import inspect as _inspect
+from functools import lru_cache as _lru_cache
+
+@_lru_cache(maxsize=32)
+def _page_params(fn) -> frozenset | None:
+    """Cache inspect.signature() results so we don't re-run reflection on every render."""
+    try:
+        return frozenset(_inspect.signature(fn).parameters)
+    except (TypeError, ValueError):
+        return None
+
+
 def _call_page(fn, venue_id: int, **kwargs):
     """
     Call a page function, passing only the arguments it actually accepts.
     Supports pages WITH or WITHOUT venue_id.
     """
-    import inspect
-
-    try:
-        sig = inspect.signature(fn)
-    except (TypeError, ValueError):
+    params = _page_params(fn)
+    if params is None:
         # Fallback: try venue_id first, then no args
         try:
             return fn(venue_id)
         except TypeError:
             return fn()
-
-    params = sig.parameters
 
     call_kwargs = {}
 
@@ -556,34 +563,41 @@ def main():
     if active_token:
         # Always update session with the active token
         st.session_state["_session_token"] = active_token
-        
-        # ✅ CRITICAL: Restore auth EVERY TIME we have a token
-        # Don't check if auth_ctx exists - always validate the token!
-        logging.info(f"🔄 Validating token and restoring auth...")
-        try:
-            from features.auth_and_manage.auth_multi_tenant import _get_session_from_token
-            session_data = _get_session_from_token(active_token)
-            
-            if session_data:
-                # Always set/update auth_ctx
-                st.session_state["auth_ctx"] = {
-                    "user_id": session_data["user_id"],
-                    "account_id": session_data["account_id"]
-                }
-                logging.info(f"✅ Auth restored: user={session_data['user_id']}, account={session_data['account_id']}")
-            else:
-                logging.warning(f"⚠️ Invalid token - clearing session")
-                # Clear invalid token
+
+        # ✅ PERF: Only re-validate against DB if the token changed or TTL expired (5 min).
+        # This eliminates the DB round-trip on every Streamlit rerun.
+        import time as _time
+        _last_at = st.session_state.get("_token_validated_at", 0)
+        _last_for = st.session_state.get("_token_validated_for", "")
+        _token_fresh = (active_token == _last_for) and (_time.time() - _last_at) < 300
+
+        if not _token_fresh:
+            logging.debug("Validating token against DB...")
+            try:
+                from features.auth_and_manage.auth_multi_tenant import _get_session_from_token
+                session_data = _get_session_from_token(active_token)
+
+                if session_data:
+                    st.session_state["auth_ctx"] = {
+                        "user_id": session_data["user_id"],
+                        "account_id": session_data["account_id"]
+                    }
+                    st.session_state["_token_validated_at"] = _time.time()
+                    st.session_state["_token_validated_for"] = active_token
+                    logging.debug(f"Auth restored: user={session_data['user_id']}")
+                else:
+                    logging.warning("Invalid token - clearing session")
+                    st.session_state.pop("_session_token", None)
+                    st.session_state.pop("auth_ctx", None)
+                    st.session_state.pop("_token_validated_at", None)
+                    st.session_state.pop("_token_validated_for", None)
+
+            except Exception as e:
+                logging.error(f"Error validating token: {e}")
                 st.session_state.pop("_session_token", None)
                 st.session_state.pop("auth_ctx", None)
-                
-        except Exception as e:
-            logging.error(f"❌ Error validating token: {e}")
-            import traceback
-            logging.error(traceback.format_exc())
-            # Clear corrupted data
-            st.session_state.pop("_session_token", None)
-            st.session_state.pop("auth_ctx", None)
+                st.session_state.pop("_token_validated_at", None)
+                st.session_state.pop("_token_validated_for", None)
     else:
         logging.debug("No token found")
     
@@ -631,8 +645,7 @@ def main():
     auth_gate(show_manage_org=True, show_venue_selector=False)
     require_login()
 
-    logging.debug(f"Session state: {st.session_state}")
-    logging.debug(f"Current page_key: {st.session_state.get('page')}")
+    logging.debug(f"page={st.session_state.get('page')} venue={st.session_state.get('active_venue_id')}")
 
     u = current_user() or {}
     account_role = (u.get("account_role") or "member").lower()
@@ -668,7 +681,6 @@ def main():
     venue_id = int(venue["id"])
     venue_name = venue.get("name", "")
 
-    logging.debug(f"Resolved page_key after deep-link sync: {st.session_state['page']}")
 
     # ---------------- TOP BAR (true fixed) ----------------
     account_name = acc["name"] if acc else ""

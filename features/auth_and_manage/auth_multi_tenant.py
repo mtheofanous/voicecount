@@ -69,10 +69,14 @@ def with_loading_spinner(func):
 AUTH_DB_URL = get_database_url()  # reuse your existing DB by default
 
 
-@st.cache_resource
 def get_auth_engine():
-    """Create and cache the SQLAlchemy/SQLModel engine (connection pool) per process."""
-    return create_engine(AUTH_DB_URL, echo=False, pool_pre_ping=True)
+    """
+    Reuse the single connection pool from core.db — no second pool for the same DB.
+    Previously this created its own engine (pool_size default 5+10=15).
+    Now both auth and domain code share the one pool defined in core.db.get_engine().
+    """
+    from core.db import get_engine
+    return get_engine(get_database_url())
 
 
 def get_auth_session() -> Session:

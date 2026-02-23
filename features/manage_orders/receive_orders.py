@@ -30,7 +30,14 @@ def _try_import(mod_path: str):
         raise
 
 
+_cached_mod_ref = None  # resolved once per process, then reused
+
+
 def _mod():
+    global _cached_mod_ref
+    if _cached_mod_ref is not None:
+        return _cached_mod_ref
+
     pkg = __package__  # e.g. "features.manage_orders"
     candidates = (
         "receive_orders_page_fast",   # optional optimized file
@@ -43,12 +50,14 @@ def _mod():
         for name in candidates:
             m = _try_import(f"{pkg}.{name}")
             if m is not None:
+                _cached_mod_ref = m
                 return m
 
     # 2) Flat imports (fallback)
     for name in candidates:
         m = _try_import(name)
         if m is not None:
+            _cached_mod_ref = m
             return m
 
     raise ModuleNotFoundError(

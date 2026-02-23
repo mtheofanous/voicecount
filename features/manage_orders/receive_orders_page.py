@@ -1776,8 +1776,10 @@ def _state_badge(state: str) -> Tuple[str, str]:
     s = (state or "").upper()
     if s == "CLOSED":
         return "Closed", "ok"
-    if s in {"INVOICE_DISCREPANCY", "WAITING_SUPPLIER_ACTION"}:
+    if s == "INVOICE_DISCREPANCY":
         return "Needs resolution", "bad"
+    if s == "WAITING_SUPPLIER_ACTION":
+        return "Resolution requested", "warn"
     if s == "SUPPLIER_CREDIT_NOTE_PENDING":
         return "Credit note pending", "warn"
     if s == "SUPPLIER_REJECTED":
@@ -2942,7 +2944,7 @@ def _clear_receive_form_state(order_id: int, provider: str, lines: Optional[list
             if k.startswith(prefix):
                 del st.session_state[k]
 
-def save_all_received_for_provider(*, ctx: OrderContext, provider: str) -> Tuple[bool, str]:
+def save_all_received_for_provider(*, ctx: OrderContext, provider: str) -> Tuple[bool, str, str]:
     """Persist the whole Receive form for a provider in **one DB transaction**.
 
     This is a major performance hot path on Streamlit Cloud.
@@ -2959,13 +2961,13 @@ def save_all_received_for_provider(*, ctx: OrderContext, provider: str) -> Tuple
     venue_id = int(order.venue_id)
     lines = ctx.lines_by_provider.get(prov, []) or []
     if not lines:
-        return False, "No lines for provider"
+        return False, "No lines for provider", ""
 
     # Invoice number REQUIRED (from UI state)
     inv_key = f"recv_inv_{order_id}_{prov}"
     invoice_number_ui = (st.session_state.get(inv_key) or "").strip()
     if not invoice_number_ui:
-        return False, "Invoice number is required before saving."
+        return False, "Invoice number is required before saving.", ""
 
     now = _now()
 
@@ -2980,7 +2982,7 @@ def save_all_received_for_provider(*, ctx: OrderContext, provider: str) -> Tuple
             continue
 
     if not line_ids:
-        return False, "No valid lines for provider"
+        return False, "No valid lines for provider", ""
 
     any_invoice_discrepancy = False
     any_operational_missing = False
@@ -3203,7 +3205,7 @@ def save_all_received_for_provider(*, ctx: OrderContext, provider: str) -> Tuple
     if sel_key in st.session_state:
         del st.session_state[sel_key]
 
-    return True, "Saved"
+    return True, "Saved", to_state
 
 # =============================
 # Supplier resolution + verify
@@ -3829,9 +3831,10 @@ def _parse_ticket_resolution_note(note: str) -> Dict[str, Any]:
     if not txt:
         return {"resolution": "", "credit_note_invoice": "", "eta": "", "invoice": ""}
 
-    m_tag = re.match(r'^\s*\[[A-Z_]+\]\s*(.*)$', txt)
+    # Strip leading [TAG] prefix (e.g. [SUPPLIER]) regardless of whether note is multi-line
+    m_tag = re.match(r'^\s*\[[A-Z_]+\]\s*', txt)
     if m_tag:
-        txt = (m_tag.group(1) or '').strip()
+        txt = txt[m_tag.end():]
 
     # allow either " | " or newlines (comment is stored after newline)
     first_line = txt.splitlines()[0].strip()
@@ -4309,10 +4312,18 @@ def _render_incidences_cards(
                 details.append(f"<span class='cn-detail'>Address: <b>{html.escape(address)}</b></span>")
             supplier_html = "<div class='cn-line-meta' style='margin-top:6px;'>" + "".join(details) + "</div>"
 
+        _eta_header_html = ""
+        if header_eta and header_eta != "—":
+            _eta_header_html = (
+                f"<div class='voi-muted' style='margin-top:4px;'>"
+                f"📅 <b>{html.escape(header_eta)}</b>"
+                f"</div>"
+            )
         st.markdown(
             "<div class='voi-card' style='border-color:#bfdbfe;background:#eff6ff'>"
             f"<div class='voi-title'>{t('receive.rd_preview_title')}</div>"
             f"<div class='voi-muted'>{t('receive.supplier_colon')} <b>{html.escape(prov)}</b></div>"
+            + _eta_header_html
             + supplier_html
             + "</div>",
             unsafe_allow_html=True,
@@ -4321,7 +4332,7 @@ def _render_incidences_cards(
         # -----------------------------
         # Render content (card layout)
         # -----------------------------
-        def _build_redel_cards(item_list: list, inv_ref: str = "") -> str:
+        def _build_redel_cards(item_list: list, inv_ref: str = "", eta_ref: str = "") -> str:
             """Build mobile-friendly card HTML for re-delivery items."""
             cards = ""
             for it in item_list:
@@ -4351,12 +4362,25 @@ def _render_incidences_cards(
                     + (f"<div class='cn-line-meta'><span class='cn-reason'>{why}</span></div>" if why else "")
                     + "</div>"
                 )
-            header = ""
+            header_rows = []
+            _eta_clean = (eta_ref or "").strip()
+            if _eta_clean and _eta_clean != "—":
+                header_rows.append(
+                    f"<div class='cn-row'>"
+                    f"<span class='cn-lbl'>📅 Expected delivery:</span> "
+                    f"<b>{html.escape(_eta_clean)}</b>"
+                    f"</div>"
+                )
             if inv_ref:
+                header_rows.append(
+                    f"<div class='cn-row'><span class='cn-lbl'>Invoice:</span> <b>{html.escape(inv_ref)}</b></div>"
+                )
+            header = ""
+            if header_rows:
                 header = (
                     "<div class='cn-header' style='background:#eff6ff;border-color:#bfdbfe;'>"
-                    f"<div class='cn-row'><span class='cn-lbl'>Invoice:</span> <b>{html.escape(inv_ref)}</b></div>"
-                    "</div>"
+                    + "".join(header_rows)
+                    + "</div>"
                 )
             return f"<div class='cn-wrap' style='border-color:#bfdbfe;'>{header}{cards}</div>"
 
@@ -4371,7 +4395,8 @@ def _render_incidences_cards(
                             it["desc"] = _line_desc(ln, ctx.products_by_id)
                             break
             inv_ref = _s(sol.get("invoice")).strip()
-            st.markdown(_build_redel_cards(redel_items, inv_ref=inv_ref), unsafe_allow_html=True)
+            eta_ref = _s(sol.get("eta")).strip()
+            st.markdown(_build_redel_cards(redel_items, inv_ref=inv_ref, eta_ref=eta_ref), unsafe_allow_html=True)
             return
 
         # Ticket-based grouped schedule
@@ -4405,7 +4430,7 @@ def _render_incidences_cards(
                 why = (_s(getattr(tk, "kind", None)) or "re_delivery").replace("_", " ")
                 ticket_items.append({"name": nm, "desc": desc, "qty": f"{q:g}", "unit": unit_t, "reason": why})
 
-            st.markdown(_build_redel_cards(ticket_items, inv_ref=inv_ref), unsafe_allow_html=True)
+            st.markdown(_build_redel_cards(ticket_items, inv_ref=inv_ref, eta_ref=eta), unsafe_allow_html=True)
 
 
 
@@ -5535,11 +5560,26 @@ def _list_open_incidences_items(
             continue
 
         sent_set = set(sent_by_order.get(int(oid), set()) or set())
-        if not sent_set:
-            continue
 
-        # only providers actually sent
-        providers = [p for p in ctx.lines_by_provider.keys() if norm_provider(p) in sent_set]
+        # Include providers that were sent OR have an active incidence workflow.
+        # Unsent providers can still have INVOICE_DISCREPANCY workflows when the
+        # venue saves discrepancies from the full-page receive form.
+        _INCIDENCE_STATES = {
+            "INVOICE_DISCREPANCY", "OPERATIONAL_MISSING_PRODUCT",
+            "WAITING_SUPPLIER_ACTION", "SUPPLEMENTARY_DELIVERY_SENT",
+            "SUPPLIER_CREDIT_NOTE_ISSUED", "SUPPLIER_CREDIT_NOTE_PENDING", "SUPPLIER_REJECTED",
+        }
+        providers = []
+        for _p in ctx.lines_by_provider.keys():
+            _pn = norm_provider(_p)
+            if _pn in sent_set:
+                providers.append(_p)
+                continue
+            _wf = ctx.workflows_by_provider.get(_pn)
+            if _wf and _s(getattr(_wf, "state", None)).upper() in _INCIDENCE_STATES:
+                providers.append(_p)
+        if not providers:
+            continue
         providers.sort(key=lambda x: x.lower())
 
         for prov in providers:
@@ -5687,7 +5727,16 @@ def _compute_kpi_data(
         int(venue_id), order_ids_all,
         refresh_token=_orders_refresh_token(int(venue_id)),
     )
-    open_total = sum(int(it.get("open_count") or 0) for it in inc_items)
+    # "Open incidences" only counts items still awaiting supplier action.
+    # Items where supplier has already acted move to their resolution KPI instead.
+    _SUPPLIER_ACTED = {"SUPPLEMENTARY_DELIVERY_SENT", "SUPPLIER_CREDIT_NOTE_ISSUED"}
+    open_total = 0
+    for _it in inc_items:
+        _ctx2 = contexts.get(int(_it["order_id"]))
+        _wf2 = _ctx2.workflows_by_provider.get(norm_provider(_it.get("provider") or "")) if _ctx2 else None
+        _wf_st = _s(getattr(_wf2, "state", None)).upper() if _wf2 else ""
+        if _wf_st not in _SUPPLIER_ACTED:
+            open_total += int(_it.get("open_count") or 0)
 
     pending_products = 0
 
@@ -5842,17 +5891,88 @@ def tracking_dashboard(
             key=f"btn_fp_save_{fp_order_id}_{fp_prov_key}",
         )
         if fp_save_all:
-            ok, msg = save_all_received_for_provider(ctx=fp_ctx, provider=fp_provider)
+            ok, msg, saved_state = save_all_received_for_provider(ctx=fp_ctx, provider=fp_provider)
             if ok:
                 del st.session_state["fullpage_receive"]
                 _bump_venue_refresh(fp_venue_id)
+                # Auto-switch dashboard to the relevant KPI view
+                _tab_key = f"tracking_global_tab_{fp_venue_id}"
+                if saved_state in {"INVOICE_DISCREPANCY", "OPERATIONAL_MISSING_PRODUCT"}:
+                    st.session_state[_tab_key] = "open_incidences"
+                else:
+                    st.session_state[_tab_key] = "pending_products"
+                # Clear order_id/provider URL params so the auto-enter block
+                # doesn't immediately re-open the full-page form.
+                set_query_params(page="tracking", order_id="", provider="")
                 st.rerun()
             else:
                 st.error(msg)
 
         return  # stop here – don't render normal dashboard
 
+    # ── Loading screen ────────────────────────────────────────────────────────
+    # Renders immediately (Streamlit streams top-to-bottom). The progress bar
+    # animates in CSS so it looks alive even while Python is blocked on the DB.
+    # Both the "Loading…" text and the bar are centered and full-width.
+    _loading_slot = st.empty()
+    with _loading_slot.container():
+        st.markdown(
+            """
+<style>
+@keyframes _voi_progress {
+  0%   { width: 0%; }
+  15%  { width: 30%; }
+  40%  { width: 55%; }
+  70%  { width: 78%; }
+  90%  { width: 90%; }
+  100% { width: 95%; }   /* stays just short of 100% until replaced */
+}
+.voi-loading-wrap {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  padding: 60px 24px 40px;
+  gap: 20px;
+}
+.voi-loading-title {
+  font-size: 1.5rem;
+  font-weight: 900;
+  color: #0f172a;
+  letter-spacing: -0.01em;
+}
+.voi-loading-bar-track {
+  width: 100%;
+  max-width: 320px;
+  height: 18px;
+  background: #e2e8f0;
+  border-radius: 999px;
+  overflow: hidden;
+  border: 2px solid #0f172a;
+}
+.voi-loading-bar-fill {
+  height: 100%;
+  background: #0f172a;
+  border-radius: 999px;
+  animation: _voi_progress 2.8s cubic-bezier(.4,0,.2,1) forwards;
+}
+</style>
+<div class="voi-loading-wrap">
+  <div class="voi-loading-title">Loading....</div>
+  <div class="voi-loading-bar-track">
+    <div class="voi-loading-bar-fill"></div>
+  </div>
+</div>
+""",
+            unsafe_allow_html=True,
+        )
+
+    # Heavy DB calls — loading screen above is already visible while these run
     orders = _get_active_orders(int(venue_id), refresh_token=_orders_refresh_token(int(venue_id)))
+
+    # Clear loading screen as soon as we have data (or no-data state)
+    _loading_slot.empty()
+
     if not orders:
         st.info(t("msg.no_orders_yet"))
         return
@@ -5894,22 +6014,18 @@ def tracking_dashboard(
     # -----------------------------
     order_ids_all = tuple(int(o.id) for o in orders if getattr(o, "id", None) is not None)
 
-    _kpi_cache_key = f"_kpi_cache_{int(venue_id)}_{_orders_refresh_token(int(venue_id))}"
-    # Evict any stale entries from previous refresh cycles
-    for _stale in [k for k in list(st.session_state.keys()) if k.startswith(f"_kpi_cache_{int(venue_id)}_") and k != _kpi_cache_key]:
+    # KPIs computed fresh each render so supplier answers are reflected immediately.
+    # _list_open_incidences_items (ttl=15) keeps this fast.
+    try:
+        _kpis = _compute_kpi_data(int(venue_id), contexts, sent_providers_by_order, order_ids_all)
+    except Exception:
+        _kpis = {
+            "providers_global": 0, "open_total": 0, "pending_products": 0,
+            "redeliveries_pending": 0, "credit_notes_pending": 0, "urgent_requests_pending": 0,
+        }
+    # Clean up any leftover KPI cache keys from old code
+    for _stale in [k for k in list(st.session_state.keys()) if k.startswith(f"_kpi_cache_{int(venue_id)}_")]:
         del st.session_state[_stale]
-
-    if _kpi_cache_key not in st.session_state:
-        try:
-            _kpis = _compute_kpi_data(int(venue_id), contexts, sent_providers_by_order, order_ids_all)
-        except Exception:
-            _kpis = {
-                "providers_global": 0, "open_total": 0, "pending_products": 0,
-                "redeliveries_pending": 0, "credit_notes_pending": 0, "urgent_requests_pending": 0,
-            }
-        st.session_state[_kpi_cache_key] = _kpis
-
-    _kpis = st.session_state[_kpi_cache_key]
     providers_global = _kpis["providers_global"]
     open_total = _kpis["open_total"]
     pending_products = _kpis["pending_products"]
@@ -6016,6 +6132,16 @@ def tracking_dashboard(
         # 🚨 Open incidences (all)
         if av == "open_incidences":
             items = _list_open_incidences_items(int(venue_id), order_ids_all, refresh_token=_orders_refresh_token(int(venue_id)))
+            # Exclude items where supplier has already acted — those belong in their resolution KPI
+            _SI_ACTED = {"SUPPLEMENTARY_DELIVERY_SENT", "SUPPLIER_CREDIT_NOTE_ISSUED"}
+            _items_awaiting = []
+            for _it in items:
+                _ctx2 = contexts.get(int(_it["order_id"]))
+                _wf2 = _ctx2.workflows_by_provider.get(norm_provider(_it.get("provider") or "")) if _ctx2 else None
+                _wf_st = _s(getattr(_wf2, "state", None)).upper() if _wf2 else ""
+                if _wf_st not in _SI_ACTED:
+                    _items_awaiting.append(_it)
+            items = _items_awaiting
             if not items:
                 st.success(t("msg.no_open_incidences"))
                 return

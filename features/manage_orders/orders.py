@@ -216,7 +216,7 @@ def _remove_name_words_from_description(name: str, desc: str) -> str:
     return " ".join(kept).strip()
 
 
-@st.cache_data(ttl=10, show_spinner=False, hash_funcs={type(lambda: None): lambda _: "session_fn"})
+@st.cache_data(ttl=120, show_spinner=False, hash_funcs={type(lambda: None): lambda _: "session_fn"})
 def _list_orders_cached(_get_session_fn, venue_id: int, refresh_token: int) -> list[OrderRow]:
     _ = refresh_token
     with _get_session_fn() as s:
