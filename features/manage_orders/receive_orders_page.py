@@ -35,6 +35,16 @@ def _orders_refresh_token(venue_id: int) -> int:
     """Session-state based cache buster for order-related caches."""
     return int(st.session_state.get(f"orders_refresh_token_{int(venue_id)}", 0) or 0)
 
+
+def _bump_venue_refresh(venue_id: int) -> None:
+    """Invalidate all venue-level caches (orders + KPI) before st.rerun()."""
+    k = f"orders_refresh_token_{int(venue_id)}"
+    st.session_state[k] = int(st.session_state.get(k, 0)) + 1
+    prefix = f"_kpi_cache_{int(venue_id)}_"
+    for stale in [ks for ks in list(st.session_state.keys()) if ks.startswith(prefix)]:
+        del st.session_state[stale]
+
+
 from sqlmodel import select
 import html
 from core.db import get_session
@@ -1514,6 +1524,7 @@ def _render_urgent_tab(ctx: 'OrderContext') -> None:
 
         # ✅ Jump user to the NEW urgent order in Track Order
         set_query_params(page="tracking", order_id=str(int(urgent_order_id)))
+        _bump_venue_refresh(int(ctx.order.venue_id))
         st.rerun()
 
 
@@ -2911,11 +2922,25 @@ def _upsert_followup_and_ticket(
     return any_invoice_discrepancy, any_operational_missing
 
 
-def _clear_receive_form_state(order_id: int, provider: str) -> None:
-    prefix = f"recv_{int(order_id)}_{norm_provider(provider)}_"
-    for k in list(st.session_state.keys()):
-        if k.startswith(prefix):
-            del st.session_state[k]
+def _clear_receive_form_state(order_id: int, provider: str, lines: Optional[list] = None) -> None:
+    prov = norm_provider(provider)
+    if lines is not None:
+        # Fast path: delete only the known widget keys (no full scan)
+        keys_to_clear: list[str] = [f"recv_inv_{int(order_id)}_{prov}"]
+        for ln in lines:
+            lid = getattr(ln, "id", None)
+            if lid is None:
+                continue
+            base = f"recv_{int(order_id)}_{prov}_{int(lid)}_"
+            keys_to_clear.extend([base + "status", base + "issue_qty", base + "invoice", base + "qty_expected"])
+        for k in keys_to_clear:
+            st.session_state.pop(k, None)
+    else:
+        # Fallback: prefix scan (used when lines context is unavailable)
+        prefix = f"recv_{int(order_id)}_{prov}_"
+        for k in list(st.session_state.keys()):
+            if k.startswith(prefix):
+                del st.session_state[k]
 
 def save_all_received_for_provider(*, ctx: OrderContext, provider: str) -> Tuple[bool, str]:
     """Persist the whole Receive form for a provider in **one DB transaction**.
@@ -3170,8 +3195,8 @@ def save_all_received_for_provider(*, ctx: OrderContext, provider: str) -> Tuple
 
         # Single commit for everything
         s.commit()
-    # Clear UI state + reset selectors
-    _clear_receive_form_state(order_id, prov)
+    # Clear UI state + reset selectors (fast path: explicit key list from known lines)
+    _clear_receive_form_state(order_id, prov, lines=lines)
     idx_key = f"recv_current_provider_idx_{order_id}"
     sel_key = f"recv_provider_sel_{order_id}"
     st.session_state[idx_key] = 0
@@ -3845,8 +3870,10 @@ def _render_incidences_cards(
     
     
     # --- Fuse header card + expander (same UX as Receive) ---
-    st.markdown(
-        """
+    # Guard: _inject_css() already covers these rules; only inject once per session
+    if not st.session_state.get("_inc_cards_css_injected"):
+        st.markdown(
+            """
         <style>
         .voi-card.voi-card--header{
             margin-bottom: 0.35rem;
@@ -3868,8 +3895,9 @@ def _render_incidences_cards(
         }
         </style>
         """,
-        unsafe_allow_html=True,
-    )
+            unsafe_allow_html=True,
+        )
+        st.session_state["_inc_cards_css_injected"] = True
 
     
 
@@ -3926,19 +3954,19 @@ def _render_incidences_cards(
 
         if sol_by_name:
             # Only tickets that match supplier items, and those items are not re-delivery flagged
-            for t in open_t:
-                nm = _s(getattr(t, "product_name", None)).strip().lower()
+            for tk in open_t:
+                nm = _s(getattr(tk, "product_name", None)).strip().lower()
                 it = sol_by_name.get(nm)
                 if it and not _is_redelivery_item(it):
-                    credit_candidates.append(t)
+                    credit_candidates.append(tk)
 
         # Fallback 1: tickets whose resolution_note says credit_note
         if not credit_candidates:
-            for t in open_t:
-                meta = _parse_ticket_resolution_note(_s(getattr(t, "resolution_note", None)))
+            for tk in open_t:
+                meta = _parse_ticket_resolution_note(_s(getattr(tk, "resolution_note", None)))
                 r = _s(meta.get("resolution")).strip().lower()
                 if r == "credit_note":
-                    credit_candidates.append(t)
+                    credit_candidates.append(tk)
 
         # Fallback 2: legacy behavior (credit kinds)
         if not credit_candidates:
@@ -3976,23 +4004,23 @@ def _render_incidences_cards(
             if _pids_cn_set else None
         )
 
-        for t in credit_candidates:
-            lid = int(getattr(t, "order_line_id", 0) or 0)
+        for tk in credit_candidates:
+            lid = int(getattr(tk, "order_line_id", 0) or 0)
             ln = line_by_id_local.get(lid)
 
-            name = _s(getattr(t, "product_name", None)) or (_line_name(ln, ctx.products_by_id) if ln else "Product")
-            unit = _s(getattr(t, "unit", None)) or (_line_unit(ln, ctx.products_by_id) if ln else "unit")
+            name = _s(getattr(tk, "product_name", None)) or (_line_name(ln, ctx.products_by_id) if ln else "Product")
+            unit = _s(getattr(tk, "unit", None)) or (_line_unit(ln, ctx.products_by_id) if ln else "unit")
 
             # qty: prefer supplier note qty (if present), else ticket qty_invoiced
             qty = None
-            it = sol_by_name.get(_s(getattr(t, "product_name", None)).strip().lower()) if sol_by_name else None
+            it = sol_by_name.get(_s(getattr(tk, "product_name", None)).strip().lower()) if sol_by_name else None
             if it:
                 try:
                     qty = float(it.get("qty"))
                 except Exception:
                     qty = None
             if qty is None:
-                qty = _safe_float(getattr(t, "qty_invoiced", None), 0.0)
+                qty = _safe_float(getattr(tk, "qty_invoiced", None), 0.0)
 
             if qty <= 0:
                 continue
@@ -4045,11 +4073,11 @@ def _render_incidences_cards(
                     "VAT%": float(vat_pct),
                     "VAT €": float(vat_eur),
                     "Total": float(total),
-                    "Reason": _credit_reason(_s(getattr(t, "kind", None))),
+                    "Reason": _credit_reason(_s(getattr(tk, "kind", None))),
                 }
             )
 
-        reasons = sorted({_credit_reason(_s(getattr(t, "kind", None))) for t in credit_candidates})
+        reasons = sorted({_credit_reason(_s(getattr(tc, "kind", None))) for tc in credit_candidates})
         reason_txt = ", ".join(reasons) if reasons else "Correction"
         cn_dt = _fmt_dt(getattr(wf, "updated_at", None))
 
@@ -4142,8 +4170,8 @@ def _render_incidences_cards(
 
         if not has_rd_items and not is_rd:
             any_ticket_rd = False
-            for t in (open_t or []):
-                meta = _parse_ticket_resolution_note(_s(getattr(t, "resolution_note", None)))
+            for tk in (open_t or []):
+                meta = _parse_ticket_resolution_note(_s(getattr(tk, "resolution_note", None)))
                 r = _s(meta.get("resolution")).strip().lower()
                 if r in {"supplementary_delivery", "re_delivery"}:
                     any_ticket_rd = True
@@ -4237,8 +4265,8 @@ def _render_incidences_cards(
         # -----------------------------
         by_eta: Dict[str, Dict[str, Any]] = {}  # eta -> {"tickets":[...], "invoice":"..."}
         if not redel_items:
-            for t in (open_t or []):
-                meta = _parse_ticket_resolution_note(_s(getattr(t, "resolution_note", None)))
+            for tk in (open_t or []):
+                meta = _parse_ticket_resolution_note(_s(getattr(tk, "resolution_note", None)))
                 r = _s(meta.get("resolution")).strip().lower()
 
                 if r not in {"supplementary_delivery", "re_delivery"}:
@@ -4253,7 +4281,7 @@ def _render_incidences_cards(
                     if not by_eta[eta].get("invoice") and inv:
                         by_eta[eta]["invoice"] = inv
 
-                by_eta[eta]["tickets"].append(t)
+                by_eta[eta]["tickets"].append(tk)
 
         # Header ETA summary
         header_eta = ""
@@ -4357,8 +4385,8 @@ def _render_incidences_cards(
 
             # Resolve ticket items for card rendering
             ticket_items = []
-            for t in tickets_for_eta:
-                lid = int(getattr(t, "order_line_id", 0) or 0)
+            for tk in tickets_for_eta:
+                lid = int(getattr(tk, "order_line_id", 0) or 0)
                 ln = None
                 try:
                     ln = next(
@@ -4368,13 +4396,13 @@ def _render_incidences_cards(
                 except Exception:
                     ln = None
 
-                nm = _s(getattr(t, "product_name", None)) or (_line_name(ln, ctx.products_by_id) if ln else "Product")
+                nm = _s(getattr(tk, "product_name", None)) or (_line_name(ln, ctx.products_by_id) if ln else "Product")
                 desc = _line_desc(ln, ctx.products_by_id) if ln else ""
-                unit_t = _s(getattr(t, "unit", None)) or (_line_unit(ln, ctx.products_by_id) if ln else "unit")
-                q = _safe_float(getattr(t, "qty_invoiced", None), 0.0)
+                unit_t = _s(getattr(tk, "unit", None)) or (_line_unit(ln, ctx.products_by_id) if ln else "unit")
+                q = _safe_float(getattr(tk, "qty_invoiced", None), 0.0)
                 if q <= 0:
-                    q = _safe_float(getattr(t, "qty_expected", None), 0.0)
-                why = (_s(getattr(t, "kind", None)) or "re_delivery").replace("_", " ")
+                    q = _safe_float(getattr(tk, "qty_expected", None), 0.0)
+                why = (_s(getattr(tk, "kind", None)) or "re_delivery").replace("_", " ")
                 ticket_items.append({"name": nm, "desc": desc, "qty": f"{q:g}", "unit": unit_t, "reason": why})
 
             st.markdown(_build_redel_cards(ticket_items, inv_ref=inv_ref), unsafe_allow_html=True)
@@ -4464,11 +4492,11 @@ def _render_incidences_cards(
         tickets = list(ctx.tickets_by_provider.get(provn, []) or [])
         supplier_done = []
 
-        for t in tickets:
-            if (_s(getattr(t, "state", "")).lower() == "supplier_action_done"):
-                supplier_done.append(t)
+        for tk in tickets:
+            if (_s(getattr(tk, "state", "")).lower() == "supplier_action_done"):
+                supplier_done.append(tk)
 
-                note = _s(getattr(t, "resolution_note", "")).lower()
+                note = _s(getattr(tk, "resolution_note", "")).lower()
                 if "supplementary_delivery" in note:
                     sol_counts["supplementary_delivery"] += 1
                 elif "credit_note_pending" in note:
@@ -4576,25 +4604,25 @@ def _render_incidences_cards(
             resolution_by_line_id: Dict[int, str] = {}
 
             # --- Classify tickets + build per-line resolution map ---
-            for t in open_t:
-                tid_local = int(getattr(t, "id", 0) or 0)
-                meta = _parse_ticket_resolution_note(_s(getattr(t, "resolution_note", None)))
+            for tk in open_t:
+                tid_local = int(getattr(tk, "id", 0) or 0)
+                meta = _parse_ticket_resolution_note(_s(getattr(tk, "resolution_note", None)))
                 ticket_meta_by_id[tid_local] = meta
 
                 r = (_s(meta.get("resolution"))).strip().lower()
 
                 # ✅ fill map: order_line_id -> resolution
-                lid = int(getattr(t, "order_line_id", 0) or 0)
+                lid = int(getattr(tk, "order_line_id", 0) or 0)
                 if lid and r:
                     resolution_by_line_id[lid] = r
 
                 # buckets for UI
                 if r == "credit_note":
-                    credit_t.append(t)
+                    credit_t.append(tk)
                 elif r in {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}:
-                    redel_t.append(t)
+                    redel_t.append(tk)
                 else:
-                    undecided_t.append(t)
+                    undecided_t.append(tk)
 
             # # ✅ Production lock rule:
             # ✅ Production lock rule:
@@ -4663,8 +4691,8 @@ def _render_incidences_cards(
                         cn_no = ""
 
                         # 1) Prefer ticket meta CN number (if present)
-                        for t in credit_t:
-                            meta = ticket_meta_by_id.get(int(getattr(t, "id", 0) or 0)) or {}
+                        for tk in credit_t:
+                            meta = ticket_meta_by_id.get(int(getattr(tk, "id", 0) or 0)) or {}
                             if _s(meta.get("credit_note_invoice")):
                                 cn_no = _s(meta.get("credit_note_invoice"))
                                 break
@@ -4726,6 +4754,7 @@ def _render_incidences_cards(
                                     )
                                     if res_close == "ok":
                                         st.success(t("msg.credit_note_closed"))
+                                        _bump_venue_refresh(int(ctx.order.venue_id))
                                         st.rerun()
                                     else:
                                         st.error(res_close)
@@ -4758,6 +4787,7 @@ def _render_incidences_cards(
                             res_close = venue_verify_and_close(ctx=ctx, provider=provn, mode="supplementary")
                             if res_close == "ok":
                                 st.success(t("msg.redelivery_closed"))
+                                _bump_venue_refresh(int(ctx.order.venue_id))
                                 st.rerun()
                             else:
                                 st.error(res_close)
@@ -4910,6 +4940,7 @@ def _render_incidences_cards(
                     res = venue_verify_and_close(ctx=ctx, provider=provn, mode="reject")
                     if res == "ok":
                         st.success(t("receive.closed"))
+                        _bump_venue_refresh(int(ctx.order.venue_id))
                         st.rerun()
                     else:
                         st.error(res)
@@ -4937,6 +4968,7 @@ def _render_incidences_cards(
                         if ok:
                             st.success(t("msg.link_sent"))
                             st.link_button(t("receive.open_supplier_link"), msg, use_container_width=True)
+                            _bump_venue_refresh(int(order.venue_id))
                             st.rerun()
                         else:
                             # If sending failed, unlock so user can try again
@@ -4964,26 +4996,26 @@ def _render_incidences_cards(
             show_issue_lines = ((state_u in editable_states) and (not st.session_state.get(decisions_key, False)))
 
             if show_issue_lines:
-                for t in open_t:
-                    tid = int(getattr(t, "id", 0) or 0)
-                    lid = int(getattr(t, "order_line_id", 0) or 0)
+                for tk in open_t:
+                    tid = int(getattr(tk, "id", 0) or 0)
+                    lid = int(getattr(tk, "order_line_id", 0) or 0)
                     ln = line_by_id.get(lid)
 
-                    pname_raw = _line_name(ln, ctx.products_by_id) if ln else _s(getattr(t, "product_name", ""))
+                    pname_raw = _line_name(ln, ctx.products_by_id) if ln else _s(getattr(tk, "product_name", ""))
                     pdesc_raw = _line_desc(ln, ctx.products_by_id) if ln else ""
-                    unit_raw = _s(getattr(t, "unit", None)) or (_line_unit(ln, ctx.products_by_id) if ln else "unit")
+                    unit_raw = _s(getattr(tk, "unit", None)) or (_line_unit(ln, ctx.products_by_id) if ln else "unit")
 
                     pname = html.escape(pname_raw or "")
                     pdesc = html.escape(pdesc_raw or "")
                     unit = html.escape(unit_raw or "")
 
-                    expected_qty = _safe_float(getattr(t, "qty_expected", None), 0.0)
+                    expected_qty = _safe_float(getattr(tk, "qty_expected", None), 0.0)
                     if expected_qty <= 0 and ln is not None:
                         fu = ctx.followups_by_key.get((provn, int(getattr(ln, "id", 0) or 0)))
                         expected_qty = _derive_expected_qty(ln, fu)
 
                     sol_mode = (_s(sol.get("resolution")) if isinstance(sol, dict) else "").strip().lower()
-                    sol_item = _match_sol_item(t)
+                    sol_item = _match_sol_item(tk)
 
                     sol_qty = None
                     if sol_item is not None:
@@ -4992,14 +5024,14 @@ def _render_incidences_cards(
                         except Exception:
                             sol_qty = None
 
-                    kind = (_s(getattr(t, "kind", ""))).lower()
+                    kind = (_s(getattr(tk, "kind", ""))).lower()
                     if sol_qty is None:
                         if kind in {"invoice_discrepancy", "damaged"}:
-                            sol_qty = _safe_float(getattr(t, "qty_invoiced", None), 0.0)
+                            sol_qty = _safe_float(getattr(tk, "qty_invoiced", None), 0.0)
                         else:
-                            sol_qty = max(0.0, expected_qty - _safe_float(getattr(t, "qty_received", None), 0.0))
+                            sol_qty = max(0.0, expected_qty - _safe_float(getattr(tk, "qty_received", None), 0.0))
 
-                    kind_txt_raw = (_s(getattr(t, "kind", "")) or "issue").replace("_", " ")
+                    kind_txt_raw = (_s(getattr(tk, "kind", "")) or "issue").replace("_", " ")
                     kind_txt = html.escape(kind_txt_raw)
 
                     sol_chip = ""
@@ -5016,7 +5048,7 @@ def _render_incidences_cards(
                         sol_chip = f"<span class='pill pill--ok'>🚚 Re-delivery{eta_txt}: {sol_qty:g} {unit}</span>"
 
                         if kind == "operational_missing":
-                            old_inv = html.escape(_s(getattr(t, "invoice_no", "")) or "")
+                            old_inv = html.escape(_s(getattr(tk, "invoice_no", "")) or "")
                             new_inv = html.escape(_s(sol.get("new_invoice")) if isinstance(sol, dict) else "")
                             if old_inv:
                                 sol_chip += f" <span class='pill'>missing from invoice #{old_inv}</span>"
@@ -5025,15 +5057,15 @@ def _render_incidences_cards(
 
                     # Issue qty pill
                     if kind == "operational_missing":
-                        inc_qty = _safe_float(getattr(t, "qty_invoiced", None), 0.0)
+                        inc_qty = _safe_float(getattr(tk, "qty_invoiced", None), 0.0)
                         if inc_qty <= 0:
-                            inc_qty = max(0.0, float(expected_qty or 0.0) - _safe_float(getattr(t, "qty_received", None), 0.0))
+                            inc_qty = max(0.0, float(expected_qty or 0.0) - _safe_float(getattr(tk, "qty_received", None), 0.0))
                     else:
                         inc_qty = float(sol_qty or 0.0)
                         if inc_qty <= 0:
-                            inc_qty = _safe_float(getattr(t, "qty_invoiced", None), 0.0)
+                            inc_qty = _safe_float(getattr(tk, "qty_invoiced", None), 0.0)
                         if inc_qty <= 0:
-                            inc_qty = _safe_float(getattr(t, "qty_expected", None), 0.0)
+                            inc_qty = _safe_float(getattr(tk, "qty_expected", None), 0.0)
                         if inc_qty <= 0:
                             inc_qty = float(expected_qty or 0.0)
 
@@ -5658,8 +5690,6 @@ def _compute_kpi_data(
     open_total = sum(int(it.get("open_count") or 0) for it in inc_items)
 
     pending_products = 0
-    redeliveries_pending = 0
-    credit_notes_pending = 0
 
     for oid in order_ids_all:
         ctx_o = contexts.get(int(oid))
@@ -5686,36 +5716,13 @@ def _compute_kpi_data(
                     continue
                 pending_products += 1
 
-        for prov in sent_set:
-            provn = norm_provider(prov)
-            if _provider_closed(ctx_o, provn):
-                continue
-            open_t = _provider_open_tickets(ctx_o, provn)
-            if not open_t:
-                continue
-            _found_cn = False
-            _found_rd = False
-            for t in open_t:
-                meta = _parse_ticket_resolution_note(_s(getattr(t, "resolution_note", None)))
-                r = _s(meta.get("resolution")).strip().lower()
-                if r == "credit_note":
-                    credit_notes_pending += 1
-                    _found_cn = True
-                elif r in {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}:
-                    redeliveries_pending += 1
-                    _found_rd = True
-            if not _found_cn and not _found_rd:
-                _wf_k = ctx_o.workflows_by_provider.get(provn)
-                if _wf_k:
-                    _sol_k = _normalize_solution_meta(
-                        _parse_supplier_solution_meta(_s(getattr(_wf_k, "note", None)))
-                    )
-                    _wf_res = _s(_sol_k.get("resolution")).strip().lower()
-                    _wf_items = _sol_k.get("items") or []
-                    if _wf_res == "credit_note" or any(isinstance(i, dict) and not _is_redelivery_item(i) for i in _wf_items):
-                        credit_notes_pending += 1
-                    if _wf_res in {"supplementary_delivery", "re_delivery"} or any(isinstance(i, dict) and _is_redelivery_item(i) for i in _wf_items):
-                        redeliveries_pending += 1
+    # CN and RD counts: use the same filter as the KPI views so the counter
+    # matches what is actually displayed (no dependency on sent_set).
+    _REDEL_SET = {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}
+    cn_items = _filter_incidences_by_resolution(inc_items, int(venue_id), {"credit_note"}, contexts=contexts)
+    credit_notes_pending = len(cn_items)
+    rd_items = _filter_incidences_by_resolution(inc_items, int(venue_id), _REDEL_SET, contexts=contexts)
+    redeliveries_pending = len(rd_items)
 
     try:
         urgent_requests_pending = _count_open_urgent_requests(
@@ -5838,6 +5845,7 @@ def tracking_dashboard(
             ok, msg = save_all_received_for_provider(ctx=fp_ctx, provider=fp_provider)
             if ok:
                 del st.session_state["fullpage_receive"]
+                _bump_venue_refresh(fp_venue_id)
                 st.rerun()
             else:
                 st.error(msg)
@@ -5881,24 +5889,33 @@ def tracking_dashboard(
 
 
     # -----------------------------
-    # KPIs (GLOBAL across all active orders)
+    # KPIs (GLOBAL across all active orders) — cached per refresh cycle
+    # order_ids_all is defined here so _kpi_content fragment can access it via closure
     # -----------------------------
-    try:
-        order_ids_all = tuple(int(o.id) for o in orders if getattr(o, "id", None) is not None)
-        _kpis = _compute_kpi_data(int(venue_id), contexts, sent_providers_by_order, order_ids_all)
-        providers_global = _kpis["providers_global"]
-        open_total = _kpis["open_total"]
-        pending_products = _kpis["pending_products"]
-        redeliveries_pending = _kpis["redeliveries_pending"]
-        credit_notes_pending = _kpis["credit_notes_pending"]
-        urgent_requests_pending = _kpis["urgent_requests_pending"]
-    except Exception:
-        providers_global = 0
-        open_total = 0
-        pending_products = 0
-        redeliveries_pending = 0
-        credit_notes_pending = 0
-        urgent_requests_pending = 0
+    order_ids_all = tuple(int(o.id) for o in orders if getattr(o, "id", None) is not None)
+
+    _kpi_cache_key = f"_kpi_cache_{int(venue_id)}_{_orders_refresh_token(int(venue_id))}"
+    # Evict any stale entries from previous refresh cycles
+    for _stale in [k for k in list(st.session_state.keys()) if k.startswith(f"_kpi_cache_{int(venue_id)}_") and k != _kpi_cache_key]:
+        del st.session_state[_stale]
+
+    if _kpi_cache_key not in st.session_state:
+        try:
+            _kpis = _compute_kpi_data(int(venue_id), contexts, sent_providers_by_order, order_ids_all)
+        except Exception:
+            _kpis = {
+                "providers_global": 0, "open_total": 0, "pending_products": 0,
+                "redeliveries_pending": 0, "credit_notes_pending": 0, "urgent_requests_pending": 0,
+            }
+        st.session_state[_kpi_cache_key] = _kpis
+
+    _kpis = st.session_state[_kpi_cache_key]
+    providers_global = _kpis["providers_global"]
+    open_total = _kpis["open_total"]
+    pending_products = _kpis["pending_products"]
+    redeliveries_pending = _kpis["redeliveries_pending"]
+    credit_notes_pending = _kpis["credit_notes_pending"]
+    urgent_requests_pending = _kpis["urgent_requests_pending"]
 
     # --- KPI floating nav ---
     _KPI_VIEWS = ["pending_products", "open_incidences", "re_deliveries", "credit_notes", "urgent_requests"]
@@ -5958,7 +5975,6 @@ def tracking_dashboard(
         for view_key, _lbl, _val in _kpi_data:
             if st.button("_", key=f"_kpi_{view_key}_{int(venue_id)}"):
                 st.session_state[tab_key] = view_key
-                set_query_params(page="tracking", view=view_key, order_id="", provider="")
 
         av = st.session_state[tab_key]
 
@@ -5988,7 +6004,9 @@ def tracking_dashboard(
                 oid = int(task["order_id"])
                 prov_norm = task["provider_norm"] or ""
 
-                ctx_r = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
+                ctx_r = contexts.get(int(oid))
+                if ctx_r is None:
+                    continue
                 _render_receive_provider_panel(ctx_r, prov_norm)
 
                 st.empty()
@@ -5997,7 +6015,7 @@ def tracking_dashboard(
 
         # 🚨 Open incidences (all)
         if av == "open_incidences":
-            items = _list_open_incidences_items(int(venue_id))
+            items = _list_open_incidences_items(int(venue_id), order_ids_all, refresh_token=_orders_refresh_token(int(venue_id)))
             if not items:
                 st.success(t("msg.no_open_incidences"))
                 return
@@ -6035,7 +6053,9 @@ def tracking_dashboard(
             for item in _page_items:
                 oid = int(item["order_id"])
                 prov = _s(item.get("provider") or "—")
-                ctx_i = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
+                ctx_i = contexts.get(int(oid))
+                if ctx_i is None:
+                    continue
                 _render_incidences_cards(ctx_i, [prov], show_prices=True, include_iva=True)
 
             if _total_pages > 1:
@@ -6053,7 +6073,7 @@ def tracking_dashboard(
 
         # 🚚 Re-deliveries (filtered incidences)
         if av == "re_deliveries":
-            items = _list_open_incidences_items(int(venue_id))
+            items = _list_open_incidences_items(int(venue_id), order_ids_all, refresh_token=_orders_refresh_token(int(venue_id)))
             REDEL_SET = {"supplementary_delivery", "re_delivery", "re-delivery", "redelivery"}
             items = _filter_incidences_by_resolution(items, int(venue_id), REDEL_SET, contexts=contexts) if items else []
             if not items:
@@ -6070,7 +6090,9 @@ def tracking_dashboard(
             for item in _page_items_rd:
                 oid = int(item["order_id"])
                 prov = _s(item.get("provider") or "—")
-                ctx_r = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
+                ctx_r = contexts.get(int(oid))
+                if ctx_r is None:
+                    continue
                 _render_incidences_cards(ctx_r, [prov], show_prices=True, include_iva=True, view_mode="re_delivery")
 
             if _total_pages_rd > 1:
@@ -6088,7 +6110,7 @@ def tracking_dashboard(
 
         # 🧾 Credit notes (filtered incidences)
         if av == "credit_notes":
-            items = _list_open_incidences_items(int(venue_id))
+            items = _list_open_incidences_items(int(venue_id), order_ids_all, refresh_token=_orders_refresh_token(int(venue_id)))
             items = _filter_incidences_by_resolution(items, int(venue_id), {"credit_note"}, contexts=contexts) if items else []
             if not items:
                 st.success(t("msg.no_pending_credit_notes"))
@@ -6104,7 +6126,9 @@ def tracking_dashboard(
             for item in _page_items_cn:
                 oid = int(item["order_id"])
                 prov = _s(item.get("provider") or "—")
-                ctx_c = contexts.get(int(oid)) or _load_order_context(int(venue_id), int(oid), refresh_token=_orders_refresh_token(int(venue_id)))
+                ctx_c = contexts.get(int(oid))
+                if ctx_c is None:
+                    continue
                 _render_incidences_cards(ctx_c, [prov], show_prices=True, include_iva=True, view_mode="credit_note")
 
             if _total_pages_cn > 1:
@@ -6131,6 +6155,8 @@ def tracking_dashboard(
     <script>
     var doc = window.parent.document;
     doc.querySelectorAll('.voi-kpi .k[data-kpi]').forEach(function(card) {
+        if (card._kpiBound) return;
+        card._kpiBound = true;
         card.onclick = function() {
             // 1) Instant visual feedback
             doc.querySelectorAll('.voi-kpi .k').forEach(function(c){ c.classList.remove('active'); });
