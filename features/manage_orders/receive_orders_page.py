@@ -47,7 +47,7 @@ from datetime import datetime, timedelta
 
 from features.manage_orders.orders import _load_venue_templates
 from features.manage_orders.emails import build_resolution_email_full, build_urgent_email_full
-from streamlit_float import float_init, float_css_helper
+from streamlit_float import float_init, float_css_helper  # type: ignore
 
 from sqlalchemy import func
 from sqlalchemy.orm import load_only
