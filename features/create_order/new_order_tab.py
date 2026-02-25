@@ -815,7 +815,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                 _df_restored, _autosave_id = _restored
                 st.session_state[S("parsed_df")] = _df_restored
                 st.session_state[S("autosave_order_id")] = _autosave_id
-                st.toast("↩️ " + t("new_order.autosave_restored"), icon="✅")
+                # st.toast("↩️ " + t("new_order.autosave_restored"), icon="✅")
 
     # =========================================================
     # FULL-PAGE PRODUCT ADDER (similar to _render_lines_editor)
@@ -1316,7 +1316,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
     with _header_ctr:
         st.markdown(t("new_order.header"), unsafe_allow_html=True)
     _header_ctr.float(float_css_helper(
-        top="7rem",
+        top="5.5rem",
         left="0",
         right="0",
         width="100vw",
