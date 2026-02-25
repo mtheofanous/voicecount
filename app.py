@@ -623,7 +623,7 @@ def main():
     if url_page and url_page in PAGES:
         st.session_state["page"] = url_page
     elif "page" not in st.session_state:
-        st.session_state["page"] = "orders"
+        st.session_state["page"] = "tracking"
 
     # Read other deep-link params
     try:
@@ -698,7 +698,7 @@ def main():
     )
 
     # ---------------- Render page ----------------
-    title, loader = PAGES.get(page_key, PAGES["orders"])
+    title, loader = PAGES.get(page_key, PAGES["tracking"])
     page_fn = loader()
 
     if page_key == "tracking":
