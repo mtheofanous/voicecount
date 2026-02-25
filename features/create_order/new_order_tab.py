@@ -2410,7 +2410,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         if st.session_state.show_micro:
             mic_container = st.container()
             with mic_container:
-                with st.container():
+                with st.container(horizontal=True):
                     col_title, col_close = st.columns([4, 1])
                     with col_title:
                         st.markdown(f"**{t('new_order.audio_label')}**")
@@ -2421,11 +2421,11 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
                 audio_file = st.audio_input("", key=K("audio_msg"), label_visibility="collapsed")
 
-                if st.button(t("action.send_audio"), key=K("btn_send_audio"), use_container_width=True, type="primary"):
-                    if audio_file is not None:
+                if audio_file is not None:
+                    if st.button(t("action.send_audio"), key=K("btn_send_audio"), use_container_width=True, type="primary"):
                         st.session_state[S("audio_bytes")] = audio_file.read()
-                    st.session_state.show_micro = False
-                    st.rerun()
+                        st.session_state.show_micro = False
+                        st.rerun()
 
             mic_overlay_css = float_css_helper(
                 left=SIDE_PAD,
