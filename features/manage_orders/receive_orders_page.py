@@ -5482,47 +5482,6 @@ def _render_receive_provider_panel(ctx: OrderContext, provider: str) -> None:
         )
 
 
-
-
-        # # ---------- Action row (invoice + expected popover + save) ----------
-        # c1, c2 = st.columns(2, vertical_alignment="center")
-
-        # with c1:
-        #     inv_val = st.text_input(
-        #         "Invoice #",
-        #         key=inv_key,
-        #         placeholder="Invoice # (required)",
-        #         disabled=invoice_locked,
-        #         label_visibility="collapsed",
-        #     )
-
-        #     inv_required_missing = (not invoice_locked) and (not (inv_val or "").strip())
-
-
-
-        # with c2:
-        #     save_all = st.button(
-        #         "💾 Save",
-        #         type="primary",
-        #         use_container_width=True,
-        #         disabled=invoice_locked or inv_required_missing,
-        #         key=f"btn_save_all_{int(ctx.order.id)}_{prov_key}",
-        #     )
-
-        #     # if inv_required_missing:
-        #     #     st.caption("⚠️ Invoice number is required to save.")
-
-
-        # if save_all:
-        #     ok, msg = save_all_received_for_provider(ctx=ctx, provider=current_provider)
-        #     if ok:
-        #         st.success("Saved ✓")
-        #         st.rerun()
-        #     else:
-        #         st.error(msg)
-
-        # st.markdown("<div class='voi-hr'></div>", unsafe_allow_html=True)
-
 @st.cache_data(show_spinner=False, ttl=15)
 def _list_open_incidences_items(
     venue_id: int,
@@ -6052,7 +6011,7 @@ def tracking_dashboard(
     # --- Fixed floating header: title + KPI bar ---
     _header_ctr = st.container()
     with _header_ctr:
-        st.markdown(t("receive.dashboard_title"))
+        st.markdown(f"#### {t('receive.dashboard_title')}")
  
         cards = []
         for view_key, label, value in _kpi_data:
