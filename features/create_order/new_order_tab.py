@@ -2475,7 +2475,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                                 label_visibility="collapsed",width=450
                             )
                         with c2:
-                            send_clicked = st.form_submit_button("➤", use_container_width=True, key=K("btn_send_to_notes"),width=80)
+                            send_clicked = st.form_submit_button("➤", use_container_width=True, key=K("btn_send_to_notes"))
 
             wa_css = float_css_helper(
                 left=SIDE_PAD,
