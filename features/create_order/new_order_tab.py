@@ -2466,7 +2466,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
                 with st.form(key=K("wa_compose_form"), clear_on_submit=True):
                     with st.container():
-                        c1, c2,_ = st.columns([4, 1,0.5])
+                        c1, c2,_ = st.columns([4, 1,3])
                         with c1:
                             typed = st.text_input(
                                 "",
