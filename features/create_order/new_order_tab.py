@@ -1309,24 +1309,24 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         unsafe_allow_html=True,
     )
 
-    # =========================================================
-    # HEADER (notes mindset) + Active draft display
-    # =========================================================
-    _header_ctr = st.container()
-    with _header_ctr:
-        st.markdown(t("new_order.header"), unsafe_allow_html=True)
-    _header_ctr.float(float_css_helper(
-        top="5.5rem",
-        left="0",
-        right="0",
-        width="100vw",
-        z_index="999",
-        background="rgba(255,255,255,0.96)",
-        css="backdrop-filter:saturate(180%) blur(12px);border-bottom:1px solid rgba(148,163,184,.35);padding:6px 12px 0;",
-    ))
-    # Spacer so content below isn't hidden behind the fixed header
-    st.markdown('<div style="height:4rem"></div>', unsafe_allow_html=True)
-
+    # # =========================================================
+    # # HEADER (notes mindset) + Active draft display
+    # # =========================================================
+    # _header_ctr = st.container()
+    # with _header_ctr:
+        
+    # _header_ctr.float(float_css_helper(
+    #     top="5.5rem",
+    #     left="0",
+    #     right="0",
+    #     width="100vw",
+    #     z_index="999",
+    #     background="rgba(255,255,255,0.96)",
+    #     css="backdrop-filter:saturate(180%) blur(12px);border-bottom:1px solid rgba(148,163,184,.35);padding:6px 12px 0;",
+    # ))
+    # # Spacer so content below isn't hidden behind the fixed header
+    # st.markdown('<div style="height:4rem"></div>', unsafe_allow_html=True)
+    st.markdown(t("new_order.header"), unsafe_allow_html=True)
     # =========================================================
     # Convert df -> order lines
     # =========================================================
@@ -2297,7 +2297,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
         # =========================================================
         fab_menu_container = st.container()
         with fab_menu_container:
-            menu_label = "✕" if st.session_state.fab_menu_open else "⋯"
+            menu_label = "✕" if st.session_state.fab_menu_open else "Menu"
             if st.button(menu_label, key="fab_menu_toggle", help=t("new_order.menu")):
                 st.session_state.fab_menu_open = not st.session_state.fab_menu_open
                 st.rerun()  # fast: only reruns this fragment
@@ -2396,7 +2396,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
                         st.rerun()
 
                 fab_composer_css = float_css_helper(
-                    right=FAB_RIGHT,
+                    right="1.0rem",
                     bottom=f"calc({FAB_BASE} + {FAB_GAP} * 2)",
                     width="auto",
                     z_index="10000",
@@ -2466,7 +2466,7 @@ def new_order_tab(venue_id: int, role: str | None = None) -> None:
 
                 with st.form(key=K("wa_compose_form"), clear_on_submit=True):
                     with st.container():
-                        c1, c2 = st.columns([4, 1])
+                        c1, c2,_ = st.columns([4, 1,0.5])
                         with c1:
                             typed = st.text_input(
                                 "",
